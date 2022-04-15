@@ -48,9 +48,72 @@ int rightButtonCC;
 
 int debugVal;
 
+// Animation
+int animX;
+int animY;
+int animT;
+int rainbowOffset;
+int rainbowR[14];
+int rainbowG[14];
+int rainbowB[14];
+int touchesX[5];
+int touchesY[5];
+int touchesT[5];
+int touchesRD[5];
+int touchesRO[5];
+int animLength;
+
+
 void initialise() {
+   animLength = 13;
+   rainbowR[0] = 255;
+   rainbowR[1] = 255;
+   rainbowR[2] = 255;
+   rainbowR[3] = 191;
+   rainbowR[4] = 84;
+   rainbowR[5] = 0;
+   rainbowR[6] = 0;
+   rainbowR[7] = 0;
+   rainbowR[8] = 0;
+   rainbowR[9] = 0;
+   rainbowR[10] = 42;
+   rainbowR[11] = 148;
+   rainbowR[12] = 255;
+   rainbowR[13] = 255;
+
+   rainbowG[0] = 0;
+   rainbowG[1] = 106;
+   rainbowG[2] = 212;
+   rainbowG[3] = 255;
+   rainbowG[4] = 255;
+   rainbowG[5] = 255;
+   rainbowG[6] = 255;
+   rainbowG[7] = 255;
+   rainbowG[8] = 169;
+   rainbowG[9] = 63;
+   rainbowG[10] = 0;
+   rainbowG[11] = 0;
+   rainbowG[12] = 0;
+   rainbowG[13] = 0;
+
+   rainbowB[0] = 0;
+   rainbowB[1] = 0;
+   rainbowB[2] = 0;
+   rainbowB[3] = 0;
+   rainbowB[4] = 0;
+   rainbowB[5] = 21;
+   rainbowB[6] = 127;
+   rainbowB[7] = 233;
+   rainbowB[8] = 255;
+   rainbowB[9] = 255;
+   rainbowB[10] = 255;
+   rainbowB[11] = 255;
+   rainbowB[12] = 255;
+   rainbowB[13] = 148;
+    
+
     // Launch Button
-    launchButtonColor = makeARGB(255, 25, 255, 25);
+    launchButtonColor = makeARGB(50, 25, 255, 25);
     launchButtonPosX = 0;
     launchButtonPosY = 12;
     launchButtonWidth = 12;
@@ -58,41 +121,47 @@ void initialise() {
     launchButtonCC = 7;
     // Close Button
     closeButtonState = 0;
-    openButtonColor = makeARGB(100, 150, 255, 150);
-    closeButtonColor = makeARGB(100, 255, 150, 150);
+    openButtonColor = makeARGB(50, 150, 255, 150);
+    closeButtonColor = makeARGB(50, 255, 150, 150);
     closeButtonPosX = 0;
     closeButtonPosY = 0;
     closeButtonWidth = 3;
     closeButtonHeight = 3;
     closeButtonCC = 5;
     // Up Button
-    upButtonColor = makeARGB(255, 255, 255, 255);
+    upButtonColor = makeARGB(50, 255, 255, 255);
     upButtonPosX = 3;
     upButtonPosY = 0;
     upButtonWidth = 3;
     upButtonHeight = 3;
     upButtonCC = 1;
     // Left Button
-    leftButtonColor = makeARGB(255, 255, 255, 255);
+    leftButtonColor = makeARGB(50, 255, 255, 255);
     leftButtonPosX = 0;
     leftButtonPosY = 3;
     leftButtonWidth = 3;
     leftButtonHeight = 3;
     leftButtonCC = 2;
     // Down Button
-    downButtonColor = makeARGB(100, 255, 255, 255);
+    downButtonColor = makeARGB(30, 255, 255, 255);
     downButtonPosX = 3;
     downButtonPosY = 3;
     downButtonWidth = 3;
     downButtonHeight = 3;
     downButtonCC = 3;
     // Right Button
-    rightButtonColor = makeARGB(255, 255, 255, 255);
+    rightButtonColor = makeARGB(50, 255, 255, 255);
     rightButtonPosX = 6;
     rightButtonPosY = 3;
     rightButtonWidth = 3;
     rightButtonHeight = 3;
     rightButtonCC = 4;
+    
+    // Animation
+    animX = 7;
+    animY = 7;
+    animT = 15;
+    rainbowOffset = 0;
 }
 
 int touchCC;
@@ -100,6 +169,22 @@ void touchStart (int index, float x_float, float y_float, float z, float vz)
 {
     int x = convertPositionToPixel(x_float);
 	int y = convertPositionToPixel(y_float);
+	
+	int i = 0;
+	int touchI = 0;
+	for (i = 0; i < 5; i++) {
+	   if (touchesT[i] > (14 + animLength) || touchesT[i] == 0) {
+	      touchI = i;
+	      break;
+	   }
+	   touchI = touchesT[touchI] < touchesT[i] ? i : touchI;
+	}
+	touchesT[touchI] = 1;
+	touchesX[touchI] = x;
+	touchesY[touchI] = y;
+	touchesRO[touchI] = getRandomInt(25) - 12;
+	touchesRD[touchI] = getRandomInt(2);
+
 	touchCC = -1;
 	
     // Launch Button
@@ -166,41 +251,114 @@ void handleMIDI (int byte1, int cc, int value)
     //launchButtonColor = makeARGB(255, getRandomInt(255), getRandomInt(255), getRandomInt(255));
 }
 
+int pi;
 void repaint()
 {
-    //The fillRect and blendRect functions are used many times here.
-    //They have the following 5 arguments:
-    // - colour: an RGB (fillRect) or ARGB (blendRect) colour
-    // - x: the x/horizontal pixel position of the top-left corner of the rectangle,
-    //      where 0 is the left side of the Lightpad and 14 is the right side.
-    // - y: the y/vertical pixel position of the top-left corner of the rectangle,
-    //      where 0 is the top side of the Lightpad and 14 is the bottom side.
-    // - width: the pixel width of the rectangle to draw, in the range of 1-15.
-    // - height: the pixel height of the rectangle to draw, in the range of 1-15.
+   //The fillRect and blendRect functions are used many times here.
+   //They have the following 5 arguments:
+   // - colour: an RGB (fillRect) or ARGB (blendRect) colour
+   // - x: the x/horizontal pixel position of the top-left corner of the rectangle,
+   //      where 0 is the left side of the Lightpad and 14 is the right side.
+   // - y: the y/vertical pixel position of the top-left corner of the rectangle,
+   //      where 0 is the top side of the Lightpad and 14 is the bottom side.
+   // - width: the pixel width of the rectangle to draw, in the range of 1-15.
+   // - height: the pixel height of the rectangle to draw, in the range of 1-15.
+   
+   //first clear the display
+   clearDisplay();
+   //log(debugVal);
+
+
+   // Launch Button
+  /* blendRect(launchButtonColor, launchButtonPosX, launchButtonPosY, launchButtonWidth, launchButtonHeight);
+   // Close Button
+   if (closeButtonState == 1) {
+      blendRect(openButtonColor, closeButtonPosX, closeButtonPosY + closeButtonHeight / 2, closeButtonWidth, closeButtonHeight / 2);
+      blendRect(openButtonColor, closeButtonPosX + closeButtonWidth / 2, closeButtonPosY, closeButtonWidth / 2, closeButtonHeight);
+   } else if (closeButtonState == 2) {
+      blendRect(closeButtonColor, closeButtonPosX, closeButtonPosY + (closeButtonHeight / 2), closeButtonWidth, closeButtonHeight / 2);
+   }
+   // Up Button
+   blendRect(upButtonColor, upButtonPosX, upButtonPosY, upButtonWidth, upButtonHeight);
+
+   // Left Button
+   blendRect(leftButtonColor, leftButtonPosX, leftButtonPosY, leftButtonWidth, leftButtonHeight);
+   // Down Button
+   blendRect(downButtonColor, downButtonPosX, downButtonPosY, downButtonWidth, downButtonHeight);
+   // Right Button
+   blendRect(rightButtonColor, rightButtonPosX, rightButtonPosY, rightButtonWidth, rightButtonHeight);
+   */
+   int iT = 0;
+   for (iT = 0; iT < 5; iT++) {
+      if (touchesT[iT] <= 14 + animLength && touchesT[iT] >= 1) {
+         int i;
     
-    //first clear the display
-    clearDisplay();
-    log(debugVal);
+         for (i = 0; i < animLength; i++) { 
+            int animT2 = touchesT[iT] - i - 1;
+            
+            int rainbowI = touchesRD[iT] == 1 ? touchesRO[iT] + animT2 : touchesRO[iT] - animT2;
+            
+            while (rainbowI > 13) {
+               rainbowI -= 13;
+            }
+            while (rainbowI < 0) {
+               rainbowI += 13;
+            }
+         
+            //log(rainbowI);
+            int rbR = rainbowR[rainbowI];
+            int rbG = rainbowG[rainbowI];
+            int rbB = rainbowB[rainbowI];
+            int maxX = touchesX[iT] >= 6 ? touchesX[iT] : 13 - touchesX[iT];
+            int maxY = touchesY[iT] >= 6 ? touchesY[iT] : 13 - touchesY[iT];
+            int maxXY = max(maxX, maxY);
+            int lX = -maxXY + touchesX[iT] + animT2;
+            int rX = maxXY + touchesX[iT] - animT2;
+            int i3 = 0;
+            int mainColor = makeARGB(255 - 255 / animLength * i, rbR, rbG, rbB);
+            int offColor = makeARGB(max(0, (255 - 60 / animLength * i) - 220), rbR, rbG, rbB);
+            if (lX >=0 && lX <= touchesX[iT]) {
+               if (animT2 + i3 < maxXY) {
+                  blendPixel(offColor, lX, touchesY[iT] - 1);
+                  blendPixel(offColor, lX, touchesY[iT] + 1);
+               }
+               blendPixel(mainColor, lX, touchesY[iT]);
+            }
+            if (rX <= 14 && rX >= touchesX[iT]) {
+               if (animT2 + i3 < maxXY) {
+                  blendPixel(offColor, rX, touchesY[iT] + 1);
+                  blendPixel(offColor, rX, touchesY[iT] - 1);
+               }
+               blendPixel(mainColor, rX, touchesY[iT]);
+            }
 
- 
-    // Launch Button
-    blendRect(launchButtonColor, launchButtonPosX, launchButtonPosY, launchButtonWidth, launchButtonHeight);
-    // Close Button
-    if (closeButtonState == 1) {
-        blendRect(openButtonColor, closeButtonPosX, closeButtonPosY + closeButtonHeight / 2, closeButtonWidth, closeButtonHeight / 2);
-        blendRect(openButtonColor, closeButtonPosX + closeButtonWidth / 2, closeButtonPosY, closeButtonWidth / 2, closeButtonHeight);
-    } else if (closeButtonState == 2) {
-       blendRect(closeButtonColor, closeButtonPosX, closeButtonPosY + (closeButtonHeight / 2), closeButtonWidth, closeButtonHeight / 2);
-    }
-    // Up Button
-    blendRect(upButtonColor, upButtonPosX, upButtonPosY, upButtonWidth, upButtonHeight);
-
-    // Left Button
-    blendRect(leftButtonColor, leftButtonPosX, leftButtonPosY, leftButtonWidth, leftButtonHeight);
-    // Down Button
-    blendRect(downButtonColor, downButtonPosX, downButtonPosY, downButtonWidth, downButtonHeight);
-    // Right Button
-    blendRect(rightButtonColor, rightButtonPosX, rightButtonPosY, rightButtonWidth, rightButtonHeight);
+            int tY = -maxXY + touchesY[iT] + animT2;
+            int bY = maxXY + touchesY[iT] - animT2;
+            if (tY >= 0 && tY < touchesY[iT]) {
+               if (animT2 + i3 < maxXY) {
+                  blendPixel(offColor, touchesX[iT] - 1, tY);
+                  blendPixel(offColor, touchesX[iT] + 1, tY);
+               }
+               blendPixel(mainColor, touchesX[iT], tY);
+            }
+            if (bY <= 14 && bY > touchesY[iT]) {
+               if (animT2 + i3 < maxXY) {
+                  blendPixel(offColor, touchesX[iT] - 1, bY);
+                  blendPixel(offColor, touchesX[iT] + 1, bY);
+               }
+               blendPixel(mainColor, touchesX[iT], bY);
+            }
+         }
+         
+         //if (pi == 4) {
+            touchesT[iT] += 1;
+         //}
+      }
+   }
+   pi += 1;
+   if (pi == 5) {
+       pi = 0;
+   }
 }
 
 int convertPositionToPixel (float pos) 
