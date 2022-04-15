@@ -1,0 +1,212 @@
+
+
+// Launch Button
+int launchButtonColor;
+int launchButtonPosX;
+int launchButtonPosY;
+int launchButtonWidth;
+int launchButtonHeight;
+int launchButtonCC;
+// Close Button
+int closeButtonState;
+int openButtonColor;
+int closeButtonColor;
+int closeButtonPosX;
+int closeButtonPosY;
+int closeButtonWidth;
+int closeButtonHeight;
+int closeButtonCC;
+// Up Button
+int upButtonColor;
+int upButtonPosX;
+int upButtonPosY;
+int upButtonWidth;
+int upButtonHeight;
+int upButtonCC;
+// Left Button
+int leftButtonColor;
+int leftButtonPosX;
+int leftButtonPosY;
+int leftButtonWidth;
+int leftButtonHeight;
+int leftButtonCC;
+// Down Button
+int downButtonColor;
+int downButtonPosX;
+int downButtonPosY;
+int downButtonWidth;
+int downButtonHeight;
+int downButtonCC;
+// Right Button
+int rightButtonColor;
+int rightButtonPosX;
+int rightButtonPosY;
+int rightButtonWidth;
+int rightButtonHeight;
+int rightButtonCC;
+// Arm Button
+
+int debugVal;
+
+void initialise() {
+    // Launch Button
+    launchButtonColor = makeARGB(255, 25, 255, 25);
+    launchButtonPosX = 0;
+    launchButtonPosY = 12;
+    launchButtonWidth = 12;
+    launchButtonHeight = 3;
+    launchButtonCC = 7;
+    // Close Button
+    closeButtonState = 0;
+    openButtonColor = makeARGB(100, 150, 255, 150);
+    closeButtonColor = makeARGB(100, 255, 150, 150);
+    closeButtonPosX = 0;
+    closeButtonPosY = 0;
+    closeButtonWidth = 3;
+    closeButtonHeight = 3;
+    closeButtonCC = 5;
+    // Up Button
+    upButtonColor = makeARGB(255, 255, 255, 255);
+    upButtonPosX = 3;
+    upButtonPosY = 0;
+    upButtonWidth = 3;
+    upButtonHeight = 3;
+    upButtonCC = 1;
+    // Left Button
+    leftButtonColor = makeARGB(255, 255, 255, 255);
+    leftButtonPosX = 0;
+    leftButtonPosY = 3;
+    leftButtonWidth = 3;
+    leftButtonHeight = 3;
+    leftButtonCC = 2;
+    // Down Button
+    downButtonColor = makeARGB(100, 255, 255, 255);
+    downButtonPosX = 3;
+    downButtonPosY = 3;
+    downButtonWidth = 3;
+    downButtonHeight = 3;
+    downButtonCC = 3;
+    // Right Button
+    rightButtonColor = makeARGB(255, 255, 255, 255);
+    rightButtonPosX = 6;
+    rightButtonPosY = 3;
+    rightButtonWidth = 3;
+    rightButtonHeight = 3;
+    rightButtonCC = 4;
+}
+
+int touchCC;
+void touchStart (int index, float x_float, float y_float, float z, float vz)
+{
+    int x = convertPositionToPixel(x_float);
+	int y = convertPositionToPixel(y_float);
+	touchCC = -1;
+	
+    // Launch Button
+    if (x >= launchButtonPosX && x < launchButtonPosX + launchButtonWidth && y >= launchButtonPosY && y < launchButtonPosY + launchButtonHeight) {
+       sendCC(0, launchButtonCC, 127);
+       touchCC = launchButtonCC;
+    }
+    // Close Button
+    if (x >= closeButtonPosX && x < closeButtonPosX + closeButtonWidth && y >= closeButtonPosY && y < closeButtonPosY + closeButtonHeight) {
+       sendCC(0, closeButtonCC, closeButtonState == 2 ? 64 : 127);
+    }
+    // Up Button
+    if (x >= upButtonPosX && x < upButtonPosX + upButtonWidth && y >= upButtonPosY && y < upButtonPosY + upButtonHeight) {
+       sendCC(0, upButtonCC, 127);
+       touchCC = upButtonCC;
+    }
+    // Left Button
+    if (x >= leftButtonPosX && x < leftButtonPosX + leftButtonWidth && y >= leftButtonPosY && y < leftButtonPosY + leftButtonHeight) {
+       sendCC(0, leftButtonCC, 127);
+       touchCC = leftButtonCC;
+    }
+    // Down Button
+    if (x >= downButtonPosX && x < downButtonPosX + downButtonWidth && y >= downButtonPosY && y < downButtonPosY + downButtonHeight) {
+       sendCC(0, downButtonCC, 127);
+       touchCC = downButtonCC;
+    }
+    // Right Button
+    if (x >= rightButtonPosX && x < rightButtonPosX + rightButtonWidth && y >= rightButtonPosY && y < rightButtonPosY + rightButtonHeight) {
+       sendCC(0, rightButtonCC, 127);
+       touchCC = rightButtonCC;
+    }
+
+
+   // log(x);
+   // log(y);
+
+    
+    //process the touch
+  
+	
+}
+
+void touchEnd (int index, float x_float, float y_float, float z, float vz)
+{
+    if (touchCC != -1) {   
+     sendCC(0, touchCC, 0);
+    }
+    //log(x);
+    //log(y);
+}
+
+void handleMIDI (int byte1, int cc, int value)
+{
+    if (cc == closeButtonCC) {
+      debugVal = value;
+      closeButtonState = value == 0 ? 0 : value == 127 ? 2 : 1;
+      launchButtonColor = makeARGB(255, getRandomInt(255), getRandomInt(255), getRandomInt(255));
+      log(444);
+      log(byte1);
+      log(cc);
+      log(value);
+    }
+    
+    //launchButtonColor = makeARGB(255, getRandomInt(255), getRandomInt(255), getRandomInt(255));
+}
+
+void repaint()
+{
+    //The fillRect and blendRect functions are used many times here.
+    //They have the following 5 arguments:
+    // - colour: an RGB (fillRect) or ARGB (blendRect) colour
+    // - x: the x/horizontal pixel position of the top-left corner of the rectangle,
+    //      where 0 is the left side of the Lightpad and 14 is the right side.
+    // - y: the y/vertical pixel position of the top-left corner of the rectangle,
+    //      where 0 is the top side of the Lightpad and 14 is the bottom side.
+    // - width: the pixel width of the rectangle to draw, in the range of 1-15.
+    // - height: the pixel height of the rectangle to draw, in the range of 1-15.
+    
+    //first clear the display
+    clearDisplay();
+    log(debugVal);
+
+ 
+    // Launch Button
+    blendRect(launchButtonColor, launchButtonPosX, launchButtonPosY, launchButtonWidth, launchButtonHeight);
+    // Close Button
+    if (closeButtonState == 1) {
+        blendRect(openButtonColor, closeButtonPosX, closeButtonPosY + closeButtonHeight / 2, closeButtonWidth, closeButtonHeight / 2);
+        blendRect(openButtonColor, closeButtonPosX + closeButtonWidth / 2, closeButtonPosY, closeButtonWidth / 2, closeButtonHeight);
+    } else if (closeButtonState == 2) {
+       blendRect(closeButtonColor, closeButtonPosX, closeButtonPosY + (closeButtonHeight / 2), closeButtonWidth, closeButtonHeight / 2);
+    }
+    // Up Button
+    blendRect(upButtonColor, upButtonPosX, upButtonPosY, upButtonWidth, upButtonHeight);
+
+    // Left Button
+    blendRect(leftButtonColor, leftButtonPosX, leftButtonPosY, leftButtonWidth, leftButtonHeight);
+    // Down Button
+    blendRect(downButtonColor, downButtonPosX, downButtonPosY, downButtonWidth, downButtonHeight);
+    // Right Button
+    blendRect(rightButtonColor, rightButtonPosX, rightButtonPosY, rightButtonWidth, rightButtonHeight);
+}
+
+int convertPositionToPixel (float pos) 
+{ 
+    //the Lightpad surface x/y position values may not be exactly 0-2
+    //so assume the upper value may be a bit less than 2.
+    return int(map(pos, 0.0, 1.9, 0.0, 14.0)); 
+}
+
