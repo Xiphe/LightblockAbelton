@@ -65,7 +65,7 @@ int animLength;
 
 
 void initialise() {
-   animLength = 13;
+   animLength = 5;
    rainbowR[0] = 255;
    rainbowR[1] = 255;
    rainbowR[2] = 255;
@@ -312,37 +312,37 @@ void repaint()
             int maxX = touchesX[iT] >= 6 ? touchesX[iT] : 13 - touchesX[iT];
             int maxY = touchesY[iT] >= 6 ? touchesY[iT] : 13 - touchesY[iT];
             int maxXY = max(maxX, maxY);
-            int lX = -maxXY + touchesX[iT] + animT2;
-            int rX = maxXY + touchesX[iT] - animT2;
+            int lX = touchesX[iT] - animT2;
+            int rX = touchesX[iT] + animT2;
             int i3 = 0;
             int mainColor = makeARGB(255 - 255 / animLength * i, rbR, rbG, rbB);
             int offColor = makeARGB(max(0, (255 - 60 / animLength * i) - 220), rbR, rbG, rbB);
             if (lX >=0 && lX <= touchesX[iT]) {
-               if (animT2 + i3 < maxXY) {
+               if (animT2 + i3 <= maxXY) {
                   blendPixel(offColor, lX, touchesY[iT] - 1);
                   blendPixel(offColor, lX, touchesY[iT] + 1);
                }
                blendPixel(mainColor, lX, touchesY[iT]);
             }
             if (rX <= 14 && rX >= touchesX[iT]) {
-               if (animT2 + i3 < maxXY) {
+               if (animT2 + i3 <= maxXY + 1) {
                   blendPixel(offColor, rX, touchesY[iT] + 1);
                   blendPixel(offColor, rX, touchesY[iT] - 1);
                }
                blendPixel(mainColor, rX, touchesY[iT]);
             }
 
-            int tY = -maxXY + touchesY[iT] + animT2;
-            int bY = maxXY + touchesY[iT] - animT2;
+            int tY = touchesY[iT] - animT2;
+            int bY = touchesY[iT] + animT2;
             if (tY >= 0 && tY < touchesY[iT]) {
-               if (animT2 + i3 < maxXY) {
+               if (animT2 + i3 <= maxXY) {
                   blendPixel(offColor, touchesX[iT] - 1, tY);
                   blendPixel(offColor, touchesX[iT] + 1, tY);
                }
                blendPixel(mainColor, touchesX[iT], tY);
             }
             if (bY <= 14 && bY > touchesY[iT]) {
-               if (animT2 + i3 < maxXY) {
+               if (animT2 + i3 <= maxXY + 1) {
                   blendPixel(offColor, touchesX[iT] - 1, bY);
                   blendPixel(offColor, touchesX[iT] + 1, bY);
                }
