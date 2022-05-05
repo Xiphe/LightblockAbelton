@@ -2,11 +2,30 @@
 
 // Launch Button
 int launchButtonColor;
+int launchButtonColorArmed;
 int launchButtonPosX;
 int launchButtonPosY;
 int launchButtonWidth;
+int launchButtonWidthDefault;
+int launchButtonWidthFull;
 int launchButtonHeight;
 int launchButtonCC;
+// Arm Button
+int armButtonState;
+int armButtonColor;
+int armButtonArmColor;
+int armButtonUnarmColor;
+int armButtonPosX;
+int armButtonPosY;
+int armButtonWidth;
+int armButtonHeight;
+int armButtonCC;
+// Direct Record Button
+int directRecordButtonColor;
+int directRecordButtonPosX;
+int directRecordButtonPosY;
+int directRecordButtonWidth;
+int directRecordButtonHeight;
 // Close Button
 int closeButtonState;
 int openButtonColor;
@@ -44,7 +63,7 @@ int rightButtonPosY;
 int rightButtonWidth;
 int rightButtonHeight;
 int rightButtonCC;
-// Arm Button
+
 
 int debugVal;
 
@@ -114,11 +133,32 @@ void initialise() {
 
     // Launch Button
     launchButtonColor = makeARGB(50, 25, 255, 25);
+    launchButtonColor = makeARGB(50, 25, 255, 25);
+    launchButtonColorArmed = makeARGB(50, 255, 25, 25);
+    launchButtonWidthDefault = 12;
+    launchButtonWidthFull = 15;
+    launchButtonWidth = launchButtonWidthDefault;
     launchButtonPosX = 0;
     launchButtonPosY = 12;
-    launchButtonWidth = 12;
+    launchButtonWidth = 10;
     launchButtonHeight = 3;
     launchButtonCC = 7;
+    // Arm Button
+    armButtonState = 0;
+    armButtonArmColor = makeARGB(50, 255, 0, 0);
+    armButtonUnarmColor = makeARGB(50, 25, 255, 25);
+    armButtonColor = armButtonArmColor;
+    armButtonPosX = 0;
+    armButtonPosY = 9;
+    armButtonWidth = 3;
+    armButtonHeight = 3;
+    armButtonCC = 8;
+    // Direct Record Button
+    directRecordButtonColor = makeARGB(50, 255, 25, 25);
+    directRecordButtonPosX = 10;
+    directRecordButtonPosY = 12;
+    directRecordButtonWidth = 5;
+    directRecordButtonHeight = 3;
     // Close Button
     closeButtonState = 0;
     openButtonColor = makeARGB(50, 150, 255, 150);
@@ -188,7 +228,16 @@ void touchStart (int index, float x_float, float y_float, float z, float vz)
 	touchCC = -1;
 	
     // Launch Button
-    if (x >= launchButtonPosX && x < launchButtonPosX + launchButtonWidth && y >= launchButtonPosY && y < launchButtonPosY + launchButtonHeight) {
+    if (x >= launchButtonPosX && x < launchButtonPosX + (armButtonState == 1 ? launchButtonWidthFull : launchButtonWidth) && y >= launchButtonPosY && y < launchButtonPosY + launchButtonHeight) {
+       sendCC(0, launchButtonCC, 127);
+       touchCC = launchButtonCC;
+    }
+    // Arm Button
+    if (armButtonState != 2 && x >= armButtonPosX && x < armButtonPosX + armButtonWidth && y >= armButtonPosY && y < armButtonPosY + armButtonHeight) {
+       sendCC(0, armButtonCC, armButtonState == 0 ? 64 : 0);
+    }
+    if (armButtonState == 0 && x >= directRecordButtonPosX && x < directRecordButtonPosX + directRecordButtonWidth && y >= directRecordButtonPosY && y < directRecordButtonPosY + directRecordButtonHeight) {
+       sendCC(0, armButtonCC, 64);
        sendCC(0, launchButtonCC, 127);
        touchCC = launchButtonCC;
     }
@@ -239,14 +288,26 @@ void touchEnd (int index, float x_float, float y_float, float z, float vz)
 void handleMIDI (int byte1, int cc, int value)
 {
     if (cc == closeButtonCC) {
-      debugVal = value;
+      // debugVal = value;
       closeButtonState = value == 0 ? 0 : value == 127 ? 2 : 1;
-      launchButtonColor = makeARGB(255, getRandomInt(255), getRandomInt(255), getRandomInt(255));
-      log(444);
-      log(byte1);
-      log(cc);
-      log(value);
+      //launchButtonColor = makeARGB(255, getRandomInt(255), getRandomInt(255), getRandomInt(255));
+      //log(444);
+      //log(byte1);
+      //log(cc);
+      //log(value);
     }
+    if (cc == armButtonCC) {
+      // debugVal = value;
+      armButtonState = value == 0 ? 0 : value == 127 ? 2 : 1;
+ 
+      //launchButtonColor = makeARGB(255, getRandomInt(255), getRandomInt(255), getRandomInt(255));
+      //log(444);
+      //log(byte1);
+      //log(armButtonState);
+      //log(cc);
+      //log(value);
+    }
+    
     
     //launchButtonColor = makeARGB(255, getRandomInt(255), getRandomInt(255), getRandomInt(255));
 }
@@ -270,7 +331,14 @@ void repaint()
 
 
    // Launch Button
-  /* blendRect(launchButtonColor, launchButtonPosX, launchButtonPosY, launchButtonWidth, launchButtonHeight);
+   blendRect(armButtonState == 1 ? launchButtonColorArmed : launchButtonColor, launchButtonPosX, launchButtonPosY, armButtonState == 1 ? launchButtonWidthFull : launchButtonWidth, launchButtonHeight);
+   // Arm Button
+   if (armButtonState != 2) { 
+      blendRect(armButtonState == 1 ? armButtonUnarmColor : armButtonArmColor, armButtonPosX, armButtonPosY, armButtonWidth, armButtonHeight);
+   }
+   if (armButtonState == 0) {
+       blendRect(directRecordButtonColor, directRecordButtonPosX, directRecordButtonPosY, directRecordButtonWidth, directRecordButtonHeight);
+   }
    // Close Button
    if (closeButtonState == 1) {
       blendRect(openButtonColor, closeButtonPosX, closeButtonPosY + closeButtonHeight / 2, closeButtonWidth, closeButtonHeight / 2);
@@ -287,7 +355,7 @@ void repaint()
    blendRect(downButtonColor, downButtonPosX, downButtonPosY, downButtonWidth, downButtonHeight);
    // Right Button
    blendRect(rightButtonColor, rightButtonPosX, rightButtonPosY, rightButtonWidth, rightButtonHeight);
-   */
+   
    int iT = 0;
    for (iT = 0; iT < 5; iT++) {
       if (touchesT[iT] <= 14 + animLength && touchesT[iT] >= 1) {
