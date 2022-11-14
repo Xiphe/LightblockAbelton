@@ -1,5 +1,4 @@
 
-
 // Launch Button
 int launchButtonColor;
 int launchButtonColorArmed;
@@ -63,7 +62,22 @@ int rightButtonPosY;
 int rightButtonWidth;
 int rightButtonHeight;
 int rightButtonCC;
-
+// Stop Button
+int stopButtonColor;
+int stopButtonPosX;
+int stopButtonPosY;
+int stopButtonWidth;
+int stopButtonHeight;
+int stopButtonCC;
+// Delete Button
+int deleteButtonColor;
+int deleteButtonPosX;
+int deleteButtonPosY;
+int deleteButtonWidth;
+int deleteButtonHeight;
+int deleteButtonCC;
+// Exclusive Arm Setting
+int exclusiveArmCC;
 
 int debugVal;
 
@@ -130,7 +144,6 @@ void initialise() {
    rainbowB[12] = 255;
    rainbowB[13] = 148;
     
-
     // Launch Button
     launchButtonColor = makeARGB(50, 25, 255, 25);
     launchButtonColor = makeARGB(50, 25, 255, 25);
@@ -196,7 +209,25 @@ void initialise() {
     rightButtonWidth = 3;
     rightButtonHeight = 3;
     rightButtonCC = 4;
-    
+    // Stop Button
+    stopButtonColor = makeARGB(50, 50, 50, 255);
+    stopButtonPosX = 12;
+    stopButtonPosY = 9;
+    stopButtonWidth = 3;
+    stopButtonHeight = 3;
+    stopButtonCC = 9;
+    // Delete Button
+    deleteButtonColor = makeARGB(100, 255, 0, 0);
+    deleteButtonPosX = 11;
+    deleteButtonPosY = 5;
+    deleteButtonWidth = 3;
+    deleteButtonHeight = 3;
+    deleteButtonCC = 10;
+
+
+    // Hidden/Internal Controls
+    exclusiveArmCC = 11;
+
     // Animation
     animX = 7;
     animY = 7;
@@ -235,10 +266,21 @@ void touchStart (int index, float x_float, float y_float, float z, float vz)
     // Arm Button
     if (armButtonState != 2 && x >= armButtonPosX && x < armButtonPosX + armButtonWidth && y >= armButtonPosY && y < armButtonPosY + armButtonHeight) {
        sendCC(0, armButtonCC, armButtonState == 0 ? 64 : 0);
+       touchCC = exclusiveArmCC;
     }
     if (armButtonState == 0 && x >= directRecordButtonPosX && x < directRecordButtonPosX + directRecordButtonWidth && y >= directRecordButtonPosY && y < directRecordButtonPosY + directRecordButtonHeight) {
+    //        sendCC(0, stopButtonCC, 127);
+//        sendCC(0, stopButtonCC, 0);
+       sendCC(0, exclusiveArmCC, 127);
        sendCC(0, armButtonCC, 64);
        sendCC(0, launchButtonCC, 127);
+       sendCC(0, leftButtonCC, 127);
+       sendCC(0, leftButtonCC, 0);
+       sendCC(0, stopButtonCC, 127);
+       sendCC(0, stopButtonCC, 0);
+       sendCC(0, rightButtonCC, 127);
+       sendCC(0, rightButtonCC, 0);
+       
        touchCC = launchButtonCC;
     }
     // Close Button
@@ -265,6 +307,16 @@ void touchStart (int index, float x_float, float y_float, float z, float vz)
        sendCC(0, rightButtonCC, 127);
        touchCC = rightButtonCC;
     }
+    // Stop Button
+    if (x >= stopButtonPosX && x < stopButtonPosX + stopButtonWidth && y >= stopButtonPosY && y < stopButtonPosY + stopButtonHeight) {
+       sendCC(0, stopButtonCC, 127);
+       touchCC = stopButtonCC;
+    }
+    // Delete Button
+    if (x >= deleteButtonPosX && x < deleteButtonPosX + deleteButtonWidth && y >= deleteButtonPosY && y < deleteButtonPosY + deleteButtonHeight) {
+       sendCC(0, deleteButtonCC, 127);
+       touchCC = deleteButtonCC;
+    }
 
 
    // log(x);
@@ -278,9 +330,14 @@ void touchStart (int index, float x_float, float y_float, float z, float vz)
 
 void touchEnd (int index, float x_float, float y_float, float z, float vz)
 {
-    if (touchCC != -1) {   
+    
+   if (touchCC != -1) {   
      sendCC(0, touchCC, 0);
-    }
+     sendCC(0, exclusiveArmCC, 64);
+     
+     touchCC = -1;
+   }
+    
     //log(x);
     //log(y);
 }
@@ -330,6 +387,8 @@ void repaint()
    //log(debugVal);
 
 
+
+
    // Launch Button
    blendRect(armButtonState == 1 ? launchButtonColorArmed : launchButtonColor, launchButtonPosX, launchButtonPosY, armButtonState == 1 ? launchButtonWidthFull : launchButtonWidth, launchButtonHeight);
    // Arm Button
@@ -355,7 +414,16 @@ void repaint()
    blendRect(downButtonColor, downButtonPosX, downButtonPosY, downButtonWidth, downButtonHeight);
    // Right Button
    blendRect(rightButtonColor, rightButtonPosX, rightButtonPosY, rightButtonWidth, rightButtonHeight);
+   // Stop Button
+   blendRect(stopButtonColor, stopButtonPosX, stopButtonPosY, stopButtonWidth, stopButtonHeight);
+   // Delete Button
+   blendPixel(deleteButtonColor, deleteButtonPosX, deleteButtonPosY);
+   blendPixel(deleteButtonColor, deleteButtonPosX + 1, deleteButtonPosY + 1);
+   blendPixel(deleteButtonColor, deleteButtonPosX + 2, deleteButtonPosY);
+   blendPixel(deleteButtonColor, deleteButtonPosX, deleteButtonPosY + 2);
+   blendPixel(deleteButtonColor, deleteButtonPosX + 2, deleteButtonPosY + 2);
    
+   // Rainbow Effect
    int iT = 0;
    for (iT = 0; iT < 5; iT++) {
       if (touchesT[iT] <= 14 + animLength && touchesT[iT] >= 1) {
