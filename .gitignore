@@ -1,0 +1,5 @@
+# Local restore copies contain Live projects and application backups.
+/verification/
+__pycache__/
+*.py[cod]
+.DS_Store
