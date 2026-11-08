@@ -1,0 +1,79 @@
+{
+  "set_path": "REPLACE_WITH_ABSOLUTE_SAVED_SCRATCH_SET_PATH",
+  "set_sha256": "REPLACE_WITH_SHA256_OF_THAT_SAVED_SET",
+  "groups": [
+    {
+      "index": 0,
+      "name": "Lightpad 1",
+      "layer_names": [
+        "Capture 1",
+        "Capture 2"
+      ]
+    },
+    {
+      "index": 1,
+      "name": "Lightpad 2",
+      "layer_names": [
+        "Capture 1",
+        "Capture 2"
+      ]
+    },
+    {
+      "index": 2,
+      "name": "Lightpad 3",
+      "layer_names": [
+        "Capture 1",
+        "Capture 2"
+      ]
+    },
+    {
+      "index": 3,
+      "name": "Lightpad 4",
+      "layer_names": [
+        "Capture 1",
+        "Capture 2"
+      ]
+    },
+    {
+      "index": 4,
+      "name": "Lightpad 5",
+      "layer_names": [
+        "Capture 1",
+        "Capture 2"
+      ]
+    },
+    {
+      "index": 5,
+      "name": "Lightpad 6",
+      "layer_names": [
+        "Capture 1",
+        "Capture 2"
+      ]
+    },
+    {
+      "index": 6,
+      "name": "Lightpad 7",
+      "layer_names": [
+        "Capture 1",
+        "Capture 2"
+      ]
+    },
+    {
+      "index": 7,
+      "name": "Lightpad 8",
+      "layer_names": [
+        "Capture 1",
+        "Capture 2"
+      ]
+    }
+  ],
+  "bar_grid": {
+    "origin": 0.0,
+    "numerator": 4,
+    "denominator": 4,
+    "fixed": true
+  },
+  "capture_input_channel": "REPLACE_WITH_VERIFIED_EXTERNAL_INPUT_CHANNEL",
+  "sync_ui_confirmed_off": [],
+  "validated_features": []
+}

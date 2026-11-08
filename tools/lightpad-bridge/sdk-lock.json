@@ -1,0 +1,9 @@
+{
+  "sdk_commit": "4582a4b4313e10be6f2d1412914ed8485fc7c010",
+  "module_commit": "9a6df113bf570aec53d33cbf97938d8602e4ac2f",
+  "vendor_manifest_sha256": "9c0ffe51d5d2d5400b3b318c123f1f686ac80c2f8ac1e69412791b420262b567",
+  "file_count": 685,
+  "blocksctl_revision": "6612968f3651704870041a397bae466226d0d7af",
+  "blocksctl_repository": "https://github.com/Xiphe/blocksctl",
+  "critical_inline_connection_sha256": "6c01825a8eebd2588fd3f01bb049c8712e167511eef424b6acdcf098b58774ce"
+}

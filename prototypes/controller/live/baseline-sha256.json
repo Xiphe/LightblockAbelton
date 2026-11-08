@@ -1,0 +1,42 @@
+{
+  "host_protocol": 18,
+  "source_sha256": {
+    "__init__.py": "98c841a0250a21e2d1090d8e85e7164ff200a9b27b18c31c8efbb12109fbb8cb",
+    "audio_backend.py": "e010eca08c54607fe66ea050e01130fe16b58ce27b8f5532992d49b114512829",
+    "audio_configuration.py": "7b47d521c132ea99b2eb6b6c66aa5baaa403fc553f7e3e4da1dad1232691c649",
+    "audio_controller.py": "653a8d06eca84cbb955f2bd2b8811340aef9fb26099b6228f3e90e731997f128",
+    "audio_fixture.py": "9f09e199068c75ce8a7f8b6fd4fb4b4dfd942c6b5bb2f8311e697ebae4df3574",
+    "bar_clock_probe.py": "47cdb8e1db32c808d726ad5d2dc51f0136647809b7fc658b22727acdfd8fae46",
+    "compact_wire.py": "61c597b36b8a58d320ed6749fc32be73bc9f6f8bdab635ca16bbf5c7dc3bf50b",
+    "configuration.py": "98b8e56506d675a403b8efde717d3676d1e33de8da7d9f11ee5269ba444b1e4e",
+    "controller_probe.py": "958e7b867fafde7655103f7edf2c10309030f9b502f303cb59d9c8398d2246f6",
+    "controller_probe_surface.py": "8be9b99b6989010a78722e36c6c53d2b0119de2b44993003ba250c76f483583f",
+    "device_ui.py": "2af0a967b9ba36692bc9a1c9436cf7a7e801cdc146df484234bf2fed47287c1f",
+    "device_ui_legacy.py": "e7502d076c77402f4bc6d0c78945a9c019273ec21ea3bcfe8e7d346aed12c349",
+    "groups.py": "1eb6f51c52a15cc9c31f9df63417116c3a598e1d1202034891c7be424798c2c2",
+    "launch_admission.py": "a4551aba85b2964cf399523be2225e78a9bcbc585096b2a508d9c51677673409",
+    "launch_grid.py": "6378993fd0ae97bdaeb12a0a6a27ca5eedc4053e65fd25d21c4535771f54e168",
+    "meter_probe.py": "3b6bb005bdd1b68ddfbbe2097725d8e6954551d06c0b6383be68a64c76b53e4a",
+    "metronome.py": "61953465bdcd6b380e38347a227134ecf4aba2128fbe0b92043ff3556348d5ee",
+    "native_bar_grid.py": "123c40042992863e75cc6666e2b05b1cb9ed5754e555e398b8e773e1a14e0576",
+    "output_pacing.py": "45c1b60ec93948462b95ffa7b48a48318cd0ceb5cb9c0f48f9932f02f326a07a",
+    "parameter_bindings.py": "029fc7e44485f6512f24126ccfde7490003c8c2b994cb8e55e9b9f25c1dd5a20",
+    "proof_driver.py": "9cf56dc010fa558caf8a9fa3d220171a5e4a9084d2f49d6439fb64b7ece0579d",
+    "proof_mailbox.py": "58a2cffd09df839100e5f0024548f3aaba6406239df40a288fbe725ee9f0ec2b",
+    "proof_surface.py": "8bc66be76b87a0a461130f040c21b8e73ccce4d0e1e32d11811ebf9582fe784d",
+    "proof_trace.py": "13bd453150559cc9c61e505cbd801b1954fb247a1e923e3b113641a785be102e",
+    "protocol.py": "8505197acb4fe801d22291917b54e42adf786ed003297c413afb8c34d9be405c",
+    "recording_coverage.py": "a16ae1dd10bb07e5eef2a453ce55b241cf6ca5fad627a5344ca4509905f602e6",
+    "session.py": "df026fdd84407e8f114411d57756851f84ee729c778091c9cad3be3bc132b320",
+    "surface.py": "ea416cba3c64556965773075cafbfd2715b40eec8f5a3bf7b070613fff69058b",
+    "timing.py": "b656aa33c6499bd8f64040f65b0775e810fe92dc3934a881945d3ee8bd51f3e2",
+    "touch_protocol.py": "b70b5d5e1ba41947df5d906aadbe77227258c13383e27fb73961792f6c0ef09c"
+  },
+  "configuration": "Portable repository defaults; explicit local opt-in required",
+  "host_tests": {
+    "total": 587,
+    "passed": 586,
+    "expected_failures": 1,
+    "known_failure": "test_output_pacing_feedback.ClockFeedbackPacingTests.test_sustained_urgent_global_changes_preserve_all_stream_expiries_and_shared_budget"
+  }
+}

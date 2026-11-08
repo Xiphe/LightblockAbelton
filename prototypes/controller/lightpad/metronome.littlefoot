@@ -1,0 +1,404 @@
+// PRIVATE34 dedicated metronome. Upper unused area is blank; existing host31 controls retained.
+// PRIVATE v18/A8 fixed metronome editor; paired31 host required for auxiliary buttons.
+// No saved-default or firmware writes. Code+heap checked before upload.
+// State0..119, RX120..143, clocks144..287, touchXY288..351, pending352..367,
+// sequence368..383, clockrevisions384..392, UIflags393/revision394, meter395..396.
+#heapsize: 397
+int drawerLatched;
+int rxGroup;
+int rxKind;
+int rxCursor;
+int rxRevision;
+bool announced;
+int fresh[8];
+int clockAt[9];
+int sentAt[16];
+int pulseAt;
+float lastPosition;
+bool pulseReady;
+int swingParity;
+int tapFlashAt;
+int downFingers;
+int ready;
+int helloAt;
+int uiAt;
+int view;
+// Geometry only: the host owns gesture recognition and preview flags.
+
+int field(int group, int number) { return getHeapByte(group * 15 + number); }
+int timed(int group, int number) { return getHeapByte(144 + group * 16 + number); }
+int read21(int offset)
+{
+    int value = getHeapInt(offset);
+    return (value & 127) | ((value >> 1) & 0x3f80) | ((value >> 2) & 0x1fc000);
+}
+
+int clockNumber(int group, int number) { return read21(144 + group * 16 + number); }
+int rxNumber(int group, int number) { return read21(120 + number); }
+bool available(int group)
+{
+    return ready == 3 && fresh[group] != 0
+        && getMillisecondCounter() - fresh[group] < 3000 && field(group, 0) > 0;
+}
+
+
+
+
+int dim(int colour, float amount)
+{
+    return blendARGB(0xff000000, (int(amount * 255.0) << 24) | (colour & 0xffffff));
+}
+
+
+
+int meterValue(int number)
+{
+    return number == 2 ? ((timed(8, 0) & 8) != 0 ? 127 : 0) : getHeapByte(395 + number);
+}
+
+
+int touchX(int finger) { return getHeapBits(2304 + finger * 32, 16); }
+int touchY(int finger) { return getHeapBits(2320 + finger * 32, 16); }
+
+
+void blockDrawer()
+{
+    for (int f = 0; f < 16; ++f)
+        if ((downFingers & (1 << f)) != 0) setHeapByte(352 + f, (getHeapByte(352 + f) & 3) | 20);
+}
+
+void closeDrawer() { blockDrawer(); drawerLatched = 0; }
+
+void resetConnection()
+{
+    announced = false;
+    rxKind = 0;
+    closeDrawer();
+    ready = 0;
+    view = 0;
+    uiAt = 0;
+    pulseReady = false;
+    tapFlashAt = -1000;
+    for (int group = 0; group < 9; ++group)
+    {
+        setHeapByte(144 + group * 16, 0);
+        setHeapByte(384 + group, 0);
+        if (group < 8) fresh[group] = 0;
+    }
+    setHeapByte(394, 0);
+    for (int finger = 0; finger < 16; ++finger) setHeapByte(352 + finger, (downFingers & (1 << finger)) != 0 ? 20 : 0);
+}
+
+void initialise()
+{
+    for (int byte = 0; byte < 397; ++byte) setHeapByte(byte, 0);
+    downFingers = 0;
+    pulseAt = -1000;
+    resetConnection();
+    helloAt = getMillisecondCounter();
+    sendCC(15, 110, 18);
+}
+
+void copyBytes(int target, int source, int count)
+{
+    for (int n = 0; n < count; ++n) setHeapByte(target + n, getHeapByte(source + n));
+}
+void snapshot(int group)
+{
+    int base = 120;
+    if (getHeapByte(base) > 2 || (getHeapByte(base + 1) != 0 && getHeapByte(base + 1) != 127)
+        || getHeapByte(base + 11) > 31 || getHeapByte(base + 12) > 4) return;
+    copyBytes(group * 15, base, 15);
+    fresh[group] = getMillisecondCounter();
+}
+
+void acceptUI()
+{
+    int mode = getHeapByte(120);
+    int selected = getHeapByte(121), recording = getHeapByte(122);
+    int flags = getHeapByte(124), preview = flags & 12;
+    if (mode > 2 || (selected > 7 && selected != 127) || (recording > 7 && recording != 127)
+        || (mode == 1 && selected == 127) || (mode == 2 && recording == 127)
+        || flags > 15 || getHeapByte(126) > 1 || preview == 12
+        || (preview != 0 && (mode != 0 || selected == 127
+            || getHeapByte(125) != 0 || getHeapByte(126) != 0))) return;
+    view = mode;
+    if (mode != 0) { closeDrawer(); uiAt = 0; return; }
+    setHeapByte(393, flags);
+    uiAt = getMillisecondCounter();
+}
+
+
+void sendTouch(int finger, int kind)
+{
+    int seq = getHeapByte(368 + finger), pending = getHeapByte(352 + finger);
+    int x = touchX(finger), y = touchY(finger);
+    sendCC(finger, 20, seq);
+    sendCC(finger, 21, kind | (pending & 28) | (drawerLatched == 7 ? 64 : 0));
+    sendCC(finger, 22, x & 127); sendCC(finger, 23, x >> 7);
+    sendCC(finger, 24, y & 127); sendCC(finger, 25, y >> 7);
+    sendCC(finger, 26, seq);
+    setHeapByte(368 + finger, (seq + 1) & 127);
+    setHeapByte(352 + finger, pending & ~3);
+    sentAt[finger] = getMillisecondCounter();
+}
+
+void rememberTouch(int finger, float x, float y)
+{
+    int px = int(clamp(0.0, 1919.0, x * 960.0));
+    int py = int(clamp(0.0, 1919.0, y * 960.0));
+    setHeapInt(288 + finger * 4, px | (py << 16));
+}
+
+void touchEvent(int kind, int index, float x, float y)
+{
+    if (index < 0 || index >= 16) return;
+    int bit = 1 << index;
+    bool held = (downFingers & bit) != 0;
+    if (kind == 1) downFingers = downFingers | bit;
+    else if (kind == 3) downFingers = downFingers & ~bit;
+    else if (!held) return;
+    if (ready != 3 || uiAt == 0 || view != 0 || getMillisecondCounter() - uiAt >= 3000 || (kind == 3 && !held))
+    { if (kind == 1) setHeapByte(352 + index, 20); return; }
+    rememberTouch(index, x, y);
+    if (kind == 1)
+    {
+        int px = touchX(index) / 128, py = touchY(index) / 128;
+        int r = 5;
+        if (drawerLatched == 7)
+        {
+            if (py >= 8 && py <= 12 && px != 7) r = px < 7 ? 2 : 3;
+            else if (py >= 13)
+            {
+                if (px >= 6 && px <= 9) r = 4;
+                else if (px <= 4) r = 17;
+                else if (px >= 11) r = 1;
+            }
+        }
+        setHeapByte(352 + index, r << 2);
+        if (r == 1) tapFlashAt = getMillisecondCounter();
+    }
+    else if (kind == 3 && (getHeapByte(352 + index) & 64) != 0
+        && touchX(index) < 640 && touchY(index) >= 1664) closeDrawer();
+    if (kind == 2) setHeapByte(352 + index, (getHeapByte(352 + index) & ~3) | 2);
+    if (kind != 2 || getMillisecondCounter() - sentAt[index] >= 40) sendTouch(index, kind);
+}
+
+void touchStart(int i, float x, float y, float z, float vz) { touchEvent(1, i, x, y); }
+void touchMove(int i, float x, float y, float z, float vz) { touchEvent(2, i, x, y); }
+void touchEnd(int i, float x, float y, float z, float vz) { touchEvent(3, i, x, y); }
+
+void updateModel()
+{
+    int now = getMillisecondCounter();
+    bool any = false;
+    for (int group = 0; group < 8; ++group)
+    {
+        if (fresh[group] != 0 && now - fresh[group] >= 3000)
+        { fresh[group] = 0; setHeapByte(144 + group * 16, 0); }
+        if (fresh[group] != 0) any = true;
+    }
+    if (uiAt != 0 && now - uiAt >= 3000)
+    { closeDrawer(); uiAt = 0; downFingers = 0; }
+    if (!any && now - helloAt >= 1000)
+    { resetConnection(); sendCC(15, 110, 18); helloAt = now; }
+    for (int f = 0; f < 16; ++f)
+        if ((downFingers & (1 << f)) != 0 && uiAt != 0
+            && now - sentAt[f] >= ((getHeapByte(352 + f) & 3) == 2 ? 40 : 250)) sendTouch(f, 2);
+}
+
+
+
+
+
+float positionNow(int index)
+{
+    float position = float(clockNumber(index, 5));
+    if ((timed(index, 0) & 4) != 0)
+    {
+        int age = clamp(0, 1000, getMillisecondCounter() - clockAt[index]);
+        int tempo = timed(index, 14) + (timed(index, 15) << 7);
+        position += float(age) * float(tempo) / 15000.0;
+    }
+    float span = float(clockNumber(index, 2));
+    return position - float(int(position / span)) * span;
+}
+
+
+
+void acceptClock(int group)
+{
+    int base = 120;
+    int context = getHeapByte(base) & 3;
+    bool continuous = (timed(group, 0) & 3) == context
+                   && getMillisecondCounter() - clockAt[group] < 1000
+                   && clockNumber(group, 11) == rxNumber(group, 11)
+                   && clockNumber(group, 8) == rxNumber(group, 8);
+    setHeapByte(144 + group * 16, 0);
+    if (context == 0) return;
+    if (context > 2 || getHeapByte(base) > (group == 8 ? 14 : 6) || (group == 8 && (context != 1 || getHeapByte(base + 1) != 0))) return;
+    if (group < 8 && (!available(group) || getHeapByte(base + 1) != field(group, 13)
+        || context != field(group, 0))) return;
+    // Decode candidate numeric fields directly from the isolated RX buffer.
+    int span = rxNumber(group, 2);
+    int position = rxNumber(group, 5);
+    int first = rxNumber(group, 8);
+    int bar = rxNumber(group, 11);
+    int tempo = getHeapByte(base + 14) + (getHeapByte(base + 15) << 7);
+    int numerator = getHeapByte(base + 16);
+    int denominator = getHeapByte(base + 17);
+    if (span <= 0 || bar <= 0 || tempo == 0 || numerator == 0
+        || numerator > 99 || denominator > 16 || ((0x10116 >> (denominator & 31)) & 1) == 0
+        || first > bar || position >= span) return;
+    if (abs(bar - numerator * 256 / denominator) > 1
+        || (context == 1 && abs(span - bar) > 1)) return;
+    copyBytes(144 + group * 16, base, 16);
+    clockAt[group] = getMillisecondCounter();
+    if (group == 8)
+    {
+        setHeapByte(395, numerator);
+        setHeapByte(396, denominator);
+        if (!continuous) pulseReady = false;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void drawMeterNumber(int value, int x)
+{
+    for (int n = 0; n < 2; ++n)
+    {
+        int digit = n == 0 ? value / 10 : value % 10;
+        if (n == 0 && digit == 0) continue;
+        int bits = digit < 2 ? 978156399 : digit < 4 ? 1022620647 : digit < 6 ? 1021823469 : digit < 8 ? 613678031 : 1022884847;
+        bits = (bits >> ((digit & 1) * 15)) & 32767;
+        for (int bit = 0; bit < 15; ++bit)
+            if ((bits & (1 << bit)) != 0) fillPixel(0xffb0b0b0, x + n * 4 + bit % 3, 8 + bit / 3);
+    }
+}
+
+void trackBar()
+{
+    // Independent actual project-bar clock. Never pulse from marker pixels.
+    int now = getMillisecondCounter();
+    if (!globalRunning()) return;
+    float span = float(clockNumber(8, 2));
+    float current = positionNow(8) - float(clockNumber(8, 8));
+    if (current < 0.0) current += span;
+    if (!pulseReady) { pulseReady = true; lastPosition = current; pulseAt = -1000; swingParity = 0; }
+    float forward = current - lastPosition;
+    float halfSpan = span * 0.5;
+    if (forward < -halfSpan)
+    {
+        pulseAt = now;
+    swingParity = swingParity ^ (meterValue(0) & 1);
+        lastPosition = current;
+    }
+    else if (forward > 0.0 && forward <= halfSpan) lastPosition = current;
+}
+
+void drawModal()
+{
+    bool running = globalRunning();
+    if (running)
+    {
+        float beat = positionNow(8) * float(meterValue(1)) / 256.0 + float(swingParity);
+        beat -= float(int(beat / 2.0)) * 2.0;
+        float point = (1.0 - abs(beat - 1.0)) * 14.0;
+        int x = int(point); float fraction = point - float(x);
+        fillPixel(dim(0xffffffff, (1.0 - fraction) * 0.75), x, 0);
+        if (x < 14) fillPixel(dim(0xffffffff, fraction * 0.75), x + 1, 0);
+    }
+    else fillPixel(0xff202020, 7, 0);
+    if (getMillisecondCounter() - tapFlashAt < 100) fillRect(0xffffffff, 0, 0, 15, 1);
+    for (int n = 0; n < 2; ++n) drawMeterNumber(meterValue(n), n * 8);
+    fillRect(dim(0xffffffff, meterValue(2) == 0 ? 0.06 : 0.45), 6, 13, 4, 2);
+    fillRect(0xff0f0f0f, 0, 13, 5, 2); fillRect(0xff0f0f0f, 11, 13, 4, 2);
+    fillPixel(0xffb0b0b0, 1, 13); fillPixel(0xffb0b0b0, 3, 13); fillPixel(0xffb0b0b0, 2, 14);
+    fillRect(0xffb0b0b0, 11, 13, 3, 1); fillPixel(0xffb0b0b0, 12, 14);
+}
+
+void repaint()
+{
+    updateModel(); announceReady(); trackBar(); fillRect(0xff000000, 0, 0, 15, 15);
+    if (ready == 3 && uiAt != 0 && view == 0 && drawerLatched == 7) drawModal();
+}
+
+// 559isalignmentpadding; nativewordsscratch560..411, overwrittenperevent.
+
+
+
+
+// One semantic unit is delivered in one checksummed SDK packet. Interleaved
+// partial units are explicitly discarded; no mixed-channel data can commit.
+
+
+bool globalRunning() { return (timed(8, 0) & 7) == 5 && getMillisecondCounter() - clockAt[8] < 1000; }
+
+
+// Native whole units; any interleaving partial record is discarded fail-closed.
+// A8 byte-lanes, metadataonlyfixedcompatibleHELLO, old112/113have no visual fields.
+void handleMessage(int m0, int m1, int header)
+{
+    int previousKind = rxKind;
+    rxKind = 0;
+    if ((header & 255) != 168 || (header & 0xff800000) != 0
+        || ((m0 | m1) & 0x80808080) != 0) return;
+    int kind = (header >> 8) & 3;
+    int group = (header >> 10) & 15;
+    int part = (header >> 14) & 3;
+    int revision = (header >> 16) & 127;
+    if (group > 8 || (kind == 0 && group == 8) || (kind >= 2 && group != 8)) return;
+    if (kind == 3)
+    {
+        if (part != 0 || revision != 0 || m0 != 274 || m1 != 0) return;
+        resetConnection(); ready = 3; drawerLatched = 7; return;
+    }
+    if (ready != 3) return;
+    int length = kind == 0 ? 15 : kind == 1 ? 18 : 7;
+    int last = (length - 1) / 8;
+    if (part > last) return;
+    int count = part == last ? length - part * 8 : 8;
+    if (count < 4) { if ((m0 >> (count * 8)) != 0 || m1 != 0) return; }
+    else if (count == 4) { if (m1 != 0) return; }
+    else if (count < 8) { if ((m1 >> ((count - 4) * 8)) != 0) return; }
+    if (part == 0)
+    {
+        rxKind = kind + 1; rxGroup = group; rxRevision = revision;
+    }
+    else if (previousKind != kind + 1 || rxGroup != group || rxRevision != revision || rxCursor != part)
+    { rxKind = 0; return; }
+    setHeapInt(120 + part * 8, m0); setHeapInt(124 + part * 8, m1);
+    if (part < last) { rxKind = kind + 1; rxCursor = part + 1; return; }
+    rxKind = 0;
+    if (kind == 0) snapshot(group);
+    else
+    {
+        int previous = kind == 1 ? 384 + group : 394;
+        if (getHeapByte(previous) == revision + 1) return;
+        setHeapByte(previous, revision + 1);
+        if (kind == 1) acceptClock(group); else acceptUI();
+    }
+}
+
+void announceReady()
+{
+    if (announced || ready != 3 || uiAt == 0 || getMillisecondCounter() - uiAt >= 3000
+        || (timed(8, 0) & 3) != 1 || getMillisecondCounter() - clockAt[8] >= 1000) return;
+    if (view != 0 || drawerLatched != 7) return;
+    announced = true; sendCC(15, 108, 35);
+}
