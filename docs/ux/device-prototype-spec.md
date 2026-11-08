@@ -4,11 +4,11 @@ Confirmed on 7 November 2026 after Hannes's final shared-understanding check. Ha
 
 This is a temporary on-device prototype. It must let Hannes judge touch targets, gestures, animation and multitouch on the actual Lightpad. A successful functional test does not approve a new UX choice.
 
-### Current metronome behavior, 8 November 2026
+### Current full-screen metronome trial, 8 November 2026
 
-The installed temporary-program prototype supersedes the bottom-row tap/hold editor described below. The main screen has only a visual metronome indicator. A short release of the physical Mode button toggles a separate metronome program. Holding Mode for at least 400 ms emits one input-selection request; release after a hold does not also trigger a short action. Input selection is currently a logged placeholder. The metronome program retains the earlier meter, Click, Tap Tempo and Close controls for the integration trial. USB and Bluetooth functional checks passed, including recording and layering after a modal round trip. See [the working baseline](../integration/working-baseline.md).
+The main screen has only a visual metronome indicator. A short release of the physical Mode button toggles a separate metronome program after pad contacts are lifted. Holding Mode for at least 400 ms emits one input-selection request; release after a hold does not also trigger a short action. Input selection is currently a logged placeholder.
 
-The follow-up requests and proposed replacement layout at the end of this document are parked for the next iteration. They have not changed the running prototype.
+The current source implements the approved full-screen meter layout, slower detents and local ruler intent described below. Hannes accepted the visible-digit/raster refinement with "top" over USB. Hannes also confirmed the per-field and simultaneous double-tap resets, plus unchanged dragging, over USB on 9 November 2026. The earlier USB/Bluetooth result and frozen hashes belong to checkpoint `35e2a8d`, before this geometry change; see [the working baseline](../integration/working-baseline.md). Recalling older phrases and completed-bar dots remain follow-up work.
 
 ## Terms
 
@@ -39,9 +39,21 @@ An empty group has no reference loop yet. Its progress therefore follows the sha
 
 The bottommost row is a moving metronome in the overview only. A white dot swings from side to side, without a trail. Each denominator beat moves it to the opposite side, so 6/8 has six swings per bar. The visual continues when the audible click is off. When Live is stopped, a dim center dot replaces the swing.
 
-Tap anywhere on that bottom row to set tempo using the selected denominator beat. Each touch gives brief full-white feedback across the whole row. The swing continues to update while tapping; it is visible again after the touch flash.
+The current graphics fix reuses one clock-phase sample per repaint for bar tracking and swing drawing in both pad programs. It corrects a deterministically reproduced odd-meter jump to the opposite edge. Offline 4/4 endpoint and clock-refresh continuity checks pass. The user subsequently reported "looks good" for the physical USB flash check; on 9 November 2026 he also reported that the current version works well over Bluetooth. This fix adds no UX control or gesture change.
 
-Hold the bottom row to open the meter editor. Keep the original finger down and use another finger to change the numerator, denominator or audible click. Releasing the original finger closes the editor without tapping tempo. All eight groups remain visible above it. Dragging vertically changes each number relative to its value at touch start, with no initial jump. The numerator is 1–99. The denominator steps through 1, 2, 4, 8 and 16. Changes apply immediately to Live, and changes made in Live appear on the device. Meter editing remains available with accepted loops present.
+The bottom row on the main screen has no tap-tempo or editor-opening action. Use the physical Mode button to enter the metronome program.
+
+The full-screen metronome has a moving indicator across row 0. Below it, numerator uses `0 <= x < 7` and denominator `8 <= x < 15`, both at `1 <= y < 10`. The seven-column fields are blue and purple. Click fills the lower-left seven columns and Tap Tempo the lower-right seven columns at `10 <= y < 15`, making each button seven by five pixels. Column 7 is black and inactive throughout the control area. There is no Close button. Lift contacts and short-release Mode to return to the controller.
+
+Dragging vertically changes each number relative to its value at touch start, without an initial jump. Each outward step requires two LEDs of travel. A quarter-LED return hysteresis keeps a value from flickering when the finger rests near a boundary. The numerator is 1–99; the denominator steps through 1, 2, 4, 8 and 16. The captured origin and unsaturated detent count stay fixed while the result is clamped to those ranges. Changes apply directly to Live, and changes made in Live appear on the device. Meter editing remains available with accepted loops present.
+
+Double-tapping a meter field requests that value be reset to 4 on the second release. Numerator and denominator keep independent tap histories; two-finger double-taps on both fields request 4/4 through the existing serialized meter operations, rather than one atomic reset. Each tap lasts at most 250 ms, the next tap must start within 350 ms of the first release, and observed travel stays below one LED. Recognized pairs are consumed. An ordinary single tap does nothing, and the detector adds no wait to dragging or other controls. Recognition is host-only; confirmed Live values remain authoritative. Hannes accepted the USB trial with "wunderbar" on 9 November 2026 after being asked to check independent and simultaneous resets and normal dragging. Later on 9 November 2026, Hannes reported "bluetooth funktioniert klasse" for the current version. This is general functional feedback, without separate numerical timing measurements or an itemized Bluetooth regression report.
+
+White digits always show confirmed Live values above the background and raster, including while dragging and when a new actual value arrives from Live during the hold. Every reachable two-LED detent has a full-width line in exactly that field's resting background color: blue `#071724` or purple `#1b0c26`. The selected line is bright blue `#45b6eb` or purple `#bb6de0`. Background space between lines and unreachable positions is black; white digit pixels remain visible over it. This local raster previews intent without issuing extra commands. The newest touch in each field owns only that field's visual preview.
+
+On release, confirmed Live digits remain visible. If intent is still unconfirmed, the raster may remain beneath the digits until confirmation or a maximum of 200 ms. Reset, stale feedback and leaving the overview context clear it. A locally received starting value can lag Live during concurrent edits, so the raster represents intent rather than confirmation.
+
+Click has a green/red background and a five-by-three switch track at column 1, row 11. Its two-by-three white knob starts at column 1 when off and column 4 when on. Tap Tempo is a plain uniform monochrome region: grayscale 16 at rest and briefly 30 when pressed. The earlier icon and full-white tap flash are removed.
 
 Changing meter follows Live's behavior: accepted loops keep their lengths in quarter-note beats and can move out of alignment with the new bar boundaries. Group-reference wraps still schedule new layers. Next-bar actions and the recording-border bar flash follow Live's actual current bar grid.
 
@@ -110,7 +122,7 @@ At each actual bar boundary, the whole recording border briefly pulses white, th
 
 The row containing the held group stays visible. The other group row becomes a horizontal pan control. The lower display area contains five vertical faders, in order: volume and four assignable group controls. Volume is three pixels wide at columns 0–2. The assignable controls are two pixels wide at columns 4–5, 7–8, 10–11 and 13–14, with one-pixel gaps at columns 3, 6, 9 and 12. All five faders occupy rows 8–14. Volume uses the group color; all four assignable faders use white. The four controls are generic parameter assignments and are not restricted to sends. Assignment configuration is deferred until the next design session; this change adds no assignment screen or gesture. There is no audio level meter.
 
-The original finger holds the mixer open and does not adjust a control. Another finger adjusts the controls. Releasing the original finger restores the overview, including tap tempo.
+The original finger holds the mixer open and does not adjust a control. Another finger adjusts the controls. Releasing the original finger restores the overview and its visual metronome.
 
 Touching a fader or pan control does not change its value. Dragging adjusts it relative to its value at touch start.
 
@@ -141,15 +153,15 @@ Exact group-reference-wrap scheduling, asynchronous layer recording, cancel/retr
 
 Temporary uploads should preserve the saved startup program. The legacy controller is separately archived and has already passed restoration and welcome_home checks.
 
-## Metronome implementation trial
+## Historical metronome implementation trial
 
 Hannes confirmed this metronome behavior on 7 November 2026. He also approved moving gesture interpretation and screen selection into the existing Live script after the combined Littlefoot program exceeded the 7,200-byte program-and-heap limit. The Lightpad retains local rendering, clock interpolation and immediate touch feedback. No extra application is required. The architecture must be tested over Bluetooth for responsiveness and leave room for future controls. The first code pass and offline checks do not establish Bluetooth performance.
 
-The first physical trial will use a 500 ms editor hold, a 100 ms full-row white touch flash, compact 3 by 5 meter digits and a click toggle directly above the digits. These dimensions and timings are trial details.
+That earlier physical trial used a 500 ms editor hold, a 100 ms full-row white touch flash, compact 3 by 5 meter digits and a click toggle directly above the digits. Those controls were superseded by the separate modal program and the current full-screen trial.
 
 ## Follow-up requests, 8 November 2026
 
-Hannes approved the proposed metronome layout, slower stepped meter controls and completed-bar dots with "LGTM". These remain follow-up work, not changes to the running prototype. He also confirmed that recalling an older phrase makes it the destination for subsequent overdub layers, and clearing advances that group to the next available free row.
+Hannes approved the proposed metronome layout, slower stepped meter controls and completed-bar dots with "LGTM". The layout and meter changes have automated coverage and positive USB and general Bluetooth feedback. Completed-bar dots and older-phrase reconciliation remain follow-up work. Recalling an older phrase will make it the destination for subsequent overdub layers, and clearing will advance that group to the next available free row.
 
 ### Reconcile playback launched manually in Live
 
@@ -161,9 +173,9 @@ The current model retains only its own active accepted layers and reference anch
 
 ### Make meter changes more predictable
 
-Reduce numerator and denominator drag sensitivity and provide a visible grid or ruler. The current gesture advances one value for each LED of vertical displacement. A first proposal is about two LEDs per step, with a small dead zone and stable detents, while retaining relative dragging and no jump on initial touch. Numerator steps remain one; denominator steps remain 1, 2, 4, 8 and 16. Values continue to apply directly to Live.
+The current trial reduces the old one-LED sensitivity to two LEDs per step, with a quarter-LED return hysteresis and a visible ruler. Dragging remains relative, with no jump on initial touch. Numerator steps remain one; denominator steps remain 1, 2, 4, 8 and 16. Values continue to apply directly to Live.
 
-The proposed starting gain and visual ruler are approved for an on-device trial; exact brightness and detent feel can be refined there. The number should remain readable while a faint ruler shows the next step and the selected detent is brighter.
+The gain and touch-triggered raster are approved for an on-device trial; exact brightness and detent feel can be refined there. Confirmed white digits stay visible above the reachable detent lines throughout the gesture.
 
 ### Use the full metronome screen
 
@@ -172,11 +184,11 @@ Hannes approved a full-screen overhaul with the following layout. A Close button
 | Area | Use |
 | --- | --- |
 | Top row | Existing moving visual metronome, spanning the device |
-| Main area | Two large numerator/denominator touch regions, with clear digits, a divider and faint ruler ticks |
-| Bottom area | Two large Click and Tap Tempo buttons |
+| Main area | Seven-column blue/purple fields separated by an inactive black column; confirmed white digits always visible above the held-field colored detent raster |
+| Bottom area | Click switch with green/red background and white knob; plain monochrome Tap Tempo pad |
 | Physical Mode button | Short release returns to the controller; no on-screen Close button |
 
-The separate metronome program has 2,881 bytes free in the tested build. This gives room to implement and try this layout independently of recording controls. Exact pixel geometry and feedback remain device-trial details.
+With the shared-phase fix and always-visible-digit refinement, the current raster trial compiles to 4,751 bytes of code plus a 580-byte heap, totaling 5,331 of 7,200 bytes and leaving 1,869 free. The main controller uses 5,751 bytes of code plus a 532-byte heap, totaling 6,283 with 917 free. Host routing and the modal source must be updated together for the new geometry; the phase fix changes graphics timing in both pad programs while host/native code, gestures and the transport format remain unchanged. Automated checks pass. The USB flash check passed, and Hannes accepted the visible-digit/raster refinement with "top" before requesting the double-tap feature.
 
 ### Show elapsed bars during a take
 

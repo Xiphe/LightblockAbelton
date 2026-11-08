@@ -1,5 +1,5 @@
-// PRIVATE34 dedicated metronome. Upper unused area is blank; existing host31 controls retained.
-// PRIVATE v18/A8 fixed metronome editor; paired31 host required for auxiliary buttons.
+// Fullscreen metronome modal. Confirmed Live digits, local relative-detent feedback.
+// Protocol18/A8; paired host uses the same2LED/.25LED hysteresis and fullscreen roles.
 // No saved-default or firmware writes. Code+heap checked before upload.
 // State0..119, RX120..143, clocks144..287, touchXY288..351, pending352..367,
 // sequence368..383, clockrevisions384..392, UIflags393/revision394, meter395..396.
@@ -10,11 +10,19 @@ int rxKind;
 int rxCursor;
 int rxRevision;
 bool announced;
+// Visual preview only. No speculative meter value or additional MIDI messages.
+int previewOwner[2];
+int previewOrigin[2];
+int previewStart[2];
+int previewStep[2];
+int previewTarget[2];
+int previewUntil[2];
 int fresh[8];
 int clockAt[9];
 int sentAt[16];
 int pulseAt;
 float lastPosition;
+float metronomePosition;
 bool pulseReady;
 int swingParity;
 int tapFlashAt;
@@ -61,8 +69,63 @@ int touchX(int finger) { return getHeapBits(2304 + finger * 32, 16); }
 int touchY(int finger) { return getHeapBits(2320 + finger * 32, 16); }
 
 
+
+bool meterConfirmed()
+{
+    return (timed(8, 0) & 3) == 1 && getMillisecondCounter() - clockAt[8] < 1000;
+}
+
+void clearPreview()
+{
+    for (int field = 0; field < 2; ++field) { previewOwner[field] = -1; previewUntil[field] = 0; }
+}
+
+int denominatorIndex(int value)
+{
+    int index = 0;
+    while (value > 1) { value = value / 2; ++index; }
+    return index;
+}
+
+void beginPreview(int field, int finger)
+{
+    if (!meterConfirmed()) return;
+    previewOrigin[field] = touchY(finger);
+    previewStart[field] = field == 0 ? meterValue(0) : denominatorIndex(meterValue(1));
+    previewStep[field] = 0;
+    previewTarget[field] = meterValue(field);
+    previewUntil[field] = 0;
+    previewOwner[field] = finger;
+}
+
+void movePreview(int field, int finger, bool end)
+{
+    if (previewOwner[field] != finger) return;
+    int delta = previewOrigin[field] - touchY(finger);
+    int step = previewStep[field];
+    // Input coordinates bound delta to +/-1919ticks;32 iterations cover every
+    // possible reversal. Return thresholds are strict, outward thresholds inclusive.
+    for (int n = 0; n < 32; ++n)
+    {
+        bool up = step >= 0 ? delta >= (step + 1) * 256 : delta > step * 256 + 32;
+        bool down = step <= 0 ? delta <= (step - 1) * 256 : delta < step * 256 - 32;
+        if (up) ++step;
+        else if (down) --step;
+        else break;
+    }
+    previewStep[field] = step;
+    int value = previewStart[field] + step;
+    previewTarget[field] = field == 0 ? clamp(1, 99, value) : 1 << clamp(0, 4, value);
+    if (end)
+    {
+        previewOwner[field] = -1;
+        previewUntil[field] = meterValue(field) == previewTarget[field] ? 0 : getMillisecondCounter() + 200;
+    }
+}
+
 void blockDrawer()
 {
+    clearPreview();
     for (int f = 0; f < 16; ++f)
         if ((downFingers & (1 << f)) != 0) setHeapByte(352 + f, (getHeapByte(352 + f) & 3) | 20);
 }
@@ -155,7 +218,12 @@ void touchEvent(int kind, int index, float x, float y)
     if (index < 0 || index >= 16) return;
     int bit = 1 << index;
     bool held = (downFingers & bit) != 0;
-    if (kind == 1) downFingers = downFingers | bit;
+    if (kind == 1)
+    {
+        downFingers = downFingers | bit;
+        for (int field = 0; field < 2; ++field)
+            if (previewOwner[field] == index) { previewOwner[field] = -1; previewUntil[field] = 0; }
+    }
     else if (kind == 3) downFingers = downFingers & ~bit;
     else if (!held) return;
     if (ready != 3 || uiAt == 0 || view != 0 || getMillisecondCounter() - uiAt >= 3000 || (kind == 3 && !held))
@@ -167,19 +235,19 @@ void touchEvent(int kind, int index, float x, float y)
         int r = 5;
         if (drawerLatched == 7)
         {
-            if (py >= 8 && py <= 12 && px != 7) r = px < 7 ? 2 : 3;
-            else if (py >= 13)
-            {
-                if (px >= 6 && px <= 9) r = 4;
-                else if (px <= 4) r = 17;
-                else if (px >= 11) r = 1;
-            }
+            if (py >= 1 && py < 10 && px != 7) r = px < 7 ? 2 : 3;
+            else if (py >= 10 && px != 7) r = px < 7 ? 4 : 1;
         }
+        if ((r == 2 || r == 3) && !meterConfirmed()) r = 5;
         setHeapByte(352 + index, r << 2);
         if (r == 1) tapFlashAt = getMillisecondCounter();
+        else if (r == 2 || r == 3) beginPreview(r - 2, index);
     }
-    else if (kind == 3 && (getHeapByte(352 + index) & 64) != 0
-        && touchX(index) < 640 && touchY(index) >= 1664) closeDrawer();
+    else
+    {
+        int role = (getHeapByte(352 + index) >> 2) & 7;
+        if (role == 2 || role == 3) movePreview(role - 2, index, kind == 3);
+    }
     if (kind == 2) setHeapByte(352 + index, (getHeapByte(352 + index) & ~3) | 2);
     if (kind != 2 || getMillisecondCounter() - sentAt[index] >= 40) sendTouch(index, kind);
 }
@@ -200,6 +268,11 @@ void updateModel()
     }
     if (uiAt != 0 && now - uiAt >= 3000)
     { closeDrawer(); uiAt = 0; downFingers = 0; }
+    if (!meterConfirmed()) clearPreview();
+    else
+        for (int field = 0; field < 2; ++field)
+            if (previewOwner[field] < 0 && previewUntil[field] != 0
+                && (now >= previewUntil[field] || meterValue(field) == previewTarget[field])) previewUntil[field] = 0;
     if (!any && now - helloAt >= 1000)
     { resetConnection(); sendCC(15, 110, 18); helloAt = now; }
     for (int f = 0; f < 16; ++f)
@@ -280,15 +353,42 @@ void acceptClock(int group)
 
 void drawMeterNumber(int value, int x)
 {
+    if (value < 1 || value > 99) return;
     for (int n = 0; n < 2; ++n)
     {
         int digit = n == 0 ? value / 10 : value % 10;
         if (n == 0 && digit == 0) continue;
         int bits = digit < 2 ? 978156399 : digit < 4 ? 1022620647 : digit < 6 ? 1021823469 : digit < 8 ? 613678031 : 1022884847;
         bits = (bits >> ((digit & 1) * 15)) & 32767;
+        int left = value < 10 ? x + 2 : x + n * 4;
         for (int bit = 0; bit < 15; ++bit)
-            if ((bits & (1 << bit)) != 0) fillPixel(0xffb0b0b0, x + n * 4 + bit % 3, 8 + bit / 3);
+            if ((bits & (1 << bit)) != 0) fillPixel(0xffb0b0b0, left + bit % 3, 3 + bit / 3);
     }
+}
+
+void drawMeterField(int field)
+{
+    int x = field * 8;
+    bool active = previewOwner[field] >= 0;
+    bool target = active || previewUntil[field] > getMillisecondCounter();
+    int background = field == 0 ? 0xff071724 : 0xff1b0c26;
+    fillRect(target ? 0xff000000 : background, x, 1, 7, 9);
+    if (target)
+    {
+        // Show every reachable detent before moving. The captured origin and
+        // two-LED spacing match the relative input, including fractional starts.
+        for (int step = -7; step <= 7; ++step)
+        {
+            int value = previewStart[field] + step;
+            int y = (previewOrigin[field] - step * 256) >> 7;
+            if (y >= 1 && y < 10 && value >= (field == 0 ? 1 : 0) && value <= (field == 0 ? 99 : 4))
+                fillRect(background, x, y, 7, 1);
+        }
+        int tick = clamp(1, 9, (previewOrigin[field] - previewStep[field] * 256) >> 7);
+        fillRect(field == 0 ? 0xff45b6eb : 0xffbb6de0, x, tick, 7, 1);
+    }
+    // Confirmed Live digits stay visible above the raster throughout the drag.
+    drawMeterNumber(meterValue(field), x);
 }
 
 void trackBar()
@@ -297,7 +397,9 @@ void trackBar()
     int now = getMillisecondCounter();
     if (!globalRunning()) return;
     float span = float(clockNumber(8, 2));
-    float current = positionNow(8) - float(clockNumber(8, 8));
+    // Bar parity and swing must use one phase sample per repaint.
+    metronomePosition = positionNow(8);
+    float current = metronomePosition - float(clockNumber(8, 8));
     if (current < 0.0) current += span;
     if (!pulseReady) { pulseReady = true; lastPosition = current; pulseAt = -1000; swingParity = 0; }
     float forward = current - lastPosition;
@@ -316,7 +418,7 @@ void drawModal()
     bool running = globalRunning();
     if (running)
     {
-        float beat = positionNow(8) * float(meterValue(1)) / 256.0 + float(swingParity);
+        float beat = metronomePosition * float(meterValue(1)) / 256.0 + float(swingParity);
         beat -= float(int(beat / 2.0)) * 2.0;
         float point = (1.0 - abs(beat - 1.0)) * 14.0;
         int x = int(point); float fraction = point - float(x);
@@ -324,12 +426,14 @@ void drawModal()
         if (x < 14) fillPixel(dim(0xffffffff, fraction * 0.75), x + 1, 0);
     }
     else fillPixel(0xff202020, 7, 0);
-    if (getMillisecondCounter() - tapFlashAt < 100) fillRect(0xffffffff, 0, 0, 15, 1);
-    for (int n = 0; n < 2; ++n) drawMeterNumber(meterValue(n), n * 8);
-    fillRect(dim(0xffffffff, meterValue(2) == 0 ? 0.06 : 0.45), 6, 13, 4, 2);
-    fillRect(0xff0f0f0f, 0, 13, 5, 2); fillRect(0xff0f0f0f, 11, 13, 4, 2);
-    fillPixel(0xffb0b0b0, 1, 13); fillPixel(0xffb0b0b0, 3, 13); fillPixel(0xffb0b0b0, 2, 14);
-    fillRect(0xffb0b0b0, 11, 13, 3, 1); fillPixel(0xffb0b0b0, 12, 14);
+    drawMeterField(0); drawMeterField(1);
+    bool click = meterValue(2) != 0;
+    fillRect(click ? 0xff0b2b17 : 0xff30100e, 0, 10, 7, 5);
+    // Two-position switch follows the confirmed Live click, not a local guess.
+    fillRect(click ? 0xff247746 : 0xff87382c, 1, 11, 5, 3);
+    fillRect(0xffb0b0b0, click ? 4 : 1, 11, 2, 3);
+    bool tap = getMillisecondCounter() - tapFlashAt < 100;
+    fillRect(tap ? 0xff303030 : 0xff161616, 8, 10, 7, 5);
 }
 
 void repaint()

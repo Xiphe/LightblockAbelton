@@ -15,6 +15,7 @@ int clockAt[9];
 int sentAt[16];
 int pulseAt;
 float lastPosition;
+float metronomePosition;
 bool pulseReady;
 int swingParity;
 int downFingers;
@@ -443,7 +444,10 @@ void trackBar()
     int now = getMillisecondCounter();
     if (!globalRunning()) return;
     float span = float(clockNumber(8, 2));
-    float current = positionNow(8) - float(clockNumber(8, 8));
+    // One phase sample per repaint keeps the bar parity and swing on one side
+    // of a boundary, even when the native clock advances while drawing groups.
+    metronomePosition = positionNow(8);
+    float current = metronomePosition - float(clockNumber(8, 8));
     if (current < 0.0) current += span;
     if (!pulseReady) { pulseReady = true; lastPosition = current; pulseAt = -1000; swingParity = 0; }
     float forward = current - lastPosition;
@@ -462,7 +466,7 @@ void drawMetronome()
     bool running = globalRunning();
     if (running)
     {
-        float beat = positionNow(8) * float(meterValue(1)) / 256.0 + float(swingParity);
+        float beat = metronomePosition * float(meterValue(1)) / 256.0 + float(swingParity);
         beat -= float(int(beat / 2.0)) * 2.0;
         float point = (1.0 - abs(beat - 1.0)) * 14.0;
         int x = int(point);

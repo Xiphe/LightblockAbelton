@@ -79,12 +79,12 @@ class SurfaceTouchTests(unittest.TestCase):
     def touch(self, kind, finger=0, seq=1, x=1.5, y=1.5):
         ui=self.surface._ui
         if kind==1:
-            role=1 if ui.view==0 and y>=14 else 6 if ui.view==0 else 0
+            role=1 if ui.view==0 and x>=8 and y>=10 else 6 if ui.view==0 else 0
             self._wire_roles[finger]=role
         role=self._wire_roles.get(finger,6)
         group=ui.selected_group if ui.view==1 else ui.recording_group if ui.view==2 else 0
         self.feed(frame(finger,seq,kind,x,y,role=role,view=ui.view,group=group or 0,
-                        can_accept=bool(ui.presentation()[4]&2)))
+                        can_accept=bool(ui.presentation()[4]&2),drawer_open=role==1))
         if kind==3:self._wire_roles.pop(finger,None)
 
     def tap(self, finger=0, seq=1, x=1.5, y=1.5):
@@ -128,16 +128,16 @@ class SurfaceTouchTests(unittest.TestCase):
 
     def test_current_version_handshake_required_before_raw_tap_reaches_real_engine(self):
         surface, _ = self.make(hello=False)
-        self.tap(x=7.5, y=14.5)
+        self.tap(x=11.5, y=12.5)
         surface.receive_midi((0xBF, 110, 3))
-        self.tap(seq=3, x=7.5, y=14.5)
+        self.tap(seq=3, x=11.5, y=12.5)
         self.assertEqual(self.dispatch.call_count, 0)
         self.assertEqual(self.native.calls, [])
         self.native.song.tempo = 90
         surface.receive_midi((0xBF, 110, p.VERSION))
-        self.tap(seq=5, x=7.5, y=14.5)
+        self.tap(seq=5, x=11.5, y=12.5)
         self.helper.now += .45
-        self.tap(seq=7, x=7.5, y=14.5)
+        self.tap(seq=7, x=11.5, y=12.5)
         commands = [call.args[0] for call in self.dispatch.call_args_list]
         self.assertEqual([(command.group, command.op, command.arg) for command in commands],
                          [(0, p.TAP_TEMPO, 0)] * 2)
@@ -280,7 +280,7 @@ class SurfaceTouchTests(unittest.TestCase):
         slot = self.internal_recording()
         results = []
         self.assertTrue(surface._ui_send(0, p.ABORT, 0, results.append))
-        self.touch(1, finger=15, seq=60, x=7.5, y=14.5)
+        self.touch(1, finger=15, seq=60, x=11.5, y=12.5)
         self.assertIn(15,surface._ui._aux)
         count = self.dispatch.call_count
         surface.receive_midi((0xBF, 110, 3))
@@ -297,7 +297,7 @@ class SurfaceTouchTests(unittest.TestCase):
         self.assertEqual(instance.sent, [])
         self.assertEqual(self.dispatch.call_count, count)
         surface.receive_midi((0xBF, 110, p.VERSION))
-        self.touch(3, finger=15, seq=61, x=7.5, y=14.5)
+        self.touch(3, finger=15, seq=61, x=11.5, y=12.5)
         self.assertEqual(self.dispatch.call_count, count)
 
     def test_recognizable_malformed_hello_closes_both_parsers_until_fresh_current_version(self):

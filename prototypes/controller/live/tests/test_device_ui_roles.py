@@ -1,14 +1,11 @@
 """Role/context routing and actual Surface cancellation ordering, without Live."""
-from pathlib import Path
-import sys, unittest
-from types import SimpleNamespace
+import unittest
 from unittest.mock import patch
 import test_surface as fixtures
 import test_device_ui as legacy
 from LightpadController import protocol as p, configuration as config, surface as module
 from LightpadController.device_ui import DeviceUI
 from LightpadController.touch_protocol import TouchParser, encode_touch, START, MOVE, END
-from contextlib import nullcontext
 
 class ParserTests(unittest.TestCase):
 
@@ -48,9 +45,9 @@ class ParserTests(unittest.TestCase):
 
     def test_blocked_meter_transition_only_and_bad_frames_never_commit(self):
         parser = TouchParser(ready=True)
-        self.receive(parser, START, 2, 1.5, 10.5, 0, 2, drawer_open=True)
-        self.assertEqual(self.receive(parser, MOVE, 2, 1.5, 10.5, 1, 5).role, 5)
-        self.assertIsNone(self.receive(parser, END, 2, 1.5, 10.5, 2, 2))
+        self.receive(parser, START, 2, 1.5, 6.5, 0, 2, drawer_open=True)
+        self.assertEqual(self.receive(parser, MOVE, 2, 1.5, 6.5, 1, 5).role, 5)
+        self.assertIsNone(self.receive(parser, END, 2, 1.5, 6.5, 2, 2))
         parser.reset(ready=True)
         self.receive(parser, START, 0, 1.5, 1.5, 1, 6)
         self.assertIsNone(self.receive(parser, MOVE, 0, 1.5, 2.5, 2, 0))
@@ -107,76 +104,77 @@ class UITests(unittest.TestCase):
     def test_wrong_role_or_visible_context_does_not_reinterpret_coordinates(self):
         self.touch(START, 0, view=1, group=0)
         self.touch(END, 0)
-        self.assertEqual(self.host.sent, [])
-        self.touch(START, 2, y=10, drawer_open=False)
-        self.touch(END, 2, y=9, drawer_open=False)
-        self.assertEqual(self.host.sent, [])
+        self.touch(START, 2, y=6.5, drawer_open=False)
+        self.touch(END, 2, y=4.5, drawer_open=False)
         self.touch(START, 5)
         self.touch(END, 5)
         self.assertEqual(self.host.sent, [])
 
-    def test_handle_tap_hold_horizontal_and_drag_history(self):
-        self.touch(START, 1, index=14, x=7.5, y=14.5)
-        self.touch(END, 1, index=14, x=7.5, y=14.5, after=0.05)
-        self.assertEqual(self.host.sent, [(0, p.TAP_TEMPO, 0)])
-        self.host.finish()
-        self.touch(START, 1, index=14, x=7.5, y=14.5)
-        self.host.now += 0.6
-        self.ui.tick()
-        self.touch(END, 1, index=14, x=7.5, y=14.5)
-        self.assertEqual(len(self.host.sent), 1)
-        self.assertEqual(self.ui.view, 0)
-        self.touch(START, 1, index=14, x=7.5, y=14.5)
-        self.touch(END, 1, index=14, x=7.5, y=14.5, after=0.05, moved=True, dragged=True)
-        self.assertEqual(len(self.host.sent), 1)
+    def test_old_collapsed_bar_and_close_are_not_admitted(self):
+        for opened, x, y in ((False, 7.5, 14.5), (True, 2.5, 13.5)):
+            self.touch(START, 1, x=x, y=y, drawer_open=opened)
+            self.touch(END, 1, x=x, y=y, drawer_open=opened, after=0.05)
+        self.assertEqual(self.host.sent, [])
 
     def test_meters_and_groups_are_independent_and_blocked_role_cancels(self):
-        self.touch(START, 2, index=1, y=10.5, drawer_open=True)
+        self.touch(START, 2, index=1, y=6.5, drawer_open=True)
         self.touch(START, 6, index=0)
         self.touch(END, 6, index=0, after=0.05)
         self.assertEqual(self.host.sent, [(0, p.SET_MUTE, 127)])
         self.host.finish()
-        self.touch(MOVE, 2, index=1, y=9.5, after=0.05, drawer_open=True)
-        self.assertEqual(self.host.sent[-1], (0, 16, 5))
+        self.touch(MOVE, 2, index=1, y=4.5, after=0.05, drawer_open=True)
+        self.assertEqual(self.host.sent[-1], (0, p.SET_NUMERATOR, 5))
         count = len(self.host.sent)
-        self.touch(END, 5, index=1, y=8.5, drawer_open=True)
+        self.touch(END, 5, index=1, y=2.5, drawer_open=True)
         self.assertEqual(len(self.host.sent), count)
 
-    def test_open_buttons_capture_start_context_and_same_button_end(self):
-        self.touch(START, 1, index=14, x=2.5, y=13.5, drawer_open=True)
-        self.assertEqual(self.ui._aux[14].auxiliary, 'close')
-        self.touch(END, 1, index=14, x=2.5, y=13.5, drawer_open=False, after=0.05)
-        self.assertEqual(self.host.sent, [])
-        self.touch(START, 1, index=14, x=12.5, y=13.5, drawer_open=True)
-        self.touch(MOVE, 1, index=14, x=2.5, y=13.5, drawer_open=True, after=0.05)
-        self.touch(END, 1, index=14, x=12.5, y=13.5, drawer_open=True, moved=True, after=0.6)
+    def test_open_tap_captures_start_and_allows_out_and_return(self):
+        self.touch(START, 1, index=14, x=11.5, y=10.5, drawer_open=True)
+        self.assertEqual(self.ui._aux[14].auxiliary, 'tap')
+        self.touch(MOVE, 1, index=14, x=2.5, y=12.5, drawer_open=True, after=0.05)
+        self.touch(END, 1, index=14, x=11.5, y=10.5, drawer_open=True, moved=True, after=0.6)
         self.assertEqual(self.host.sent, [(0, p.TAP_TEMPO, 0)])
 
-    def test_tap_leaving_its_button_does_not_trigger_close_or_tap(self):
-        self.touch(START, 1, index=14, x=12.5, y=13.5, drawer_open=True)
-        self.touch(END, 1, index=14, x=2.5, y=13.5, drawer_open=False, after=0.05)
+    def test_tap_leaving_its_button_does_not_toggle_click_or_tap(self):
+        self.touch(START, 1, index=14, x=11.5, y=12.5, drawer_open=True)
+        self.touch(END, 1, index=14, x=2.5, y=12.5, drawer_open=True, after=0.05)
         self.assertEqual(self.host.sent, [])
 
-    def test_close_or_blocked_role_orphans_held_tap(self):
-        for blocked in (False, True):
-            self.touch(START, 1, index=13, x=12.5, y=13.5, drawer_open=True)
-            if blocked:
-                self.touch(END, 5, index=13, x=12.5, y=13.5)
-            else:
-                self.touch(START, 1, index=14, x=2.5, y=13.5, drawer_open=True)
-                self.touch(END, 1, index=14, x=2.5, y=13.5, drawer_open=False)
-            self.touch(END, 1, index=13, x=12.5, y=13.5, drawer_open=True)
+    def test_blocked_role_orphans_held_tap(self):
+        self.touch(START, 1, index=13, x=11.5, y=12.5, drawer_open=True)
+        self.touch(END, 5, index=13, x=11.5, y=12.5)
+        self.touch(END, 1, index=13, x=11.5, y=12.5, drawer_open=True)
         self.assertEqual(self.host.sent, [])
 
-    def test_open_row7_and_gutters_do_not_bind_auxiliary_buttons(self):
-        for x, y in ((2.5, 7.5), (5.5, 13.5), (10.5, 14.5)):
-            self.touch(START, 1, x=x, y=y, drawer_open=True)
-            self.touch(END, 1, x=x, y=y, drawer_open=True)
-        self.assertEqual(self.host.sent, [])
+    def test_visual_row_and_center_gap_are_blocked_and_every_other_pixel_has_one_role(self):
+        for y in range(15):
+            for x in range(15):
+                roles=[role for role in (1,2,3,4)
+                       if self.ui._context(role,0,0,True,x+.5,y+.5)]
+                expected=[] if y==0 or x==7 else [2 if x<7 else 3] if y<10 else [4 if x<7 else 1]
+                self.assertEqual(roles,expected,(x,y))
+
+    def test_exact_fullscreen_hit_region_boundaries(self):
+        cases=((2,0,1),(2,6.99,9.99),(3,8,1),(3,14.99,9.99),
+               (4,0,10),(4,6.99,14.99),(1,8,10),(1,14.99,14.99))
+        for role,x,y in cases:
+            self.assertTrue(self.ui._context(role,0,0,True,x,y),(role,x,y))
+            self.assertFalse(self.ui._context(role,0,0,False,x,y),(role,x,y))
+        for role,x,y in ((2,7,3),(3,7.99,3),(2,1,10),(3,10,.99),(4,7,12),(1,10,9.99)):
+            self.assertFalse(self.ui._context(role,0,0,True,x,y),(role,x,y))
+
+    def test_click_is_left_only_and_never_reinterprets_as_tap(self):
+        self.touch(START, 4, x=6.5, y=10.5, drawer_open=True)
+        self.touch(END, 4, x=6.5, y=10.5, drawer_open=True)
+        self.assertEqual(self.host.sent, [(0, p.SET_METRONOME, 127)])
+        self.host.finish(effect=lambda *_: setattr(self.host, 'meter', (4, 4, True)))
+        self.touch(START, 4, x=2.5, y=12.5, drawer_open=True)
+        self.touch(END, 4, x=11.5, y=12.5, drawer_open=True)
+        self.assertEqual(len(self.host.sent), 1)
 
 class SurfaceTests(unittest.TestCase):
 
-    def run_pending(self, action='close', after=0, prehook=True):
+    def run_pending(self, action='blocked', prehook=True):
         helper = fixtures.SurfaceTests()
         self.addCleanup(helper.doCleanups)
         with patch.multiple(config, AUDIO_CONTROLLER_MANIFEST=None, NATIVE_BAR_CLOCK=False):
@@ -185,7 +183,7 @@ class SurfaceTests(unittest.TestCase):
             song.signature_numerator = 4
             song.signature_denominator = 4
             song.metronome = False
-            surface.receive_midi((191, 110, 18))
+            surface.receive_midi((191, 110, p.VERSION))
 
             class Engine:
                 held = None
@@ -223,66 +221,59 @@ class SurfaceTests(unittest.TestCase):
                 for message in encode_touch(kind, index, x, y, seq[index], role, **flags):
                     surface.receive_midi(message)
                 seq[index] = seq[index] + 1 & 127
-            raw(START, 2, 1, 1.5, 10.5, drawer_open=True)
-            raw(MOVE, 2, 1, 1.5, 9.5, drawer_open=True)
+            raw(START, 2, 1, 1.5, 6.5, drawer_open=True)
+            raw(MOVE, 2, 1, 1.5, 4.5, drawer_open=True)
             self.assertEqual(len(engine.calls), 1)
-            raw(MOVE, 2, 1, 1.5, 8.5, drawer_open=True)
-            self.assertIn(16, surface._ui._desired[0])
-            if action == 'opener':
-                raw(START, 1, 14, 7.5, 14.5)
-            elif action == 'tap':
-                raw(START, 1, 14, 12.5, 13.5, drawer_open=True)
-            else:
+            raw(MOVE, 2, 1, 1.5, 2.5, drawer_open=True)
+            self.assertIn(p.SET_NUMERATOR, surface._ui._desired[0])
+            if action in ('tap', 'blocked_tap'):
+                raw(START, 1, 14, 11.5, 12.5, drawer_open=True)
+            elif action == 'old_close':
                 raw(START, 1, 14, 2.5, 13.5, drawer_open=True)
-            helper.now[0] += after
+            elif action == 'old_bar':
+                raw(START, 1, 14, 7.5, 14.5)
             engine.release = True
             if not prehook:
                 surface._touch_parser.pre_touch = None
             if action == 'blocked':
-                raw(END, 5, 1, 1.5, 8.5)
-            elif action == 'opener':
-                raw(END, 1, 14, 7.5, 7.5, moved=True, dragged=True, drawer_open=True)
+                raw(END, 5, 1, 1.5, 2.5)
+            elif action == 'blocked_tap':
+                raw(END, 5, 14, 11.5, 12.5)
             elif action == 'tap':
-                raw(END, 1, 14, 12.5, 13.5, drawer_open=True)
-            elif action == 'outside':
-                raw(END, 1, 14, 12.5, 13.5)
-            else:
-                raw(END, 1, 14, 2.5, 13.5, drawer_open=False, moved=action == 'return')
+                raw(END, 1, 14, 11.5, 12.5, drawer_open=True)
+            elif action == 'old_close':
+                raw(END, 1, 14, 2.5, 13.5)
+            elif action == 'old_bar':
+                raw(END, 1, 14, 7.5, 14.5)
             return (surface, engine, helper)
 
-    def test_close_cancels_before_native_completion_even_end_reports_closed(self):
-        surface, engine, helper = self.run_pending()
-        self.assertEqual(len(engine.calls), 1)
-        self.assertNotIn(16, surface._ui._desired[0])
-        self.assertTrue(surface._ui._roles[1].ignored)
-        self.assertEqual(helper.taps, 0)
-
-    def test_close_out_and_return_still_cancels(self):
-        surface, engine, _ = self.run_pending('return')
-        self.assertEqual(len(engine.calls), 1)
-
     def test_blocked_meter_cancels_before_native_completion(self):
-        surface, engine, _ = self.run_pending('blocked')
+        surface, engine, _ = self.run_pending()
         self.assertEqual(len(engine.calls), 1)
-
-    def test_opening_end_does_not_cancel_new_meter_contacts(self):
-        surface, engine, _ = self.run_pending('opener')
-        self.assertEqual(len(engine.calls), 2)
-        self.assertFalse(surface._ui._roles[1].ignored)
-
-    def test_tap_or_outside_close_does_not_cancel_meter_contacts(self):
-        for action in ('tap', 'outside'):
-            with self.subTest(action=action):
-                surface, engine, _ = self.run_pending(action)
-                self.assertEqual(len(engine.calls), 2)
-                self.assertFalse(surface._ui._roles[1].ignored)
+        self.assertNotIn(p.SET_NUMERATOR, surface._ui._desired[0])
+        self.assertNotIn(1, surface._ui._roles)
+        self.assertNotIn(1, surface._ui._aux)
+        self.assertNotIn(1, surface._touch_parser._active)
 
     def test_missing_pre_touch_hook_reproduces_hidden_meter_dispatch(self):
         surface, engine, _ = self.run_pending(prehook=False)
         self.assertEqual(len(engine.calls), 2)
 
-    def test_expired_close_does_not_cancel_meter_desire(self):
-        surface, engine, _ = self.run_pending(after=3)
+    def test_tap_does_not_cancel_independent_meter_contacts(self):
+        surface, engine, _ = self.run_pending('tap')
         self.assertEqual(len(engine.calls), 2)
+        self.assertFalse(surface._ui._roles[1].ignored)
+
+    def test_removed_close_and_bar_do_not_cancel_meter_contacts(self):
+        for action in ('old_close', 'old_bar'):
+            with self.subTest(action=action):
+                surface, engine, _ = self.run_pending(action)
+                self.assertEqual(len(engine.calls), 2)
+                self.assertFalse(surface._ui._roles[1].ignored)
+
+    def test_blocked_tap_preserves_independent_meter_desire(self):
+        surface, engine, _ = self.run_pending('blocked_tap')
+        self.assertEqual(len(engine.calls), 2)
+        self.assertFalse(surface._ui._roles[1].ignored)
 if __name__ == '__main__':
     unittest.main()

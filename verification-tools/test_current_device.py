@@ -255,36 +255,33 @@ class CurrentDeviceTests(unittest.TestCase):
         event = frames(vm)[-1]
         self.assertEqual((event["role"], event["view"], event["group"], event["extra"]), (0, 2, 7, True))
 
-    def test_modal_buttons_digits_and_gaps_have_captured_roles(self):
-        for x, y, role in ((1.5, 1.5, 5), (7.5, .5, 5), (2, 10, 2), (9, 10, 3),
-                            (2, 13.5, 1), (8, 13.5, 4), (12, 13.5, 1), (5.5, 13.5, 5), (10.5, 13.5, 5)):
+    def test_modal_buttons_digits_and_central_gap_have_captured_roles(self):
+        for x, y, role in ((1.5, 1.5, 2), (7.5, .5, 5), (2, 2, 2), (9, 9.5, 3),
+                            (2, 12.5, 4), (12, 12.5, 1), (7.5, 12.5, 5), (2, 10.5, 4),
+                            (7.5, 5.5, 5), (14.5, 10, 1), (6.99, 9.99, 2)):
             vm = ready("metronome")
             touch(vm, 1, x=x, y=y)
             event = frames(vm)[-1]
             self.assertEqual((event["role"], event["opened"], event["extra"]), (role, True, False), (x, y))
 
-    def test_close_preserves_its_end_and_orphans_every_other_auxiliary(self):
+    def test_modal_buttons_do_not_close_or_cancel_other_fields(self):
         vm = ready("metronome")
-        for finger, x, y in ((1, 2, 10), (2, 9, 10), (3, 8, 13.5), (4, 12, 13.5)):
+        for finger, x, y in ((1, 2, 6), (2, 9, 6), (3, 2, 12.5), (4, 12, 12.5)):
             touch(vm, 1, finger, x, y)
-        touch(vm, 1, 0, 2, 13.5)
-        touch(vm, 3, 0, 2, 13.5)
-        event = frames(vm)[-1]
-        self.assertEqual((event["role"], event["kind"], event["opened"]), (1, 3, False))
-        for finger, x, y in ((1, 2, 10), (2, 9, 10), (3, 8, 13.5), (4, 12, 13.5)):
+        for finger, x, y, role in ((3, 2, 12.5, 4), (4, 12, 12.5, 1),
+                                    (1, 2, 6, 2), (2, 9, 6, 3)):
             touch(vm, 3, finger, x, y)
-            self.assertEqual(frames(vm)[-1]["role"], 5)
-        presentation(vm, revision=1)
-        touch(vm, 1, 5, 12, 13.5)
-        self.assertEqual(frames(vm)[-1]["role"], 5)
+            event = frames(vm)[-1]
+            self.assertEqual((event["role"], event["kind"], event["opened"]), (role, 3, True))
 
-    def test_close_requires_release_inside_the_start_captured_button(self):
-        for start_x, end_x, closed in ((2, 2, True), (2, 8, False), (12, 2, False), (5.5, 2, False)):
+    def test_modal_captures_button_role_across_crossing_and_never_emits_close(self):
+        for start_x, end_x, role in ((2, 2, 4), (2, 12, 4), (12, 2, 1), (7.5, 2, 5)):
             vm = ready("metronome")
-            touch(vm, 1, x=start_x, y=13.5)
-            touch(vm, 2, x=8, y=10, milliseconds=50)
-            touch(vm, 3, x=end_x, y=13.5)
-            self.assertEqual(frames(vm)[-1]["opened"], not closed)
+            touch(vm, 1, x=start_x, y=12.5)
+            touch(vm, 2, x=8, y=5, milliseconds=50)
+            touch(vm, 3, x=end_x, y=12.5)
+            event = frames(vm)[-1]
+            self.assertEqual((event["role"], event["opened"]), (role, True))
 
     def test_modal_nonoverview_and_expired_ui_never_remain_editable(self):
         for mode in (1, 2):
@@ -325,7 +322,7 @@ class CurrentDeviceTests(unittest.TestCase):
             vm.call("repaint/v")
             self.assertEqual(markers(vm), [[191, 108, tag]])
 
-    def test_accepted_led_fixtures_cover_overview_mixer_record_and_modal(self):
+    def test_led_regression_fixtures_cover_overview_mixer_record_and_modal(self):
         self.assertGreaterEqual(len(CONTRACT["led_cases"]), 6)
         for case in CONTRACT["led_cases"]:
             with self.subTest(scene=case["name"]):
