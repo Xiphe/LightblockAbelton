@@ -33,6 +33,7 @@ int closeButtonPosX;
 int closeButtonPosY;
 int closeButtonWidth;
 int closeButtonHeight;
+int lastCloseButtonValue;
 int closeButtonCC;
 // Up Button
 int upButtonColor;
@@ -78,6 +79,8 @@ int deleteButtonHeight;
 int deleteButtonCC;
 // Exclusive Arm Setting
 int exclusiveArmCC;
+// Stop All Recordings
+int stopAllRecordingsCC;
 
 int debugVal;
 
@@ -158,6 +161,7 @@ void initialise() {
     launchButtonCC = 7;
     // Arm Button
     armButtonState = 0;
+    lastCloseButtonValue = 0;
     armButtonArmColor = makeARGB(50, 255, 0, 0);
     armButtonUnarmColor = makeARGB(50, 25, 255, 25);
     armButtonColor = armButtonArmColor;
@@ -174,6 +178,7 @@ void initialise() {
     directRecordButtonHeight = 3;
     // Close Button
     closeButtonState = 0;
+    lastCloseButtonValue = 0;
     openButtonColor = makeARGB(50, 150, 255, 150);
     closeButtonColor = makeARGB(50, 255, 150, 150);
     closeButtonPosX = 0;
@@ -218,15 +223,17 @@ void initialise() {
     stopButtonCC = 9;
     // Delete Button
     deleteButtonColor = makeARGB(100, 255, 0, 0);
-    deleteButtonPosX = 11;
-    deleteButtonPosY = 5;
+    deleteButtonPosX = 12;
+    deleteButtonPosY = 0;
     deleteButtonWidth = 3;
     deleteButtonHeight = 3;
     deleteButtonCC = 10;
 
-
     // Hidden/Internal Controls
     exclusiveArmCC = 11;
+    
+    // Stop All Recordings
+    stopAllRecordingsCC = 12;
 
     // Animation
     animX = 7;
@@ -240,7 +247,7 @@ void touchStart (int index, float x_float, float y_float, float z, float vz)
 {
     int x = convertPositionToPixel(x_float);
 	int y = convertPositionToPixel(y_float);
-	
+	log(1);
 	int i = 0;
 	int touchI = 0;
 	for (i = 0; i < 5; i++) {
@@ -274,18 +281,17 @@ void touchStart (int index, float x_float, float y_float, float z, float vz)
        sendCC(0, exclusiveArmCC, 127);
        sendCC(0, armButtonCC, 64);
        sendCC(0, launchButtonCC, 127);
-       sendCC(0, leftButtonCC, 127);
-       sendCC(0, leftButtonCC, 0);
-       sendCC(0, stopButtonCC, 127);
-       sendCC(0, stopButtonCC, 0);
-       sendCC(0, rightButtonCC, 127);
-       sendCC(0, rightButtonCC, 0);
+       sendCC(0, stopAllRecordingsCC, 127);
+      
        
        touchCC = launchButtonCC;
     }
     // Close Button
     if (x >= closeButtonPosX && x < closeButtonPosX + closeButtonWidth && y >= closeButtonPosY && y < closeButtonPosY + closeButtonHeight) {
-       sendCC(0, closeButtonCC, closeButtonState == 2 ? 64 : 127);
+       log(8001);
+        log(closeButtonState);
+       sendCC(0, closeButtonCC, closeButtonState == 2 ? 127 : 127);
+       log(8000);
     }
     // Up Button
     if (x >= upButtonPosX && x < upButtonPosX + upButtonWidth && y >= upButtonPosY && y < upButtonPosY + upButtonHeight) {
@@ -330,7 +336,7 @@ void touchStart (int index, float x_float, float y_float, float z, float vz)
 
 void touchEnd (int index, float x_float, float y_float, float z, float vz)
 {
-    
+    log(9000);
    if (touchCC != -1) {   
      sendCC(0, touchCC, 0);
      sendCC(0, exclusiveArmCC, 64);
@@ -344,9 +350,12 @@ void touchEnd (int index, float x_float, float y_float, float z, float vz)
 
 void handleMIDI (int byte1, int cc, int value)
 {
+
     if (cc == closeButtonCC) {
       // debugVal = value;
+      lastCloseButtonValue = value;
       closeButtonState = value == 0 ? 0 : value == 127 ? 2 : 1;
+    
       //launchButtonColor = makeARGB(255, getRandomInt(255), getRandomInt(255), getRandomInt(255));
       //log(444);
       //log(byte1);
@@ -385,6 +394,8 @@ void repaint()
    //first clear the display
    clearDisplay();
    //log(debugVal);
+
+   //    closeButtonState = lastCloseButtonValue == 0 ? 0 : lastCloseButtonValue == 127 ? 2 : 1;
 
 
 
