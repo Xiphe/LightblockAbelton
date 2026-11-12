@@ -1,4 +1,6 @@
-# Current host baseline
+# Historical host baseline
+
+This document preserves the earlier split-program checkpoint. Its 587-test count, expected pacing failure and manifest/in-memory reference rules describe that historical version. For the current Live-authoritative engine, fixed pacer, setup and validation, use the [stable release contract](stable-release.md) and [validation summary](validation-summary.md). The historical text below is retained as evidence.
 
 The maintained source is [the Live Remote Script](../../prototypes/controller/live/LightpadController/). It preserves the tested protocol18 host used with the split main/metronome bridge trial. All30 Python modules except `configuration.py` match that frozen host byte for byte. The committed configuration deliberately contains portable safe defaults, with no local Set paths, feature evidence or proof opt-in. Setup is in [the host README](../../prototypes/controller/live/README.md).
 

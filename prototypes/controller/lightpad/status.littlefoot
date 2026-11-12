@@ -1,0 +1,177 @@
+// Startup/status program with the accepted standalone interactive idle.
+// No Live state or recording controls. Idle gestures never request diagnostics.
+// Helper-only whole-event contract: header A8/kind3/group8; m0=0x53540000
+// | state | (reason << 8), m1=0. States: 0 connecting, 1 bridge unavailable,
+// 2 Live unavailable, 3 no remote groups, 4 failure, 5 ready/await main.
+// This source only defines the program. Compilation does not install/save it.
+#heapsize: 240
+int statusState;
+int statusReason;
+int statusAt;
+int helloAt;
+int contacts;
+bool linked;
+bool announced;
+bool statusTap;
+#include "idle-animation.littlefoot"
+
+bool idleVisible()
+{
+    return statusState == 0 || statusState == 1 || statusState == 5;
+}
+
+void loadIcons()
+{
+    setHeapInt(0, 2048);
+    setHeapInt(4, 15872);
+    setHeapInt(8, 14080);
+    setHeapInt(12, 25472);
+    setHeapInt(16, 12736);
+    setHeapInt(20, 14528);
+    setHeapInt(24, 7664);
+    setHeapInt(28, 4088);
+    setHeapInt(32, 2012);
+    setHeapInt(36, 398);
+    setHeapInt(40, 454);
+    setHeapInt(44, 227);
+    setHeapInt(48, 118);
+    setHeapInt(52, 62);
+    setHeapInt(56, 8);
+    setHeapInt(60, 0);
+    setHeapInt(64, 0);
+    setHeapInt(68, 32597);
+    setHeapInt(72, 85);
+    setHeapInt(76, 85);
+    setHeapInt(80, 32597);
+    setHeapInt(84, 85);
+    setHeapInt(88, 85);
+    setHeapInt(92, 85);
+    setHeapInt(96, 32597);
+    setHeapInt(100, 85);
+    setHeapInt(104, 85);
+    setHeapInt(108, 32597);
+    setHeapInt(112, 0);
+    setHeapInt(116, 0);
+    setHeapInt(120, 28679);
+    setHeapInt(124, 28679);
+    setHeapInt(128, 25075);
+    setHeapInt(132, 26611);
+    setHeapInt(136, 26163);
+    setHeapInt(140, 26163);
+    setHeapInt(144, 26163);
+    setHeapInt(148, 25075);
+    setHeapInt(152, 25075);
+    setHeapInt(156, 24819);
+    setHeapInt(160, 25011);
+    setHeapInt(164, 25395);
+    setHeapInt(168, 26163);
+    setHeapInt(172, 28679);
+    setHeapInt(176, 28679);
+    setHeapInt(180, 448);
+    setHeapInt(184, 448);
+    setHeapInt(188, 448);
+    setHeapInt(192, 448);
+    setHeapInt(196, 448);
+    setHeapInt(200, 448);
+    setHeapInt(204, 448);
+    setHeapInt(208, 448);
+    setHeapInt(212, 448);
+    setHeapInt(216, 448);
+    setHeapInt(220, 0);
+    setHeapInt(224, 0);
+    setHeapInt(228, 448);
+    setHeapInt(232, 448);
+    setHeapInt(236, 448);
+}
+
+void initialise()
+{
+    loadIcons();
+    initialiseIdle();
+    statusState = 1; statusReason = 0; contacts = 0;
+    linked = false; announced = false; statusTap = false;
+    statusAt = getMillisecondCounter(); helloAt = statusAt;
+    sendCC(15, 110, 18);
+}
+
+void updateConnection()
+{
+    int now = getMillisecondCounter();
+    if (linked && now - statusAt >= 3500)
+    {
+        linked = false; announced = false;
+        bool wasIdle = idleVisible();
+        statusState = 1; statusReason = 0;
+        if (!wasIdle) initialiseIdle();
+    }
+    if (!linked && now - helloAt >= 1000)
+    {
+        sendCC(15, 110, 18); helloAt = now;
+    }
+}
+
+void handleMessage(int m0, int m1, int header)
+{
+    if (header != 0x23a8 || m1 != 0 || (m0 & 0xffff0000) != 0x53540000
+        || (m0 & 255) > 5 || ((m0 >> 8) & 255) > 127) return;
+    bool wasIdle = idleVisible();
+    statusState = m0 & 255;
+    if (!wasIdle && idleVisible()) initialiseIdle();
+    statusReason = (m0 >> 8) & 127;
+    statusAt = getMillisecondCounter(); linked = true;
+    if (!announced) { announced = true; sendCC(15, 108, 36); }
+}
+
+int contactCount()
+{
+    int count = 0;
+    for (int finger = 0; finger < 16; ++finger)
+        if ((contacts & (1 << finger)) != 0) ++count;
+    return count;
+}
+
+void touchStart(int finger, float x, float y, float z, float vz)
+{
+    if (finger < 0 || finger > 15) return;
+    if ((contacts & (1 << finger)) != 0) return;
+    if (contacts == 0) statusTap = !idleVisible();
+    contacts = contacts | (1 << finger);
+    if (idleVisible()) idleTouchStart(finger, x, y, z, vz);
+    sendCC(15, 106, contactCount());
+}
+void touchMove(int finger, float x, float y, float z, float vz)
+{
+    if (finger < 0 || finger > 15) return;
+    if ((contacts & (1 << finger)) == 0) return;
+    if (idleVisible()) idleTouchMove(finger, x, y, z, vz);
+}
+void touchEnd(int finger, float x, float y, float z, float vz)
+{
+    if (finger < 0 || finger > 15) return;
+    if ((contacts & (1 << finger)) == 0) return;
+    if (idleVisible()) idleTouchEnd(finger, x, y, z, vz);
+    contacts = contacts & ~(1 << finger);
+    sendCC(15, 106, contactCount());
+    if (contacts == 0)
+    {
+        updateConnection();
+        if (statusTap && !idleVisible()) sendCC(15, 107, statusState);
+        statusTap = false;
+    }
+}
+
+void repaint()
+{
+    updateConnection();
+    fillRect(0xff000000, 0, 0, 15, 15);
+    if (idleVisible()) { repaintIdle(); return; }
+    int icon = statusState - 1;
+    int colour = statusState == 1 ? 0xff4191ff : statusState == 2 ? 0xfff0f0f0
+        : statusState == 3 ? 0xffff9118 : 0xffff1818;
+    for (int y = 0; y < 15; ++y)
+    {
+        int row = getHeapInt(icon * 60 + y * 4);
+        for (int x = 0; x < 15; ++x)
+            if ((row & (1 << x)) != 0) fillPixel(colour, x, y);
+    }
+}

@@ -52,7 +52,7 @@ def _ticks(value, scale, maximum, positive=False):
     return result
 
 
-def _validated(clock):
+def _validated(clock, allow_countdown_page=False):
     if not isinstance(clock, Clock):
         raise ValueError("actual Clock required")
     if not _integer(clock.context, ONE_BAR, COUNTDOWN):
@@ -77,7 +77,9 @@ def _validated(clock):
     if clock.context in (ONE_BAR, REFERENCE):
         if clock.position >= clock.span or position >= span:
             raise ValueError("loop position must precede its endpoint")
-        if clock.context == ONE_BAR and abs(clock.span - clock.bar_length) > tolerance:
+        page = (allow_countdown_page and clock.first_bar == 0
+                and clock.span == 8 * clock.bar_length)
+        if clock.context == ONE_BAR and abs(clock.span - clock.bar_length) > tolerance and not page:
             raise ValueError("one-bar context requires an actual one-bar span")
     else:
         bars = int(round((clock.span - clock.first_bar) / clock.bar_length))
@@ -93,13 +95,13 @@ def _digits(value, count):
     return [(value >> (7 * digit)) & 127 for digit in range(count)]
 
 
-def encode_timing(group, revision, clock):
-    """Return twenty CC messages, CC70 through CC89, on the group channel."""
+def _encode_timing(group, revision, clock, allow_countdown_page=False):
+    """Encode one frame; display-page permission is never a global default."""
     if not _integer(group, 0, 7) or not _integer(revision, 0, 127):
         raise ValueError("invalid timing group or revision")
     fields = [0] * 18
     if clock is not None:
-        encoded = _validated(clock)
+        encoded = _validated(clock, allow_countdown_page)
         fields = [encoded.context | (RUNNING if encoded.running else 0), encoded.take_id]
         for value in (encoded.span, encoded.position, encoded.first_bar, encoded.bar_length):
             fields.extend(_digits(value, 3))
@@ -109,15 +111,23 @@ def encode_timing(group, revision, clock):
     return [(0xB0 + group, 70 + index, value) for index, value in enumerate(values)]
 
 
-def encode_view_timing(group, revision, clock):
+def encode_timing(group, revision, clock):
+    """Return twenty CC messages with strict ordinary clock validation."""
+    return _encode_timing(group, revision, clock)
+
+
+def encode_view_timing(group, revision, clock, countdown_page=False):
     """Ring clock for queued AND recording views, preserving actual phase.
 
-    View state selects red versus group color. Normalized countdown geometry
-    is an engineering diagnostic only and cannot drive the approved ring UI.
+    View state selects red versus group color. The selected queued view may
+    explicitly authorize an exact eight-bar page; ordinary/global clocks stay
+    strict, and actual bar length, meter and tempo retain their real units.
     """
+    if type(countdown_page) is not bool:
+        raise ValueError("countdown page permission must be explicit boolean")
     if clock is not None and (not isinstance(clock, Clock) or clock.context not in (ONE_BAR, REFERENCE)):
         raise ValueError("recording view requires the actual one-bar or reference clock")
-    return encode_timing(group, revision, clock)
+    return _encode_timing(group, revision, clock, allow_countdown_page=countdown_page)
 
 
 def encode_global_timing(revision, clock, metronome=False):

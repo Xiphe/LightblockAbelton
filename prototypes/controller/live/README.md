@@ -1,48 +1,69 @@
-# Lightpad controller host
+# Lightpad Live controller
 
-`LightpadController/` is the maintained Python Remote Script for Live 12.2.7. It controls eight native Group Tracks and an explicitly prepared pool of audio Session layers. It runs inside Live. [Lightpad Bridge](../../../tools/lightpad-bridge/README.md) owns USB/Bluetooth and temporary device programs; both Live ports use `Lightpad Bridge`.
+`LightpadController/` runs inside Ableton Live. The normal configuration sets `LIVE_STATE_MODE = True` and discovers marked groups in the loaded Set. It does not inspect saved `.als` XML, hashes or private experiment paths. [Lightpad Bridge](../../../tools/lightpad-bridge/README.md) handles USB/Bluetooth and device programs.
 
-This is the frozen working baseline. The committed configuration has no local manifest, proof path or enabled recording features. Importing it creates no tracks, changes no routing and starts no transport. Without a manifest, uniquely named groups support the original mute/mixer adapter. With a manifest configured, a wrong Set or topology disables all controls rather than falling back to name-only bindings.
+The signed production helper, Live script and login agent are installed with rollback retained, and login startup is activated. The combined idle/status startup passed the power-cycle/touch check. Two accepted USB takes, populated reopening and a fresh Set from the installed template passed. Bluetooth now passes recording, layering, mute, volume/pan and Mode switching from the installed template with USB unplugged. The user also confirmed visible diagnostic notifications after disabling Sleep Focus, with mirroring notifications still off. Core startup, USB, Bluetooth, template and notification checks have passed. The [stable release contract](../../../docs/integration/stable-release.md) distinguishes agreed behavior, code checks and remaining Native validation.
 
-## Check the source
+## Live setup after installation
 
-From the repository root, without opening Live or MIDI:
+1. For a new project, open **Templates > Lightpad Remote** in Live's browser. It creates a fresh Untitled Set; save it under your own name. The installed template is `~/Music/Ableton/User Library/Templates/Lightpad Remote.als`, with [a portable repository copy](../../../templates/Lightpad%20Remote.als). For an existing project, create or use Group Tracks with unique `[R1]` through `[R8]` prefixes. `[R1] Vocals` maps to tile 1. The remaining name and the track's position can change. You may leave tile numbers unused and add unrelated tracks. A marker on a non-group or a duplicate identifier makes that assignment unavailable; other valid groups remain usable.
+2. Choose the intended audio interface in Live. New takes create Audio Tracks using Live's defaults, without copying a manually configured source/instrument track or imposing the prototype's fixed mono channel, monitoring mode or routing. Device-side input selection is deferred. Verify the default recording source before real capture.
+3. In Link, Tempo & MIDI, choose `LightpadController`, with Input and Output both `Lightpad Bridge`. No Max for Live device or per-Set MIDI mapping is required.
+4. Start Live's transport before recording. With transport stopped, a recording gesture silently does nothing; actual overview, mute, mixer and meter controls remain available.
+
+The validated template has eight marked groups, one empty Audio Track per group, four returns and no clips or FileRefs. Live rejects childless saved groups with "Empty track group". Keep the empty child; new takes still create fresh default Audio Tracks.
+
+If Bluetooth is not connected in macOS, use Audio MIDI Setup > MIDI Studio > Bluetooth configuration to connect the Lightpad. The helper uses that OS MIDI connection and does not pair it itself.
+
+Disable competing legacy BLOCKS control surfaces and raw Lightpad Track/Remote mappings when using this bridge; restart Live after removing an old script so its listeners are gone. Keep the Bridge control-surface input/output selected.
+
+For the single bridge path, the old direct BLOCKS control-surface slots 2 and 3 and raw USB Track/Remote input/output switches were disabled. The original machine's `Preferences.cfg` backup is local-only and is not part of a clone. Back up your own preferences before changing them. Restoring the legacy keyboard controller requires re-enabling its direct BLOCKS MIDI preferences as well as reinstalling the archived device program. Do not restore the whole preferences file while Live is open.
+
+Save, copy and reopen the Set normally. Populated tracks are read from Live, not rejected because they contain clips. Audio-file portability still uses Live's normal project/media management.
+
+## Install the template on another Mac
+
+From the controller checkout, copy the portable Set into Live's User Library. This keeps an existing same-named template intact:
+
+```sh
+mkdir -p "$HOME/Music/Ableton/User Library/Templates"
+cp -n 'templates/Lightpad Remote.als' "$HOME/Music/Ableton/User Library/Templates/Lightpad Remote.als"
+```
+
+If your User Library is elsewhere, use that folder instead. Alternatively open the repository Set in Live and choose File > Save As Template. Then use Templates > Lightpad Remote to create each new Set and save under your own project name. The app installer handles the helper/script/login files; it does not install templates or choose audio preferences.
+
+## Actual-state and recording behavior
+
+`live_state.py` resolves groups and their actual Session clips. It chooses the leftmost eligible playing loop, including muted loops and valid MIDI loops, while excluding unfinished recordings and audio that cannot supply beat-loop timing. It supports nonzero loop starts and mixed rows. It reads active clips directly and computes full row occupancy only for allocation/advance, keeping idle work independent of the phrase-grid size.
+
+`live_recording.py` retains only pending operation state and per-take timing. Begin chooses the current reference, or the next safe bar when none exists. A fresh phrase uses a free row after the highest playing row, or after the last occupied row when nothing plays. New layers create default Audio Tracks and scenes; Retry may reuse its own just-emptied track. Track insertion is post-validated; a misplaced new track is preserved, reported and not repeatedly recreated on every retry.
+
+Accept finishes at the next safe bar. Accept-and-next finishes first, then waits for the selected new take's loop wrap; safe coincident boundaries are supported. Late unissued starts/finishes move to a later safe boundary while retaining the request. Already issued Native operations are observed and are never blindly replayed. Actual clip flags and anchors confirm progress; reaching a countdown target alone does not start a take.
+
+The controller adopts an already recording clip in a marked group. The selected recording group wins, including selection of a nonrecording child of that group; otherwise use the leftmost recording track. Reading or selecting this state causes no recording writes. A queued empty reservation never authorizes stopping/deleting a manual clip that later appears there. Cancel and Retry operate on the current unaccepted take only, preserve other clips, and acknowledge observed cleanup.
+
+`live_controller.py` presents snapshots, clocks, readiness and recording selection to `surface.py`. `active_recording()` and `modal_allowed()` are read-only Native accessors. Default mixer controls follow the first four sends; explicit configured targets retain Native identities and disable only the affected control if moved or replaced. `configure_targets()` explicitly authorizes rebinding. Assignment UI is deferred.
+
+The current production source has no persistent external ownership registry. Normal reopen and Save As rediscover Live state. The remaining evidence boundary for fresh-loop normalization, interrupted Native operations and actual group insertion is documented in the release contract.
+
+## Transport and readiness
+
+The maintained `surface.py` retries failed initial production construction every 500 ms. A helper-only atomic health frame on channel 16 CC114–118 is sent every 500 ms independently of the pad Hello. It reports connecting 0, bridge-unavailable 1, Live-unavailable 2, no-groups 3, failure 4 or ready 5, plus a reason and recording/modal flags. Live cannot declare the physical bridge-unavailable state; that is local to the helper/device.
+
+Main/metronome graphics retain protocol 18/A8. Raw contacts use complete seven-CC frames on all 16 finger channels. Partial contact fragments do not resample the full Native state. The short local action-failure flash is receipt-aware, follows the affected group/context and does not send automatic notifications or reset the workflow. Fresh unassigned snapshot 0 renders blank, while stale/unavailable feedback keeps its established X.
+
+Program Hello clears stale contacts and reseeds graphics without replaying musical intent. Metronome permission reads current state and rejects active recording/cleanup or held contacts. Global status taps take a separate helper-owned route and can request a notification even when Live is unavailable.
+
+The shared output budget remains four frames per rolling 90 ms. The formerly expected sustained-urgent-feedback failure is fixed and its strict freshness check now passes normally; current synthetic clock gaps stay below one second and snapshot gaps below two. USB responsiveness, two folded-group layers and populated reopening have passed the user/Native trial. The current signed helper also reaches stable Bluetooth Ready after the upload-health fix. Hannes confirmed Bluetooth recording, Accept, another layer, mute, volume/pan and Mode open/close on the installed template with USB unplugged. Endurance remains pending.
+
+## Offline verification
 
 ```sh
 python3 -m unittest discover -s prototypes/controller/live/tests -v
 ```
 
-The baseline has 587 checks: 586 pass and one documented expected failure. The strict freshness assertion remains in the stress test, so an unexpected success is also reported as a failure. See [current host baseline](../../../docs/integration/current-host-baseline.md) for the workload, evidence limits and source provenance.
+The new `test_live_state.py` and `test_live_controller.py` use explicit fake Native requests/observations. They cover discovery, rename/reorder, populated reopening, copy identity, mixed playback, default-track allocation, ownership races, selected recording adoption, conservative timing/defer behavior and countdowns. Existing proof tests remain independent regression coverage. The final host suite passed 729 tests. The [tracked validation summary](../../../docs/integration/validation-summary.md) records the offline and runtime results; no numerical offline result proves Native audio or insertion behavior.
 
-## Prepare a fresh scratch Set
+## Historical proof mode
 
-1. Use a separate saved Set with eight uniquely named top-level Group Tracks, `Lightpad 1` through `Lightpad 8`. Create the required audio capture layers directly inside each group. Each pool track needs the same empty Session rows. The verified working template uses eight capture tracks and eight empty phrase rows per group. Smaller pools reach capacity sooner.
-2. Route capture tracks from the same intended external audio input to their parent group. Keep capture monitoring Off, tracks unfrozen and all capture/other tracks unarmed at enable time. Prepare monitoring separately so existing loop playback is not recorded into new layers. MIDI capture and generic all-input recording are outside this audio baseline.
-3. Provide four return sends for the default mixer assignments. Alternatively configure four explicit send/device parameter targets for each group. The adapter retains their identities and disables that mixer if the targets move or disappear.
-4. Turn Arrangement Record, Session Record, Overdub, Arrangement Loop, count-in, Link, Tempo Follower and External Sync Off before enabling. Set global clip launch quantization to one bar. Save the Set and record its actual meter, native bar origin, external input and SHA256. An existing accepted pool is not reconstructed after script reload; start a fresh run from the empty saved fixture.
-5. Copy [the manifest example](examples/scratch-manifest.example.json) to private local storage and replace every placeholder with verified saved-Set facts. Its sample 4/4 grid and two-layer names are examples, not observations. `set_path` must be an absolute saved `.als` path and `set_sha256` must match that initial file. Group/layer names must describe the actual direct children. `capture_input_channel` must match Live's external input channel. Supply verified sync evidence only when the relevant native properties are unavailable; never assume an absent property means Off.
-
-The script validates saved identity at startup and actual paths, routing, monitoring, ownership and arming before mutations. Saving the same loaded Set later is allowed. It does not create the template or adopt existing clips automatically.
-
-## Configure an installed copy
-
-Close Live before copying `LightpadController/` into its User Library `Remote Scripts` directory. Preserve the previous installed folder. Edit only that local installed `configuration.py`; keep the repository defaults portable.
-
-- Set `AUDIO_CONTROLLER_MANIFEST` to the reviewed private manifest path. Set `SYNC_UI_EVIDENCE` only when separate verified UI evidence is necessary.
-- Keep `VALIDATED_AUDIO_FEATURES = ()` until that installation has the required Native evidence. `record` and `cancel` are required together. `wrap`, `accept_next`, `advance` and `exact_length` are independent opt-ins. Offline checks do not grant these capabilities. Exact-length correction additionally requires actual sample/warp coverage and readback before acceptance.
-- Enable `NATIVE_BAR_CLOCK` only with verified native BeatTime/grid evidence. Otherwise retain the explicitly fixed manifest meter. Do not infer a grid from screen appearance.
-- Leave `AUDIO_PROOF_MODE` and `AUDIO_CONTROLLER_PROBE_MODE` False for the normal controller. Their paths remain None unless deliberately running the separate proof tools.
-
-Start the bridge using its setup instructions, reopen the empty fixture, then select `LightpadController` in Live's Control Surface preferences with Input and Output both `Lightpad Bridge`. The bridge's program source and host protocol must match. Current host protocol is18; older direct-port mappings are historical and should not be layered over this route.
-
-## Responsibilities and behavior
-
-`surface.py` connects MIDI to current role/context gestures in `device_ui.py` and the retained gesture engine in `device_ui_legacy.py`. `touch_protocol.py` accepts complete seven-CC contact frames on all16 finger channels. The Start captures its visible role and context; a later role/context cannot reinterpret a held press. The bridge owns program switching. The modal metronome uses the same host meter/control regions, and Close cancels pending meter desires before a Native completion can flush them.
-
-`audio_controller.py` joins `session.py`, `audio_backend.py`, fixture validation and actual group controls. Begin/Retry wait for the next safe bar or established reference wrap. Accept finishes at the next safe bar. AcceptNext waits for the reference wrap at or after the finish. Late unissued requests remain queued at a safe legal boundary; already issued Native effects are never blindly retried. Cancel discards only owned unaccepted takes and acknowledges after observed cleanup. Accepted clips and references remain intact. Mute uses native group mute, preserving playback phase.
-
-`protocol.py` keeps the internal command/snapshot contract; `compact_wire.py` projects graphics only after logical output selection. The bridge encodes complete A8 word records. `output_pacing.py` admits three ordinary frames per rolling90ms and one reserved frame for protected results or urgent actual global-control feedback. Metadata has a separate bounded budget. Clock phase is sampled at send time. Native actions never wait for graphics receipts.
-
-The helper-only permission lane uses channel16 CC109 plus nonce for a request, CC109 with the same nonce for grant, CC108 for denial. A reply comes from fresh actual host state, bypassing graphics and without running Native effects. The bridge must match the current connection/request, expire permission within one monotonic second, and invalidate it after raw input or Hello. A program Hello cancels old UI contacts and replays confirmed state; it does not recreate or reset the live Session/backend. Switches during owned recording/cleanup are denied.
-
-`proof_command.py` and `summarize_proof.py` support deliberately enabled, isolated Native proof runs. They are not required for normal operation. Local proof results and recorded audio do not belong in this source tree.
+The manifest-backed `AudioController`, `AudioFixture`, `LiveAudioBackend` and `Session` are retained for the earlier proof suite. Set `LIVE_STATE_MODE = False` only when deliberately running that separate mode. Its prepared Set path/hash, fixed layout and feature opt-ins are historical constraints; they are not instructions for a normal production project. [The old host baseline](../../../docs/integration/current-host-baseline.md) and [example scratch manifest](examples/scratch-manifest.example.json) preserve that provenance.

@@ -111,7 +111,7 @@ class NativeClockListenerTests(unittest.TestCase):
         self.now = 100.0
         instance = SimpleNamespace(song=self.song, sent=[], logs=[])
         patches = [
-            patch.multiple(config, AUDIO_CONTROLLER_MANIFEST="offline-test" if engine else None,
+            patch.multiple(config, LIVE_STATE_MODE=False, AUDIO_CONTROLLER_MANIFEST="offline-test" if engine else None,
                            NATIVE_BAR_CLOCK=native_clock),
             patch.object(module, "load_audio_configuration", return_value={}),
             patch.object(module, "AudioFixture", return_value=object()),

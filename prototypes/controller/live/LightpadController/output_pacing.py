@@ -49,14 +49,14 @@ class OutputPacer:
         """Request the current presentation one second after its actual send."""
         return self._presentation_at is None or now - self._presentation_at >= 1.0
 
-    def presentation(self, messages, now, binding=None):
+    def presentation(self, messages, now, binding=None, on_sent=None):
         """Queue one latest-only BF20..28 frame, optionally behind group state."""
         messages = list(messages)
         key = ('presentation',)
         previous = self.frames.get(key)
         self.frames[key] = {'make': lambda: messages, 'messages': messages,
             'deadline': min(previous['deadline'], now + .25) if previous else now + .25,
-            'on_sent': None, 'binding': tuple(binding) if binding is not None else None}
+            'on_sent': on_sent, 'binding': tuple(binding) if binding is not None else None}
 
     def offer(self, messages, now, on_sent=None):
         if len(messages) != 20:
@@ -112,7 +112,12 @@ class OutputPacer:
             # Make that latest sample eligible without bypassing the shared
             # send window or evaluating its phase before actual transmission.
             self.frames[key]['deadline'] = min(self.frames[key]['deadline'], now)
-            self._clock_due[index] = min(self._clock_due[index], now)
+            # A slider can produce changes faster than the shared link can
+            # sustain. Coalesce global feedback to one sample per send window;
+            # the supplier still samples the latest actual value when sent.
+            earliest = (self._clock_at.get(index, now - self.WINDOW) + self.WINDOW
+                        if index == 8 else now)
+            self._clock_due[index] = min(self._clock_due[index], max(now, earliest))
 
     def clear(self):
         # Keep applied results pinned across peer loss. Their parser reservations
@@ -157,7 +162,12 @@ class OutputPacer:
                 if prior is not None and key != prior:
                     continue
             rank = (index - self._round_robin) % 9
-            candidates.append((job['deadline'], rank, order, key))
+            # Use the reserved fourth slot for global edit feedback when
+            # ordinary work is ready. Sending it first would consume one of
+            # the three background slots and strand that reserved capacity.
+            # Protected receipts retain their deadline/per-group ordering.
+            reserved_feedback = key == ('clock', 8) and job.get('urgent', False)
+            candidates.append((reserved_feedback, job['deadline'], rank, order, key))
         return min(candidates)[-1] if candidates else None
 
     def flush(self, now):
@@ -227,8 +237,8 @@ class OutputPacer:
                 ordinary = self.frames.get(('state', status))
                 if ordinary and self._semantic(ordinary['messages']) == self._semantic(messages):
                     del self.frames['state', status]
-                if job['on_sent'] is not None:
-                    job['on_sent']()
+            if job['on_sent'] is not None:
+                job['on_sent']()
 
     def _send_failed(self, error):
         self.send_errors += 1

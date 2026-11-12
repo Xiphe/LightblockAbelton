@@ -1,18 +1,20 @@
-"""Explicit scratch-Set opt-in. No track creation, routing or installation.
+"""Installed controller settings. The normal mode follows marked groups in Live.
 
-These names must be unique top-level native Group Tracks. Do not rename tracks
-in an original project to match. Prepare a separate scratch Set instead.
+Legacy names and manifests remain solely for the archived proof harness. The
+production mode discovers [R1] through [R8] in the loaded Set and needs no file
+path, saved fingerprint or local experiment directory.
 """
 
+LIVE_STATE_MODE = True
 GROUP_NAMES = tuple("Lightpad %d" % (index + 1) for index in range(8))
 
-# The coordinator sets these only in a reviewed scratch installation. A missing
-# manifest leaves the mute/mixer adapter available, with recording disabled.
+# Legacy proof settings. LIVE_STATE_MODE with no manifest uses Live directly,
+# including recording; a manifest explicitly selects the archived proof path.
 AUDIO_CONTROLLER_MANIFEST = None
 SYNC_UI_EVIDENCE = None
 VALIDATED_AUDIO_FEATURES = ()
-# Only a reviewed installation with matching native BeatTime evidence enables
-# changing meter on the verified scratch grid. Other Sets remain unsupported.
+# Legacy proof-grid gate. The Live-state engine reads the loaded Set's Native
+# bar grid and does not use this proof-only switch.
 NATIVE_BAR_CLOCK = False
 # Per-group sequences of four explicit parameter target specifications.
 # An absent group uses its four native return sends.

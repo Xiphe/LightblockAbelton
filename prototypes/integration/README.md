@@ -1,4 +1,6 @@
-# Live integration spike
+# Archived Live integration spike
+
+This is an archived proof, not the production setup. Use the [current controller guide](../controller/live/README.md) and [release contract](../../docs/integration/stable-release.md) for the maintained eight-group controller.
 
 This temporary engineering spike controls one Live Group Track. Its layout and gestures have no UX approval; the controller UX still needs an explicit design pass.
 

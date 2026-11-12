@@ -21,6 +21,7 @@ from . import protocol as p
 from .session import BackendFailure, Schedule, FinishPlan
 from .recording_coverage import sample_covers
 from .launch_admission import LaunchAdmission
+from .timing import Clock
 
 
 Lease = namedtuple("Lease", "group row layer generation")
@@ -57,6 +58,10 @@ class _Attempt:
         self.finish_issued = False
         self.length_write_issued = False
         self.recording_coverage = None
+        self.recording_bar_length = None
+        self.recording_anchor = None
+        self.recording_numerator = None
+        self.recording_denominator = None
         self.next_lease = None
         self.finish_parent = None
         self.cancel_requested = False
@@ -592,6 +597,110 @@ class LiveAudioBackend:
             return None
         return attempt.clip
 
+    def _recording_feedback(self, lease, token):
+        """Read one owned active attempt without transitions or fault writes."""
+        try:
+            attempt = self._attempts.get(lease)
+            if (not self.enabled or attempt is None or attempt.token != token
+                    or attempt.lease.group in self.faults or attempt.cancel_requested
+                    or attempt.state not in ('recording', 'finish_planned')):
+                return None
+            self._identity(attempt)
+            self._recording_evidence(attempt, attempt.clip)
+            length, anchor = attempt.recording_bar_length, attempt.recording_anchor
+            if (type(length) not in (int, float) or not math.isfinite(length) or length <= 0
+                    or type(anchor) not in (int, float) or not math.isfinite(anchor)):
+                return None
+            elapsed = self._beat() - anchor
+            if not math.isfinite(elapsed) or elapsed < 0:
+                return None
+            return attempt, length, elapsed
+        except Exception:
+            return None
+
+    def recording_bars(self, lease, token):
+        """Completed start-relative bars after the caller's fixture scope guard."""
+        feedback = self._recording_feedback(lease, token)
+        if feedback is None:
+            return 0
+        try:
+            return math.floor(feedback[2] / feedback[1])
+        except (ValueError, OverflowError):
+            return 0
+
+    def recording_clock(self, lease, token, context, take_id):
+        """One frozen bar from observed start, independent of the base loop."""
+        feedback = self._recording_feedback(lease, token)
+        if feedback is None or context not in (1, 2) or type(take_id) is not int or not 0 <= take_id < 128:
+            return None
+        attempt, length, elapsed = feedback
+        try:
+            numerator, denominator = attempt.recording_numerator, attempt.recording_denominator
+            tempo, running = self.song.tempo, self.song.is_playing
+            if (type(numerator) is not int or not 1 <= numerator <= 99
+                    or type(denominator) is not int or denominator not in (1, 2, 4, 8, 16)
+                    or abs(4.0 * numerator / denominator - length) > _EPSILON
+                    or type(tempo) not in (int, float) or not math.isfinite(tempo) or not 20 <= tempo <= 999
+                    or type(running) is not bool):
+                return None
+            return Clock(context, take_id, length, elapsed % length, 0.0,
+                         length, tempo, numerator, denominator, running)
+        except Exception:
+            return None
+
+    def _countdown_feedback(self, lease, token, schedule):
+        """Read the retained queued target, never advance a Native attempt."""
+        try:
+            attempt = self._attempts.get(lease)
+            if (not self.enabled or attempt is None or attempt.token != token
+                    or attempt.lease.group in self.faults or attempt.cancel_requested
+                    or attempt.state != 'queued' or not isinstance(schedule, Schedule)
+                    or schedule != Schedule(attempt.start_queued_at, attempt.start_target)
+                    or not all(type(v) in (int, float) and math.isfinite(v) for v in schedule)
+                    or schedule.start_at < schedule.queued_at):
+                return None
+            self._identity(attempt, allow_ancestor=True)
+            self._cancel_scope(attempt)  # Pure foreign-row check, no stop request.
+            meter = getattr(self.fixture, '_meter', None)
+            numerator, denominator = (meter() if callable(meter) else
+                                      (self.song.signature_numerator, self.song.signature_denominator))
+            tempo, running = self.song.tempo, self.song.is_playing
+            if (type(numerator) is not int or not 1 <= numerator <= 99
+                    or type(denominator) is not int or denominator not in (1, 2, 4, 8, 16)
+                    or type(tempo) not in (int, float) or not math.isfinite(tempo) or not 20 <= tempo <= 999
+                    or type(running) is not bool):
+                return None
+            length = 4.0 * numerator / denominator
+            remaining = schedule.start_at - self._beat()
+            if not math.isfinite(remaining):
+                return None
+            return remaining, length, tempo, numerator, denominator, running
+        except Exception:
+            return None
+
+    def countdown_remaining_bars(self, lease, token, schedule):
+        """Current partial bar counts once; due/invalid targets return zero."""
+        feedback = self._countdown_feedback(lease, token, schedule)
+        if feedback is None or feedback[0] <= 0:
+            return 0
+        try:
+            return math.ceil(feedback[0] / feedback[1])
+        except (ValueError, OverflowError):
+            return 0
+
+    def countdown_clock(self, lease, token, schedule, context, take_id):
+        """Target-relative eight-bar pages, then one-bar countdown at the end."""
+        feedback = self._countdown_feedback(lease, token, schedule)
+        if (feedback is None or feedback[0] <= 0 or context not in (1, 2)
+                or type(take_id) is not int or not 0 <= take_id < 128):
+            return None
+        remaining, length, tempo, numerator, denominator, running = feedback
+        # For positive remaining time this is equivalent to ceil(R/bar)>8,
+        # without overflowing a quotient for an unrepresentable song position.
+        span = 8 * length if remaining > 8 * length else length
+        return Clock(context, take_id, span, (-remaining) % span, 0.0,
+                     length, tempo, numerator, denominator, running)
+
     def reference_clock(self, group, take_id=0):
         if self.session is None or group not in self._layers:
             return None
@@ -702,6 +811,24 @@ class LiveAudioBackend:
             return
         if clip.is_recording and attempt.state == "queued":
             self._recording_evidence(attempt, clip)
+            # Optional display metadata must never fail or retarget recording.
+            try:
+                length, anchor = self.fixture.bar_length, clip.start_time
+                if (type(length) in (int, float) and math.isfinite(length) and length > 0
+                        and type(anchor) in (int, float) and math.isfinite(anchor)):
+                    attempt.recording_bar_length = length
+                    attempt.recording_anchor = anchor
+                    try:
+                        numerator, denominator = self.song.signature_numerator, self.song.signature_denominator
+                        if (type(numerator) is int and 1 <= numerator <= 99
+                                and type(denominator) is int and denominator in (1, 2, 4, 8, 16)
+                                and abs(4.0 * numerator / denominator - length) <= _EPSILON):
+                            attempt.recording_numerator = numerator
+                            attempt.recording_denominator = denominator
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             attempt.state = "recording"
             if self.session is not None:
                 self.session.observe_started(attempt.token)

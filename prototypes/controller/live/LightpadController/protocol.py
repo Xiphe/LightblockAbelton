@@ -13,6 +13,7 @@ GROUP_COUNT = 8
 META_STATUS = 0xBF
 RECORD_PREVIEW = 4
 ADVANCE_PREVIEW = 8
+ACTION_FLASH = 16
 HELLO_CC = 110
 
 REFRESH, SET_MUTE, BEGIN, ACCEPT, ACCEPT_NEXT, RETRY, ABORT, ADVANCE = range(8)
@@ -193,7 +194,7 @@ def encode_presentation(revision, payload):
             or not all(_integer(value, 0, 127) for value in payload)
             or payload[0] > 3 or payload[1] not in tuple(range(8)) + (127,)
             or payload[2] not in tuple(range(8)) + (127,)
-            or payload[4] > 15 or payload[6] > 1):
+            or payload[4] > 31 or payload[6] > 1):
         raise ValueError("invalid presentation")
     preview = payload[4] & (RECORD_PREVIEW | ADVANCE_PREVIEW)
     if (preview == (RECORD_PREVIEW | ADVANCE_PREVIEW)

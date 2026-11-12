@@ -1,68 +1,87 @@
 # Lightpad controller for Ableton Live
 
-An eight-group Session View loop controller that can be operated from a ROLI Lightpad without watching the computer. Ableton owns the clips, recording and mixer state. The Lightpad draws and animates locally, and a small macOS helper carries feedback over USB or Bluetooth.
+An eight-group Session View loop controller for a ROLI Lightpad. Ableton owns clips, recording and mixer state; the pad displays that state and sends gestures. Lightpad Bridge connects them over USB or Bluetooth and loads separate main, metronome and status programs.
 
-The working checkpoint `35e2a8d` was tested on 8 November 2026 with Live 12.2.7 over USB and Bluetooth. The current tree adds the approved full-screen metronome trial. Automated checks pass. Hannes accepted the digit/raster refinement and double-tap reset over USB and reported that the current version works well over Bluetooth on 9 November 2026. Recording still requires local Live preparation.
+The installed baseline passed USB/Bluetooth recording and controls, populated reopening, fresh-template loading, startup persistence and visible diagnostic notifications. The [validation summary](docs/integration/validation-summary.md) records the checks and their limits.
 
-## Current controls
+## Set up a fresh checkout
 
-- Tap groups to mute or unmute, including multitouch batches.
-- Swipe down to record a take or layer. Use the recording view to Cancel, Accept, Retry, or Accept and record next.
-- Use a down-and-sideways gesture to advance one group to a free row without deleting earlier recordings.
-- Hold a group to access volume, four assignable controls and horizontal pan.
-- Short-release the physical Mode button to switch between the main controller and a separate metronome program.
-- Hold Mode for at least 400 ms to emit a reserved input-selection request. Input selection is a logged placeholder, with no routing change or selector UI yet.
+```sh
+git clone https://github.com/Xiphe/LightblockAbelton.git
+cd LightblockAbelton
+```
 
-The main screen's bottom metronome row is visual only. The full-screen metronome has blue and purple meter fields separated by a black center column. White digits always show Live's actual value, including while dragging. Holding a field shows the reachable-detent raster beneath its digits: nonselected lines use the field's resting background color, the selected line is bright, and the remaining background is black. Below them, Click has a green/red switch with a white left/right knob, and Tap Tempo is a plain monochrome pad. Lift pad contacts and short-release Mode to return; there is no on-screen Close button. Other approved follow-ups remain recorded in the [UX specification](docs/ux/device-prototype-spec.md).
+Follow [build, startup installation and app installation](tools/lightpad-bridge/README.md#build-and-stage-offline), then install the template below. This is a source repository; the guide builds the signed helper and installs the matching Live script. It does not need local experiment folders or ROLI desktop apps. The [validation summary](docs/integration/validation-summary.md) records the tested baseline and remaining limits.
 
-Double-tapping either meter field requests a reset of that value to 4. The fields recognize taps independently, so two-finger double-taps can request 4/4 through the normal serialized changes. Single taps do nothing and dragging has no added wait. Hannes confirmed the per-field and simultaneous resets, plus unchanged dragging, over USB on 9 November 2026. Device headroom is unchanged.
+The original Lightpad navigation program is maintained separately on the [`0.x` branch](https://github.com/Xiphe/LightblockAbelton/tree/0.x). Its third-party Max for Live companion is not distributed here.
 
-## Source and build entry points
+## Using a supported Set
 
-| Component | Location |
+In Live's browser, open **Templates > Lightpad Remote** for a fresh Untitled Set, then save it as your own project. The installed template is `~/Music/Ableton/User Library/Templates/Lightpad Remote.als`; the portable source is [Lightpad Remote.als](templates/Lightpad%20Remote.als). It has eight marked groups, one empty seed Audio Track per group, four returns and no clips or media references. Live requires a child track in every saved group; recordings still create fresh default tracks.
+
+For another Set, prefix Group Track names with `[R1]` through `[R8]`, for example `[R1] Vocals`. The number assigns a tile. Other name text, track order and unrelated tracks can change. Unused tile numbers are allowed.
+
+The normal Live script follows the loaded Set directly, including populated reopening and Save As. It no longer needs an `.als` manifest, a saved-file fingerprint or a path into private experiments. New takes create default Audio Tracks and scenes as needed. Configure the intended audio interface/default recording source in Live; device-side input selection comes later.
+
+Select `LightpadController` in Live's control-surface settings with Input and Output both `Lightpad Bridge`. Run the bridge and connect the pad. If macOS has not connected Bluetooth MIDI, open Audio MIDI Setup, show MIDI Studio, open Bluetooth configuration and connect the Lightpad there. The helper discovers that connection; it does not establish OS Bluetooth pairing. The installer supports the agreed login startup, as an explicit installation step. Start Live's transport before recording; a recording gesture while stopped is a silent no-op.
+
+Detailed instructions are in [the Live controller README](prototypes/controller/live/README.md) and [bridge installation guide](tools/lightpad-bridge/README.md).
+
+## Install the template on another Mac
+
+From the controller checkout, copy the portable Set into Live's User Library. This keeps an existing same-named template intact:
+
+```sh
+mkdir -p "$HOME/Music/Ableton/User Library/Templates"
+cp -n 'templates/Lightpad Remote.als' "$HOME/Music/Ableton/User Library/Templates/Lightpad Remote.als"
+```
+
+If your User Library is elsewhere, use that folder instead. Alternatively open the repository Set in Live and choose File > Save As Template. Then use Templates > Lightpad Remote to create each new Set and save under your own project name. The app installer handles the helper/script/login files; it does not install templates or choose audio preferences.
+
+## Controls
+
+- Tap groups to mute/unmute, including multitouch batches.
+- Swipe down to record. The recording screen has Cancel/Accept above Retry/Accept-and-next.
+- Use a down-and-sideways gesture to stop only that group and advance to a free row, preserving clips.
+- Hold a group for volume, four assignable controls and horizontal pan.
+- Short-release Mode for the full-screen metronome. A 400 ms hold remains an input-selection placeholder.
+
+The leftmost eligible playing loop supplies timing for each new take. That take keeps its timing reference until finished; the next take reads Live again. Mixed rows, different loop lengths, muted loops and manual launches remain valid. Existing recordings are preserved, and actual Native recording state is observed rather than inferred from countdown animation.
+
+The idle screen is a touchable elastic tunnel with hidden messages. Connection faults use a white Ableton logo, orange `[R]` or red `!`; tap a fault icon for a Mac explanation. Idle touches never request diagnostics.
+
+The [UX specification](docs/ux/device-prototype-spec.md) records the detailed gestures, metronome raster, recording dots and readiness behavior.
+
+## Source and offline checks
+
+| Component | Entry point |
 | --- | --- |
-| Main and metronome device programs | [Lightpad sources](prototypes/controller/lightpad/) |
-| Ableton Remote Script and offline host tests | [Live controller](prototypes/controller/live/README.md) |
-| Native helper, build and app staging | [Lightpad Bridge](tools/lightpad-bridge/README.md) |
-| Compiled-device checks | [Current-device tests](verification-tools/test_current_device.py) |
-| Frozen checkpoint provenance and measured results | [Working baseline](docs/integration/working-baseline.md) |
-
-Build and test from these maintained paths. Ignored `verification/` experiments, private Live Sets, installed applications and raw recordings are not build or test dependencies. The helper's SDK dependency is external and pinned by the build instructions. No vendor SDK or compiled application is included here.
-
-Live recording requires a separately prepared local Set and explicit configuration. The committed Remote Script defaults leave recording disabled until that setup has been validated. See the Live controller instructions before installing or enabling it.
-
-The [baseline hashes](prototypes/controller/live/baseline-sha256.json) identify the frozen checkpoint, not every later working-tree revision. The current metronome source and host routing must be deployed together even though they retain protocol 18/A8. A subsequent graphics-only fix changes phase sampling in both pad programs; it leaves host, native helper and gesture behavior unchanged.
-
-Run the offline Python and compiled-device checks from the checkout root:
+| Live engine, gestures and host tests | [Live controller](prototypes/controller/live/README.md) |
+| Native helper, package and reversible installation | [Lightpad Bridge](tools/lightpad-bridge/README.md) |
+| Main, metronome and status renderers | [Device sources](prototypes/controller/lightpad/) |
+| Compiled-bytecode verification | [Current-device checks](verification-tools/README-current-device.md) |
+| Release contract and Native checks still required | [Stable release](docs/integration/stable-release.md) |
 
 ```sh
 python3 -m unittest discover -s prototypes/controller/live/tests -v
 python3 verification-tools/test_current_device.py
+python3 verification-tools/test_status_device.py
 ```
 
-The device checks require the source-built `blocksctl` compiler on `PATH`. To build and test the native helper and stage a new app, supply the pinned SDK, a new build/output location, and your own device serial:
+The device checks require the source-built `blocksctl` compiler. The native build additionally requires the pinned external SDK, CMake and Apple Command Line Tools. [Build/staging](tools/lightpad-bridge/README.md) creates a new app without launching, installing or writing to the pad. Ignored `verification/` experiments, installed applications and recordings are not build dependencies.
 
-```sh
-python3 tools/lightpad-bridge/build.py \
-  --sdk /path/to/blocksctl/vendor/sdk \
-  --build-dir /tmp/lightpad-baseline-build \
-  --device YOUR_DEVICE_SERIAL \
-  --output '/tmp/Lightpad Bridge.app'
-```
-
-Replace the SDK path and serial before running. The staging command does not install or start the app. The helper instructions describe dependency validation and local toolchain requirements.
-
-## Device memory and switching
+## Program memory
 
 | Program | Code plus heap | Free of 7,200 bytes |
 | --- | ---: | ---: |
-| Main | 6,283 | 917 |
+| Main | 7,106 | 94 |
 | Metronome | 5,331 | 1,869 |
+| Status + idle | 5,320 | 1,880 |
 
-Both programs now reuse one clock-phase sample per repaint for bar tracking and swing drawing. This fixes a deterministically reproduced opposite-edge jump in odd meter, and offline 4/4 endpoint and clock-refresh continuity checks pass. After the fix, the user's USB flash check reported "looks good". On 9 November 2026, Hannes also reported that the current version works well over Bluetooth.
+Only one program runs at a time. Separate programs preserve local animation and immediate touch feedback while avoiding the combined-program memory limit. Numerical switch timings from older trials do not establish current candidate latency.
 
-Each program has its own budget because only one is loaded at a time. Switching uploads a temporary program and restores feedback from Live. In the frozen checkpoint's Bluetooth trial, entering the smaller metronome program took about 2.2–2.5 seconds and returning took about 3.4–3.5 seconds. The user accepted that pause for these occasional settings screens. The current version has a positive user-reported Bluetooth check; new numerical switch timings were not measured.
+## Earlier checkpoints
 
-The checkpoint's USB and Bluetooth trials passed modal controls, short/long button recognition, mute/mixer control, recording and layering after returning from the modal. The new layout, ruler and reset received positive USB feedback, followed by a positive general Bluetooth report on 9 November 2026. This evidence does not establish audio quality, sample-accurate onset, long-duration reliability or sleep/wake recovery. Temporary uploads preserve the device's saved startup program; building or staging the app does not install, launch, save a default or update firmware.
+The [working baseline](docs/integration/working-baseline.md) records bounded USB/Bluetooth trials for `35e2a8d`. Metronome checkpoint `1d31013` and subsequent recording-dot trials have their own dated observations. [Baseline hashes](prototypes/controller/live/baseline-sha256.json) identify the frozen checkpoint, not this working tree.
 
-A retained stress regression is marked as an expected failure: sustained urgent meter traffic can starve group-clock feedback beyond its freshness limit. Its strict assertion and measured workload remain visible in the host suite and [baseline limitations](docs/integration/working-baseline.md). The cleanup preserves the tested pacing behavior.
+Audible capture/continuity, long-duration use and sleep/wake remain outside the completed trials. See the [validation limits](docs/integration/validation-summary.md#limits) before relying on those cases.

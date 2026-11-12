@@ -212,6 +212,57 @@ class AudioController:
         return fields
 
     @_consistent_read
+    def recording_bars(self, group, take_id):
+        """Pure feedback for the exact current observed recording generation."""
+        if (type(group) is not int or type(take_id) is not int or not 0 <= take_id < 128
+                or group not in self.fixture.groups or group in self.backend.faults):
+            return 0
+        take = self.session.take
+        if (take is None or take.group != group or take.token % 128 != take_id
+                or take.state not in ('recording', 'finish_queued')
+                or self.session.view_for(group) not in (2, 3) or not self._scope_valid()):
+            return 0
+        return self.backend.recording_bars(take.slot, take.token)
+
+    @_consistent_read
+    def recording_clock(self, group, take_id):
+        """Render the exact current recording with its own start-relative bar."""
+        if (type(group) is not int or type(take_id) is not int or not 0 <= take_id < 128
+                or group not in self.fixture.groups or group in self.backend.faults):
+            return None
+        take = self.session.take
+        if (take is None or take.group != group or take.token % 128 != take_id
+                or take.state not in ('recording', 'finish_queued')
+                or self.session.view_for(group) not in (2, 3) or not self._scope_valid()):
+            return None
+        context = p.PLAYING if self.session.groups[group].accepted else p.EMPTY
+        return self.backend.recording_clock(take.slot, take.token, context, take_id)
+
+    def _countdown_take(self, group, take_id):
+        if (type(group) is not int or type(take_id) is not int or not 0 <= take_id < 128
+                or group not in self.fixture.groups or group in self.backend.faults):
+            return None
+        take = self.session.take
+        if (take is None or take.group != group or take.token % 128 != take_id
+                or take.state != 'queued' or self.session.view_for(group) != QUEUED_VIEW
+                or not self._scope_valid()):
+            return None
+        return take
+
+    @_consistent_read
+    def countdown_remaining_bars(self, group, take_id):
+        take = self._countdown_take(group, take_id)
+        return self.backend.countdown_remaining_bars(take.slot, take.token, take.schedule) if take else 0
+
+    @_consistent_read
+    def countdown_clock(self, group, take_id):
+        take = self._countdown_take(group, take_id)
+        if take is None:
+            return None
+        context = p.PLAYING if self.session.groups[group].accepted else p.EMPTY
+        return self.backend.countdown_clock(take.slot, take.token, take.schedule, context, take_id)
+
+    @_consistent_read
     def global_clock(self):
         """Actual bar clock, also sent while recording for whole-ring flashes."""
         if not self._control_scope_valid():

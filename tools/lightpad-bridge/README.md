@@ -1,57 +1,170 @@
 # Lightpad Bridge
 
-One background macOS helper connects the Lightpad to the Python Remote Script in Ableton Live. It discovers the explicitly selected device, owns temporary program uploads, preserves the virtual MIDI ports across program changes and transports complete feedback records. Live owns audio, recording, layers and project state; the pad draws and animates locally.
+One background macOS helper connects the Lightpad to the Python Remote Script in Live. It owns the SDK connection, USB/Bluetooth discovery, temporary program uploads, virtual MIDI ports and local diagnostic notifications. Live owns clips, recording and mixer state. The pad renders and animates locally.
 
-The native helper is unchanged from working checkpoint `35e2a8d`, which passed user checks over USB and Bluetooth, including mute/mixer controls, recording and layering after a modal round trip. The current device/host sources add the approved full-screen metronome trial; automated checks pass, the latest digit/raster refinement and double-tap reset passed the USB trial, and Hannes reported that the current version works well over Bluetooth on 9 November 2026. A short Mode-button release toggles the metronome after pad contacts are lifted. A hold of at least 400 ms logs one reserved input-selection request; releasing the hold does not also trigger a short click. The input selector itself is not implemented.
+The signed production helper, Live script and login agent are installed with rollback retained, and login startup is activated. The combined idle/status startup passed the power-cycle/touch check. Two accepted USB takes, populated reopening and a fresh Set from the installed template passed. Bluetooth now passes recording, layering, mute, volume/pan and Mode switching from the installed template with USB unplugged. The user also confirmed visible diagnostic notifications after disabling Sleep Focus, with mirroring notifications still off. Core startup, USB, Bluetooth, template and notification checks have passed. See the [release contract](../../docs/integration/stable-release.md) for the agreed workflow and remaining physical checks.
 
-| Temporary device program | Code + heap | Free of 7,200 bytes |
-| --- | ---: | ---: |
-| [Main controller](../../prototypes/controller/lightpad/main.littlefoot) | 6,283 | 917 |
-| [Metronome](../../prototypes/controller/lightpad/metronome.littlefoot) | 5,331 | 1,869 |
+## Everyday use after installation
 
-The main screen's bottom metronome row is visual only. The separate metronome program has two seven-column meter fields above seven-by-five Click/Tap buttons, with a black, inactive center column and no Close button. White digits always show confirmed Live values, including changes received while dragging. The held-field raster stays beneath the digits: reachable two-LED detent lines use exactly the resting field colors, blue `#071724` or purple `#1b0c26`; the selected line is bright field color, and other background pixels are black. Unconfirmed raster intent may remain beneath the digits for at most 200 ms after release. Relative dragging retains a quarter-LED return hysteresis. Click uses a green/red background and a five-by-three track with a two-by-three white knob, left when off and right when on. Tap is uniformly dim monochrome with a brief brighter pressed state; it has no icon or full-white flash. The preview adds no transport lane or Native command.
+Run the installed `Lightpad Bridge.app`, or use its approved login agent. Connect the configured standalone Lightpad by USB or Bluetooth MIDI. In Live, select `LightpadController`, with Input and Output both `Lightpad Bridge`. For a fresh project, open **Templates > Lightpad Remote** in Live's browser and save the new Untitled Set. Its installed file is `~/Music/Ableton/User Library/Templates/Lightpad Remote.als`; [the repository copy](../../templates/Lightpad%20Remote.als) contains eight marked groups with one empty child each, four returns and no clips/FileRefs. In another Set, name controller Group Tracks `[R1] Vocals`, `[R2] Guitar`, and so on. The production host discovers the loaded Set directly and has no private manifest/hash dependency.
 
-The host also recognizes independent double-taps on the numerator and denominator fields, resetting the tapped value to 4 on the second release. Completing both fields' double-taps requests 4/4 through the existing serialized meter operations. Ordinary single taps have no action, and recognition adds no delay to dragging. Hannes confirmed the per-field and simultaneous double-tap resets, plus unchanged dragging, over USB on 9 November 2026. Helper, device programs, wire format and memory sizes are unchanged by the addition.
+If macOS has not connected Bluetooth MIDI, connect the Lightpad in Audio MIDI Setup > MIDI Studio > Bluetooth configuration. The helper discovers the OS connection; it does not initiate Bluetooth pairing.
 
-A graphics-only follow-up makes both pad programs reuse one phase sample per repaint. A deterministic odd-meter opposite-edge jump now passes its regression, as do offline 4/4 endpoint and clock-refresh continuity checks. The user reported "looks good" in the subsequent USB flash check. Hannes subsequently gave a positive general Bluetooth report for the current version on 9 November 2026. Host, native helper and gesture code are unchanged by the phase fix.
+A healthy Bluetooth connection stays active if USB is plugged in; USB is preferred when establishing a new connection. Do not run BLOCKS Code, Dashboard or another SDK uploader against the same pad simultaneously. Program changes preserve virtual ports and Live's music; they reset touch contacts and reseed graphics.
 
-Replacing a program takes a noticeable pause. In the frozen checkpoint, six measured Bluetooth switches reached model readiness in about 2.2–2.5 seconds entering the smaller metronome program and 3.4–3.5 seconds returning. The user accepted this for occasional settings. Those are device-model markers, not optical timing or a guarantee for the new larger program. A positive user-reported Bluetooth check is recorded for the current version; new numerical switch timings were not measured. The [working-baseline document](../../docs/integration/working-baseline.md) and [baseline hashes](../../prototypes/controller/live/baseline-sha256.json) remain frozen provenance for that checkpoint.
+The login agent is installed and activated for startup and crash restart. New takes use Live's default Audio Tracks; audio input selection remains in Live. A recording gesture while transport is stopped silently does nothing.
 
-## Build and stage from a checkout
+For the single bridge path, the old direct BLOCKS control-surface slots 2 and 3 and raw USB Track/Remote input/output switches were disabled. The original machine's `Preferences.cfg` backup is local-only and is not part of a clone. Back up your own preferences before changing them. Restoring the legacy keyboard controller requires re-enabling its direct BLOCKS MIDI preferences as well as reinstalling the archived device program. Do not restore the whole preferences file while Live is open.
 
-Requirements are macOS, Python 3, CMake, Apple Command Line Tools and the pinned `blocksctl` compiler/SDK source. Install or build `blocksctl` separately from its repository. The supplier revision and SDK manifest are recorded in [sdk-lock.json](sdk-lock.json). The build checks all 685 SDK files before compiling and also retains the SDK's critical inline connection hash guard. It does not patch vendor files or accept license terms.
+## Readiness and status
 
-From the repository root, supply the SDK directory, a build directory, the exact 16-character device serial and a **new** output app path:
+The helper distinguishes `program_loaded`, `device_model_ready`, `host_health` and `playable`. Upload completion alone is not usable Live state. Current faults are separate from the retained `last_error`, so a recovered old error does not keep an error screen active.
+
+| Global screen | Display | Tap explanation |
+| --- | --- | --- |
+| Connecting/recovering or bridge unavailable | Accepted v9 elastic tunnel | Idle gestures affect the animation only. If it persists, check USB/Bluetooth and that the bridge runs. |
+| Waiting for Live | White Ableton logo | Open Live and check the two Bridge ports. |
+| No remote groups | Orange `[R]` | Add `[R1]` through `[R8]` prefixes to Group Track names. |
+| Unexpected failure | Red `!` | Read the observed cause and corrective action. |
+
+The accepted v9 tunnel and hidden-message behavior are integrated from idle commit `bb90f24`. Status states 0, 1 and 5 use that exact renderer; the Live, `[R]` and `!` fault icons remain unchanged. Idle touches never request diagnostic notifications. Ready host health still switches to main. The combined idle/status startup program replaced the saved yellow probe, and the user power-cycle/touch check passed. Main and metronome remain temporary programs, and the legacy navigation controller remains archived and reinstallable.
+
+At cold connection the helper loads status and can seed it without Live. Fresh usable host health returns to main after contacts lift. A three-second health timeout normally opens status, but the last-known active recording prevents that timeout from replacing its recording screen. Mode is inactive during global status. Group-specific action failures produce a local flash; they do not send automatic notifications or open the global screen.
+
+Host heartbeats remain active while pad programs upload. Bluetooth main-program uploads can take longer than the three-second health timeout, so device upload readiness must not gate this separate host lane. Queued heartbeats retain their MIDI receipt times; draining an old heartbeat cannot make an absent Live session appear fresh.
+
+Only a tap on a fault icon requests a local Mac notification. The first explicit request may ask for alert permission. No sound, badge, automatic error notification or remote notification service is used. macOS Focus or notification settings may suppress banners. The same explanation is available on demand without opening MIDI:
 
 ```sh
+'/path/to/Lightpad Bridge.app/Contents/MacOS/lightpad-bridge' --explain
+'/path/to/Lightpad Bridge.app/Contents/MacOS/lightpad-bridge' --bundle-info
+```
+
+The native executable is `Contents/MacOS/lightpad-bridge` inside the fully signed app bundle, registered with Launch Services at its final installed path. The user enabled Lightpad Bridge notifications. Full-bundle signing fixed the earlier incomplete-identity authorization failure. Sleep Focus subsequently hid banners despite authorized requests and delivered records. After disabling Sleep Focus, the user confirmed visible notifications, including with mirroring notifications off. No additional notification code change was needed. Keep Focus and mirroring preferences as desired; when a requested banner is hidden, check those settings or use `--explain`.
+
+## Program and wire contracts
+
+Main/metronome graphics retain protocol 18/A8. The host sends helper-only health on channel 16 as five CCs: CC114 sequence, CC115 state, CC116 reason, CC117 flags and CC118 matching sequence. States are connecting 0, bridge-unavailable 1, Live-unavailable 2, no-groups 3, failure 4 and ready 5. Flags indicate recording-busy and safe-modal state. The host cannot declare a physical bridge failure; the helper/device determine it locally.
+
+The status program receives `m0 = 0x53540000 | state | (reason << 8)`, `m1 = 0`, header `0xA8 | (3 << 8) | (8 << 10)`, every 500 ms. Its fault-icon CC107 diagnostic taps and CC106 held-contact count bypass Live's stale-gesture gate. Startup status does not require permission from an unreachable Live script. Metronome switches still require fresh Live permission and no held contacts or active recording/cleanup.
+
+Short Mode release toggles main/metronome after contacts lift. A hold of at least 400 ms emits a reserved input-selection request; release after a hold does not also act as a short click. Input selection remains a placeholder.
+
+## Build and stage offline
+
+Requirements: macOS, Git, Python 3.9 or newer, CMake and Apple Command Line Tools. Install missing tools before building, for example `xcode-select --install` for Apple's tools and `brew install cmake` if you use Homebrew. BLOCKS Code, Dashboard and a ROLI account are not needed.
+
+Run from a fresh controller checkout. The following creates a sibling `blocksctl` checkout at the revision in [sdk-lock.json](sdk-lock.json). Its 685-file SDK is vendored directly; there is no submodule or separate SDK download.
+
+```sh
+git clone https://github.com/Xiphe/blocksctl.git ../blocksctl
+git -C ../blocksctl checkout 6612968f3651704870041a397bae466226d0d7af
+python3 ../blocksctl/scripts/verify_vendor.py
+cmake -S ../blocksctl -B ../blocksctl/build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_COMPILER=/Library/Developer/CommandLineTools/usr/bin/clang++ \
+  -DCMAKE_OBJCXX_COMPILER=/Library/Developer/CommandLineTools/usr/bin/clang++ \
+  -DCMAKE_OSX_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk \
+  '-DCMAKE_CXX_FLAGS=-isystem /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1' \
+  '-DCMAKE_OBJCXX_FLAGS=-isystem /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1' \
+  -DCMAKE_MAKE_PROGRAM=/Library/Developer/CommandLineTools/usr/bin/make
+cmake --build ../blocksctl/build --parallel 4
+ctest --test-dir ../blocksctl/build --output-on-failure
+export PATH="$PWD/../blocksctl/build:$PATH"
 python3 tools/lightpad-bridge/build.py \
-  --sdk /path/to/blocksctl/vendor/sdk \
-  --build-dir /tmp/lightpad-baseline-build \
-  --device EXACT_16_CHAR_ID \
+  --sdk ../blocksctl/vendor/sdk \
+  --compiler ../blocksctl/build/blocksctl \
+  --build-dir /tmp/lightpad-production-build \
+  --device YOUR_16_CHARACTER_SERIAL \
   --output '/tmp/Lightpad Bridge.app'
 ```
 
-`EXACT_16_CHAR_ID` is a placeholder; replace it with the actual 16-character serial. `build.py` uses the selected `DEVELOPER_DIR` or the installed Command Line Tools. It builds Release, runs the four native CTests, compiles both device sources through `blocksctl`, rejects either program above the 7,200-byte code-plus-heap limit, and stages a windowless app. Upstream ROLI/JUCE/GPL/zlib/libc++ notices accompany the app. Generated metadata records the binary, program and native-source hashes without local source paths. The serial is supplied locally and is never a repository default.
+Use new build/output paths if those paths already contain another build. The explicit compiler flags use the installed Command Line Tools without changing global Xcode selection. No pip packages are needed. Keep the whole pinned dependency checkout: the bridge also needs its vendor manifest and license notices, so a downloaded compiler or copied SDK folder alone is insufficient. Adding its build directory to this shell's PATH lets compiled-device tests find `blocksctl`. The bridge build checks the vendor manifest, all SDK files and the inline connection hash before compiling. The dependency's [build guide](https://github.com/Xiphe/blocksctl/blob/6612968f3651704870041a397bae466226d0d7af/docs/build.md) explains other supported toolchains.
 
-The command does **not** install or start the app, open MIDI ports, write firmware, save a device default or install a Live script. To stage from an already-built executable, use `package.py --help`; both device sources are mandatory and compile/budget checks still run. Existing output apps are never overwritten.
+Find the pad's exact 16-character serial with `../blocksctl/build/blocksctl devices --timeout 5` while other SDK owners are closed. Discovery accesses the device; compilation itself is offline. Use that serial and a new output path. The command builds Release, runs five native CTests, compiles all three programs, enforces each 7,200-byte budget and packages supplier notices. The separate status source defaults to `prototypes/controller/lightpad/status.littlefoot`; `--status-program SOURCE` selects an alternative reviewed asset. Packaging copies `idle-animation.littlefoot` and `idle-statements-prototype.littlefoot` beside it and records their hashes in build information. `package.py --help` describes staging from an existing native binary.
 
-Packaging checks run offline:
+Quoted relative `.littlefoot` includes are copied recursively into the bundle and recorded with individual hashes in `build-info.json`. Packaging compiles those isolated copies rather than relying on the source checkout. Includes must stay within their entry source directory; absolute paths, parent traversal, symlinks, cycles and conflicting destinations are rejected. Shared includes with identical content are copied once.
+
+Packaging signs the completed app bundle with a local ad-hoc signature and verifies its seal. The linker signature alone leaves `Info.plist` unbound. `build-info.json` records `input_binary_sha256` for the native build input; CLI output separately reports `packaged_binary_sha256` after signing. Installation-plan hashes cover the complete signed candidate. Do not edit bundled files after signing.
+
+Build/staging opens no MIDI, launches no app and performs no installation, firmware or saved-default write. Running the staged app is a separate action.
+
+Current checked program budgets:
+
+| Program | Code + heap | Free |
+| --- | ---: | ---: |
+| Main | 7,106 | 94 |
+| Metronome | 5,331 | 1,869 |
+| Status + idle animation | 5,320 | 1,880 |
+
+## Matched installation and rollback
+
+The current installed baseline passed startup, USB/Bluetooth recording, template reopening and visible diagnostic notifications. [The tracked validation summary](../../docs/integration/validation-summary.md) records that evidence. On another machine, perform the steps below. Each installation writes its own receipt and retains replaced files for rollback; the original machine's private receipts are not clone dependencies.
+
+Prepare a plan from the build above without changing installed files or login settings. Run from the controller checkout and choose a new plan directory if this one already exists:
 
 ```sh
-python3 tools/lightpad-bridge/test_package.py -v
+python3 tools/lightpad-bridge/install.py stage \
+  --app '/tmp/Lightpad Bridge.app' \
+  --script "$PWD/prototypes/controller/live/LightpadController" \
+  --output /tmp/lightpad-install-plan
 ```
 
-Live script preparation and explicit scratch-Set opt-in are documented in [the host README](../../prototypes/controller/live/README.md). Deploy the current modal source and host routing together, preserving the reviewed local configuration. Protocol 18/A8 and native helper bytes are unchanged, so a version number alone does not distinguish the old and new control geometry. Restart the helper to load changed source files and explicitly reload the updated Live script. Default checked-in host configuration does not enable recording in arbitrary projects.
+The plan contains the app, complete production Live script and optional login agent. It verifies the native app identity, status program, matching health support and `LIVE_STATE_MODE = True`, and rejects the prototype's private experiment paths. Default targets are `~/Applications/Lightpad Bridge.app`, `~/Music/Ableton/User Library/Remote Scripts/LightpadController`, and `~/Library/LaunchAgents/net.xiphe.lightpad-bridge.plist`. Use `--no-login` when deliberately staging without login startup.
 
-## Runtime contract
+Install the saved startup separately while Live, Lightpad Bridge, BLOCKS Code and Dashboard are closed. If the bridge login agent is already loaded, unload it before taking the SDK connection:
 
-- Set both ports of the `LightpadController` control surface to **Lightpad Bridge**. The generic Track input for that virtual port is disabled in the tested setup.
-- The helper uses protocol 18/A8 and forwards complete state, clock and UI records as checksummed SDK packets. Raw contact frames retain all sixteen channels and recording-view wakeups. Native recording scheduling does not wait for graphics.
-- Modal entry asks Live for fresh, nonce-correlated permission. Recording, pending cleanup, held contacts or invalid project scope deny entry. Stale grants and new raw input cancel a request. Lift all pad contacts before using a short Mode release to return to the main program.
-- Device discovery verifies the exact serial, standalone topology and matching CoreMIDI endpoint identity. USB is preferred for a new connection; a healthy Bluetooth connection is retained when USB is plugged in.
-- One helper owns the SDK session. Singleton and SDK per-port locks reject competing owners. Do not run a separate CLI uploader, Dashboard or BLOCKS Code against the same device concurrently.
-- Reconnection discards stale feedback, temporarily reloads the main program and handshakes again. Program changes preserve the Live Session object and accepted audio; they reset local pad contacts and reseed display state.
+```sh
+launchctl bootout "gui/$(id -u)/net.xiphe.lightpad-bridge"
+```
 
-Opening the installed `.app` starts the helper with no Dock window. Status, lock and event files are under `~/Library/Application Support/Lightpad Bridge/`; the log is under `~/Library/Logs/Lightpad Bridge/`. Login autostart is not enabled. Closing the helper ends its temporary SDK session and leaves the saved startup program intact. Nothing in this build/stage flow writes firmware or saves a new startup program.
+For a first installation with no agent loaded, skip that command. Then run from the controller checkout:
 
-The checkpoint's bounded trial had no new bridge errors during Bluetooth performance. One retained stale-FIFO error arose during USB removal before recovery; an old error string can remain in status while `state` is `ready`. The current UI has positive USB and general Bluetooth feedback. Power-cycle, sleep/wake and long-duration workloads remain follow-up checks.
+```sh
+../blocksctl/build/blocksctl save-default prototypes/controller/lightpad/status.littlefoot \
+  --device YOUR_16_CHARACTER_SERIAL --timeout 30
+```
+
+Keep `idle-animation.littlefoot` and `idle-statements-prototype.littlefoot` beside `status.littlefoot`; the compiler resolves those includes. This writes the startup program, not firmware. A successful command means the save was requested, so power-cycle the pad and confirm the idle/touch behavior before continuing. Temporary main/metronome uploads do not replace this saved startup. [Legacy restoration](../../docs/integration/legacy-restore.md) gives the old-program alternative.
+
+Apply only after Live and the running helper are closed:
+
+```sh
+python3 tools/lightpad-bridge/install.py apply /tmp/lightpad-install-plan/install-plan.json
+```
+
+For a first installation, leave `--activate-login` off so you can register the final bundle before starting it. Apply writes the default login-agent file without loading it. For an already registered installation, `--activate-login` can explicitly start the helper during apply. Login startup uses RunAtLoad, restarts failed exits and throttles restart attempts.
+
+Register the completed signed app at its final installed path so macOS can identify its notification requests. With the default installation target:
+
+```sh
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+  -f "$HOME/Applications/Lightpad Bridge.app"
+```
+
+Use your chosen app target if you staged another location. If you staged the default login agent, load it after registration:
+
+```sh
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/net.xiphe.lightpad-bridge.plist"
+```
+
+This starts the helper and enables login startup. With `--no-login`, open the installed app manually instead. Allow Lightpad Bridge notifications when requested, and check Focus if an explicit diagnostic tap produces no banner. The `--explain` command remains available without a notification banner.
+
+Apply verifies staged/current hashes, prepares all copies before replacing any root and retains a receipt plus replaced files under `~/Library/Application Support/Lightpad Bridge/revisions/`. Rollback also requires Live/helper stopped and refuses changed files:
+
+```sh
+python3 tools/lightpad-bridge/install.py rollback /absolute/revisions/REVISION/receipt.json
+```
+
+Rollback preserves the newer files and reports when an earlier login agent needs reloading. Neither apply nor rollback changes Live MIDI/audio preferences, writes the saved startup program, saves recordings or flashes firmware. The separate startup-status installation and user power-cycle check have now completed.
+
+## Checks and evidence limits
+
+```sh
+python3 -m unittest discover -s tools/lightpad-bridge -p 'test_*.py' -v
+python3 verification-tools/test_status_device.py
+python3 verification-tools/test_status_idle.py
+```
+
+The native suite has five passing CTests, packaging/install has 21 passing tests, and status has twelve checks plus five differential v9 comparisons. The [tracked validation summary](../../docs/integration/validation-summary.md) records all 842 offline checks and bounded hardware results. Your build generates hashes in `Contents/Resources/build-info.json`; your install generates a rollback receipt. The former urgent-feedback pacing failure is now a strict passing regression at the unchanged four-frame-per-90-ms limit. Offline logic checks do not measure physical latency or audio.
+
+Checkpoint `35e2a8d` passed bounded USB/Bluetooth trials, and `1d31013` added the accepted metronome UI. Their [working baseline](../../docs/integration/working-baseline.md) and [hashes](../../prototypes/controller/live/baseline-sha256.json) remain historical. They do not validate this production engine, health lane, notification system, installer, sleep/wake or long-duration workloads.

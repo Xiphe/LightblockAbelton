@@ -63,6 +63,10 @@ from LightpadController.surface import LightpadController
 
 class SurfaceTests(unittest.TestCase):
     def make(self, tracks=None):
+        # These historical adapter tests deliberately exercise legacy names.
+        settings = patch('LightpadController.configuration.LIVE_STATE_MODE', False)
+        settings.start()
+        self.addCleanup(settings.stop)
         self.now = [100.0]
         timer = patch('LightpadController.surface.time.monotonic', side_effect=lambda: self.now[0])
         timer.start()

@@ -18,6 +18,7 @@ from .output_pacing import OutputPacer
 from .compact_wire import project_wire
 from .device_ui import DeviceUI
 from .touch_protocol import TouchParser
+from . import health
 
 
 def _ui_callback(method):
@@ -72,10 +73,20 @@ class LightpadController(ControlSurface):
         self._native_busy = False
         self._ready_completions = []
         self._configuration_failed = False
+        self._production = bool(getattr(config, 'LIVE_STATE_MODE', True)) and not config.AUDIO_CONTROLLER_MANIFEST
+        self._health = health.HealthPublisher(self._send_health_frame, time.monotonic)
+        self._engine_retry_at = time.monotonic()
         self._output = OutputPacer(self._send_wire)
         super(LightpadController, self).__init__(c_instance)
         self._groups = LiveGroups(self.song(), assignments=config.PARAMETER_TARGETS)
-        if config.AUDIO_CONTROLLER_MANIFEST:
+        if self._production:
+            try:
+                self._engine = self._new_live_engine()
+                self._groups = self._engine.groups
+            except Exception as error:
+                self._configuration_failed = True
+                self.log_message('Lightpad startup unavailable: %s: %s' % (type(error).__name__, error))
+        elif config.AUDIO_CONTROLLER_MANIFEST:
             try:
                 manifest = load_audio_configuration(config.AUDIO_CONTROLLER_MANIFEST, config.SYNC_UI_EVIDENCE)
                 fixture = AudioFixture(self.song(), manifest,
@@ -91,11 +102,84 @@ class LightpadController(ControlSurface):
             except Exception as error:
                 self._configuration_failed = True
                 self.log_message("Lightpad audio configuration unavailable: %s: %s" % (type(error).__name__, error))
-        self._ui = DeviceUI(self._ui_send, self._ui_snapshot, self._ui_meter, time.monotonic)
+        self._ui = DeviceUI(self._ui_send, self._ui_snapshot, self._ui_meter, time.monotonic,
+                            recording_bars=self._ui_recording_bars,
+                            countdown_bars=self._ui_countdown_bars,
+                            transport_running=(lambda: bool(self.song().is_playing)) if self._production else None)
         self._ui._frame_context = lambda: self._touch_parser.latest
         self._touch_parser.pre_touch = self._ui.pre_touch
-        self.log_message("Lightpad controller v4: scratch audio %s; evidence %s" % (
-            "bound" if self._engine else "unavailable", tuple(config.VALIDATED_AUDIO_FEATURES)))
+        if self._production:
+            self.log_message('Lightpad controller: live-state discovery enabled; groups use [R1] through [R8]')
+        else:
+            self.log_message("Lightpad controller v4: scratch audio %s; evidence %s" % (
+                "bound" if self._engine else "unavailable", tuple(config.VALIDATED_AUDIO_FEATURES)))
+
+    def _send_health_frame(self, messages):
+        for message in messages:
+            self._send_midi(message, optimized=False)
+
+    def _new_live_engine(self):
+        from .live_controller import LiveController
+        native = getattr(getattr(Live, 'Song', None), 'Quantization', None)
+        quantizations = {name: getattr(native, name) for name in
+            ('q_bar', 'q_half', 'q_quarter', 'q_eight', 'q_sixtenth')
+            if native is not None and hasattr(native, name)}
+        return LiveController(self.song(), quantizations=quantizations,
+            assignments=config.PARAMETER_TARGETS, emit=self._recording_event,
+            monotonic=time.monotonic)
+
+    def _recover_live_engine(self):
+        # Only retry a constructor which never produced a working engine. Never
+        # replace in-flight recording intent to recover a stale display.
+        now = time.monotonic()
+        if (not self._production or self._engine is not None
+                or now - self._engine_retry_at < .5):
+            return
+        self._engine_retry_at = now
+        try:
+            engine = self._new_live_engine()
+        except Exception:
+            return
+        self._engine, self._groups = engine, engine.groups
+        self._configuration_failed = False
+        self._ui.reset()
+        self._invalidate_ui()
+        self._last = [None] * 8
+        self._last_presentation = None
+        self.log_message('Lightpad controller recovered its live group discovery')
+
+    def _publish_health(self, force=False):
+        if self._closed or not self._production:
+            return
+        read = getattr(self._engine, 'readiness', None)
+        if not callable(read) and not self._configuration_failed:
+            return
+        try:
+            if self._configuration_failed:
+                state, reason, flags = health.FAILURE, health.HOST_FAILURE, 0
+            else:
+                observed = read()
+                state = observed['state']
+                reason = (health.NONE if state == health.READY else
+                          health.NO_REMOTE_GROUPS if state == health.NO_GROUPS else health.HOST_FAILURE)
+                flags = health.RECORDING_BUSY if observed.get('recording_busy') else 0
+                permitted = getattr(self._engine, 'modal_allowed', None)
+                if state == health.READY and callable(permitted) and permitted():
+                    flags |= health.SAFE_MODAL
+            self._health.publish(state, reason, flags, force)
+        except Exception as error:
+            self.log_message('Lightpad readiness unavailable: %s' % type(error).__name__)
+            self._health.publish(health.FAILURE, health.HOST_FAILURE)
+
+    def _sync_live_recording(self):
+        read = getattr(self._engine, 'active_recording', None)
+        if callable(read):
+            try:
+                active = read()
+            except (RuntimeError, AttributeError, ValueError, TypeError):
+                # A failed Native observation is not proof a take ended.
+                return
+            self._ui.reconcile_recording(active)
 
     def _recording_event(self, event):
         self.log_message("Lightpad native event: %s" % event)
@@ -185,6 +269,14 @@ class LightpadController(ControlSurface):
             self._ui_cache[group] = fields
         return fields
 
+    def _ui_countdown_bars(self, group, take_id):
+        read = getattr(self._engine, 'countdown_remaining_bars', None)
+        return read(group, take_id) if callable(read) else 0
+
+    def _ui_recording_bars(self, group, take_id):
+        read = getattr(self._engine, 'recording_bars', None)
+        return read(group, take_id) if callable(read) else 0
+
     def _ui_meter(self):
         if self._ui_cache is not None and 'meter' in self._ui_cache:
             return self._ui_cache['meter']
@@ -210,6 +302,7 @@ class LightpadController(ControlSurface):
                 del self._touch_seen[index]
         self._pin_terminals()
         self._ui.tick()
+        self._sync_live_recording()
 
     def _pin_terminals(self):
         # DeviceUI may synchronously acknowledge observed completion. Protect
@@ -256,6 +349,9 @@ class LightpadController(ControlSurface):
                     or ui._pre_start or any(not c.ignored for c in ui._touches.values())
                     or any(not c.ignored for c in ui._roles.values()) or ui._aux):
                 return False
+            allowed = getattr(engine, 'modal_allowed', None)
+            if callable(allowed):
+                return bool(allowed())
             session, backend = engine.session, engine.backend
             if (session.take is not None or session.view != 0
                     or session.recording_group is not None or session.view_group is not None
@@ -300,6 +396,11 @@ class LightpadController(ControlSurface):
             self._touch_seen.clear()
             self._last_presentation = None
         raw = len(message) == 3 and 0xB0 <= message[0] <= 0xBF and 20 <= message[1] <= 26
+        if raw and touch is None:
+            # Keep command-frame interruption semantics, but do not inspect
+            # clips or repaint while a seven-CC contact is still incomplete.
+            self._parser.receive(message)
+            return
         if not raw or touch is not None:
             self._tick()
         event = self._parser.receive(message)
@@ -307,6 +408,7 @@ class LightpadController(ControlSurface):
             self._touch_parser.reset(ready=True)
             self._output.clear()
             self._send(p.encode_metadata(bool(self.song().is_playing)))
+            self._sync_live_recording()
             self._publish(force=True)
             self._publish_timing(force=True)
         elif isinstance(event, p.Command):
@@ -334,6 +436,7 @@ class LightpadController(ControlSurface):
                     self._publish()
                     self._publish_timing()
                 self._publish_presentation()
+                self._publish_health()
                 # Finish decoding a contact before spending this callback's
                 # output budget. Otherwise CC20 can send three old clocks and
                 # leave its CC26 gesture/result waiting for another window.
@@ -353,7 +456,8 @@ class LightpadController(ControlSurface):
                 if fields is not None:
                     binding = (payload[2], fields[91], payload[3])
             self._presentation_revision = (self._presentation_revision + 1) % 128
-            self._output.presentation(p.encode_presentation(self._presentation_revision, payload), now, binding)
+            self._output.presentation(p.encode_presentation(self._presentation_revision, payload), now, binding,
+                                      on_sent=self._ui.presentation_receipt(payload))
             self._last_presentation = payload
 
     def _publish(self, force=False, only=None):
@@ -404,14 +508,40 @@ class LightpadController(ControlSurface):
             self._output.clock(index, lambda index=index: self._timing_frame(index, force),
                                time.monotonic(), urgent=index == 8 and changed)
 
+    def _render_group_clock(self, index):
+        if self._ui.view == 2 and self._ui.recording_group == index:
+            fields = self._ui_snapshot(index)
+            if fields is None:
+                return None
+            if fields[106] in (1, 2, 3):
+                read = getattr(self._engine, 'countdown_clock' if fields[106] == 1 else 'recording_clock', None)
+                if (fields[107] != self._ui.active_take or not callable(read)):
+                    return None
+                return read(index, self._ui.active_take)
+        return self._engine.group_clock(index)
+
+    def _countdown_page_allowed(self, index, clock):
+        if (index >= 8 or not isinstance(clock, timing.Clock)
+                or self._ui.view != 2 or self._ui.recording_group != index):
+            return False
+        try:
+            if clock.first_bar != 0 or clock.span != 8 * clock.bar_length:
+                return False
+            fields = self._ui_snapshot(index)
+            return (fields is not None and fields[106] == 1
+                    and fields[107] == self._ui.active_take == clock.take_id)
+        except Exception:
+            return False
+
     def _timing_frame(self, index, force=False):
-        clock = self._engine.global_clock() if index == 8 else self._engine.group_clock(index)
+        clock = self._engine.global_clock() if index == 8 else self._render_group_clock(index)
         if clock is None and self._timing_valid[index] is False and not force:
             return None
         revision = (self._timing_revision[index] + 1) % 128
         try:
             messages = (timing.encode_global_timing(revision, clock, self._ui_meter()[2]) if index == 8 else
-                        timing.encode_view_timing(index, revision, clock))
+                        timing.encode_view_timing(index, revision, clock,
+                            countdown_page=self._countdown_page_allowed(index, clock)))
         except ValueError:
             # Skip an unrepresentable endpoint sample, never invent a wrap.
             if (clock is not None and 0 <= clock.position < clock.span
@@ -429,8 +559,10 @@ class LightpadController(ControlSurface):
         super(LightpadController, self).update_display()
         if self._closed:
             return
+        self._recover_live_engine()
         # Continue observing owned native effects if the device disconnects.
         self._tick()
+        self._publish_health()
         if not self._parser.ready:
             return
         now = time.monotonic()
@@ -454,6 +586,7 @@ class LightpadController(ControlSurface):
         self._publish(force=True)
         self._publish_timing(force=True)
         self._publish_presentation(force=True)
+        self._publish_health(force=True)
         if self._parser.ready:
             self._output.flush(time.monotonic())
 

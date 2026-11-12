@@ -221,7 +221,7 @@ class ProtocolTests(unittest.TestCase):
                          [(0xBF, cc, value) for cc, value in
                           zip(range(20, 29), (127,) + payload + (127,))])
         for bad in [(4, 0, 0, 0, 0, 0, 0), (0, 8, 127, 0, 0, 0, 0),
-                    (0, 127, 8, 0, 0, 0, 0), (0, 127, 127, 0, 16, 0, 0),
+                    (0, 127, 8, 0, 0, 0, 0), (0, 127, 127, 0, 32, 0, 0),
                     (0, 127, 127, 0, 0, 0, 2), (True, 0, 0, 0, 0, 0, 0),
                     payload[:-1]]:
             with self.assertRaises(ValueError):

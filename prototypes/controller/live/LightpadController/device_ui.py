@@ -43,12 +43,129 @@ class DeviceUI(LegacyUI):
     METER_TAP_SECONDS = .25
     METER_PAIR_SECONDS = .35
 
+    def __init__(self,send,snapshot,meter,now,recording_bars=None,countdown_bars=None,transport_running=None):
+        self._recording_bars=recording_bars
+        self._countdown_bars=countdown_bars
+        self._transport_running=transport_running
+        super().__init__(send,snapshot,meter,now)
+
+    def presentation(self):
+        payload=super().presentation()
+        if self._flash_visible():
+            selected=self._flash_group if payload[0]==0 else payload[1]
+            payload=(payload[0],selected)+payload[2:4]+(payload[4]|p.ACTION_FLASH,)+payload[5:]
+        if payload[0]!=2:return payload
+        count=0
+        fields=self._fields(self.recording_group)
+        if (not self.begin_wait and self.active_take is not None
+                and self._available(self.recording_group) and fields is not None
+                and fields[106] in (1,2,3) and fields[107]==self.active_take):
+            read=self._countdown_bars if fields[106]==1 else self._recording_bars
+            if callable(read):
+                try:
+                    actual=read(self.recording_group,self.active_take)
+                    if type(actual) is int and actual>=0:
+                        count=min(111,max(0,actual-1)) if fields[106]==1 else min(111,actual)
+                except Exception:
+                    pass
+        # These two bytes remain the chord mask outside the recording view.
+        return payload[:5]+(count,0)
+
     def reset(self):
         super().reset()
+        self._flash_group=None
+        self._flash_until=None
+        self._flash_context=None
+        self._flash_serial=0
         self._roles={}
         self._aux={}
         self._pre_start={}
         self._meter_taps={}
+
+    def _flash_key(self):
+        fields=self._fields(self._flash_group)
+        take=(fields.get(106),fields.get(107)) if fields is not None else None
+        return (self.view,self.selected_group if self.view==1 else None,
+                self.recording_group if self.view==2 else None,
+                self.active_take if self.view==2 else None,take)
+
+    def _clear_flash(self,group=None):
+        if group is None or group==self._flash_group:
+            self._flash_group=None
+            self._flash_until=None
+            self._flash_context=None
+
+    def _flash_visible(self):
+        if self._flash_group is None:return False
+        if (self._flash_context!=self._flash_key()
+                or self._flash_until is not None and self._now()>=self._flash_until):
+            self._clear_flash()
+            return False
+        return True
+
+    def _flash(self,group):
+        if (self.view==1 and self.selected_group!=group
+                or self.view==2 and self.recording_group!=group):return
+        self._flash_serial+=1
+        self._flash_group=group
+        self._flash_context=self._flash_key()
+        # Pending until an actual presentation transmission succeeds. Queue
+        # pressure must not use up the performer's visible feedback interval.
+        self._flash_until=None
+
+    def presentation_receipt(self,payload):
+        """Capture an optional receipt for this generation's pending flash."""
+        if not payload[4]&p.ACTION_FLASH or not self._flash_visible() or self._flash_until is not None:
+            return None
+        selected=127 if self.selected_group is None else self.selected_group
+        if (payload[0]!=self.view
+                or payload[1]!=(self._flash_group if self.view==0 else selected)
+                or self.view==2 and (payload[2],payload[3])!=(self.recording_group,self.active_take)):
+            return None
+        token=(self._generation,self._flash_serial)
+        def delivered():
+            if (token==(self._generation,self._flash_serial)
+                    and self._flash_visible() and self._flash_until is None):
+                self._flash_until=self._now()+.25
+        return delivered
+
+    def _queue_take(self,group):
+        if callable(self._transport_running) and not self._transport_running():
+            return
+        self._clear_flash(group)
+        if not self._capable(group,p.CAP_RECORDING):
+            self._flash(group)
+            return
+        super()._queue_take(group)
+
+    def _result(self,group,op,outcome):
+        failed=outcome not in (p.APPLIED,p.OUTCOME_QUEUED) and op!=p.ACK_COMPLETION
+        if not failed and op!=p.ACK_COMPLETION:self._clear_flash(group)
+        super()._result(group,op,outcome)
+        # A rejected Begin has returned to overview before its flash is bound.
+        if failed:self._flash(group)
+
+    def reconcile_recording(self,active):
+        """Adopt a confirmed Live take without dispatching or replaying intent."""
+        if active is None:
+            if self.view==2 and not self.begin_wait and not self._inflight:
+                fields=self._fields(self.recording_group)
+                if fields is None or fields[106]==0:
+                    self._cancel_gesture()
+                    self.view,self.active_take,self.recording_group=0,None,None
+            return
+        group,take=active
+        if (type(group) is not int or not 0<=group<8 or type(take) is not int
+                or not 0<=take<128 or self.begin_wait):return
+        fields=self._fields(group)
+        if fields is None or fields[106] not in (1,2,3) or fields[107]!=take:return
+        if self.view==2 and (self.recording_group,self.active_take)==active:return
+        self._cancel_gesture()
+        self._roles.clear()
+        self._pre_start.clear()
+        for index in list(self._aux):self._drop_aux(index)
+        self.view,self.recording_group,self.active_take=2,group,take
+        self.begin_wait=self._rebind_take=self._retry_recovery=False
     def tick(self):
         now=self._now()
         for role,released in list(self._meter_taps.items()):

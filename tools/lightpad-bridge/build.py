@@ -63,6 +63,7 @@ def main():
     parser.add_argument("--device", required=True, help="Exact 16-character Lightpad serial")
     parser.add_argument("--compiler", default="blocksctl")
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--status-program", type=Path, default=ROOT / "prototypes/controller/lightpad/status.littlefoot")
     args = parser.parse_args()
     if sys.platform != "darwin":
         raise ValueError("The background helper currently builds for macOS only")
@@ -94,8 +95,10 @@ def main():
         build / "lightpad-bridge", ROOT / "prototypes/controller/lightpad/main.littlefoot",
         ROOT / "prototypes/controller/lightpad/metronome.littlefoot", args.device, output,
         notices(sdk, build / "package-notices"), args.compiler,
-        build_metadata=dict(sdk=lock, compiler=compiler_version, native_type="Release"))
-    print(json.dumps({"app": str(app), "binary_sha256": info["binary_sha256"],
+        build_metadata=dict(sdk=lock, compiler=compiler_version, native_type="Release"),
+        status_program=args.status_program)
+    print(json.dumps({"app": str(app), "input_binary_sha256": info["input_binary_sha256"],
+                      "packaged_binary_sha256": packager.sha(app / "Contents/MacOS/lightpad-bridge"),
                       "programs": info["programs"]}, indent=2))
 
 
