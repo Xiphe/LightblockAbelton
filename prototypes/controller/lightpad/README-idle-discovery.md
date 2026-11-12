@@ -72,8 +72,9 @@ blocksctl save-default prototypes/controller/lightpad/idle-fractal-prototype.lit
 ```
 
 Keep the adjacent `idle-statements-prototype.littlefoot` include with the main
-source. The save command completed on 2026-11-12. Power-cycle confirmation is
-still pending. The previous yellow feedback probe remains archived locally at
+source. The save command completed on 2026-11-12. Hannes confirmed the animation
+and opposite-corner gesture work with USB unplugged after a full power cycle.
+The previous yellow feedback probe remains archived locally at
 `verification/blocksctl-hardware-qa-2026-11-06/remaining-tests/baseline-with-heap.littlefoot`.
 That private archive is not required to run this program.
 Reopening the installed Lightpad Bridge app returns device ownership to the
