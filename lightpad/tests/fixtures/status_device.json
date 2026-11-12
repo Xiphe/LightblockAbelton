@@ -1,0 +1,111 @@
+{
+  "scope": "Approved full15x15 icon pixel masks; no hardware evidence",
+  "status_event": {
+    "header": 9128,
+    "word_magic": 1398013952,
+    "reason_max": 127
+  },
+  "states": {
+    "connecting": 0,
+    "bridge_unavailable": 1,
+    "live_unavailable": 2,
+    "no_groups": 3,
+    "failure": 4,
+    "ready": 5
+  },
+  "colors": {
+    "bridge_unavailable": "4191ff",
+    "live_unavailable": "f0f0f0",
+    "no_groups": "ff9118",
+    "failure": "ff1818"
+  },
+  "icons": {
+    "Bridge connection": [
+      2048,
+      15872,
+      14080,
+      25472,
+      12736,
+      14528,
+      7664,
+      4088,
+      2012,
+      398,
+      454,
+      227,
+      118,
+      62,
+      8
+    ],
+    "Live connection": [
+      0,
+      0,
+      32597,
+      85,
+      85,
+      32597,
+      85,
+      85,
+      85,
+      32597,
+      85,
+      85,
+      32597,
+      0,
+      0
+    ],
+    "Remote groups": [
+      28679,
+      28679,
+      25075,
+      26611,
+      26163,
+      26163,
+      26163,
+      25075,
+      25075,
+      24819,
+      25011,
+      25395,
+      26163,
+      28679,
+      28679
+    ],
+    "Unexpected failure": [
+      448,
+      448,
+      448,
+      448,
+      448,
+      448,
+      448,
+      448,
+      448,
+      448,
+      0,
+      0,
+      448,
+      448,
+      448
+    ]
+  },
+  "program": {
+    "source": "lightpad/status.littlefoot",
+    "source_sha256": "e5b621291babb074157d5e3d40417f092b1a9826ef3b2ef9da6c309976d2aac3",
+    "binary_sha256": "f808e5977aea520c43bc5bd4d9faf35b555dece50e40937a6f54ff5e676cebc9",
+    "code": 4888,
+    "heap": 432,
+    "total": 5320,
+    "free": 1880,
+    "globals_bytes": 208,
+    "includes": {
+      "idle-animation.littlefoot": "a136e131c7e40178d9abd9e1161a362ba8b79c12dd5611eee97e4e1ce87b9bd5",
+      "idle-statements-prototype.littlefoot": "887dcadf7d96d0c57651ed4908a6bb2e0ad258eff79aec92676660ee20f2019a"
+    }
+  },
+  "idle_states": [
+    0,
+    1,
+    5
+  ]
+}
