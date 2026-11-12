@@ -1,0 +1,66 @@
+// Idle statement assets only. No touch handlers, globals, clock or MIDI.
+// Screens:0 FCK/AFD,1 rainbow,2 trans,3 BLM.
+// Four-by-five uppercase font; three letters occupy14px with1px gaps.
+// Conventional digital flag palette; physical LED color is not calibrated.
+int idleStatementFont(int letter)
+{
+    if (letter == 65) return 0x99f96; // A
+    if (letter == 66) return 0x79797; // B
+    if (letter == 67) return 0xe111e; // C
+    if (letter == 68) return 0x79997; // D
+    if (letter == 70) return 0x1171f; // F
+    if (letter == 75) return 0x95359; // K
+    if (letter == 76) return 0xf1111; // L
+    if (letter == 77) return 0x99ff9; // M
+    return 0;
+}
+
+void idleStatementGlyph(int letter, int x, int y)
+{
+    int bits = idleStatementFont(letter);
+    for (int bit = 0; bit < 20; ++bit)
+        if ((bits & (1 << bit)) != 0) fillPixel(0xffffffff, x + bit % 4, y + bit / 4);
+}
+
+void idleStatementLine(int a, int b, int c, int count, int y)
+{
+    int x = (15 - (count * 5 - 1)) / 2;
+    idleStatementGlyph(a, x, y);
+    idleStatementGlyph(b, x + 5, y);
+    if (count == 3) idleStatementGlyph(c, x + 10, y);
+}
+
+void drawIdleStatement(int screen)
+{
+    fillRect(0xff000000, 0, 0, 15, 15);
+    if (screen == 0)
+    {
+        fillRect(0xffff0000, 0, 0, 15, 2);
+        fillRect(0xffff0000, 0, 13, 15, 2);
+    }
+    if (screen == 0)
+    {
+        idleStatementLine(70, 67, 75, 3, 2); // FCK
+        idleStatementLine(65, 70, 68, 3, 8); // AFD
+    }
+    else if (screen == 1)
+    {
+        // Six stripes, top to bottom:red, orange, yellow, green, blue, violet.
+        fillRect(0xffe40303, 0, 0, 15, 2);
+        fillRect(0xffff8c00, 0, 2, 15, 3);
+        fillRect(0xffffed00, 0, 5, 15, 2);
+        fillRect(0xff008026, 0, 7, 15, 3);
+        fillRect(0xff24408e, 0, 10, 15, 2);
+        fillRect(0xff732982, 0, 12, 15, 3);
+    }
+    else if (screen == 2)
+    {
+        // Five equal stripes:light blue, pink, white, pink, light blue.
+        fillRect(0xff5bcefa, 0, 0, 15, 3);
+        fillRect(0xfff5a9b8, 0, 3, 15, 3);
+        fillRect(0xffffffff, 0, 6, 15, 3);
+        fillRect(0xfff5a9b8, 0, 9, 15, 3);
+        fillRect(0xff5bcefa, 0, 12, 15, 3);
+    }
+    else if (screen == 3) idleStatementLine(66, 76, 77, 3, 5); // BLM
+}
