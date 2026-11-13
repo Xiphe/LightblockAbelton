@@ -100,6 +100,8 @@ The held group's row remains visible. The other group row becomes horizontal pan
 
 Columns 3, 6, 9 and 12 are gaps. Touching a control causes no initial value jump. Faders use relative vertical dragging; pan uses relative horizontal dragging. The holding finger does not adjust a control. There is no audio level meter.
 
+An unfilled fader means its Live parameter is exactly at minimum. Any positive value shows fill, with the leading pixel gradually brightening between the resting background and the established full-step brightness. Volume keeps its group color and the four assignable controls remain white.
+
 The four white controls may target sends or group-device parameters. Defaults follow the first four sends. Explicit configured assignments retain target identity and disable only the affected control if its target moves or disappears. Assignments are configured in the [Live script](../live/README.md#configuration); there is no assignment screen.
 
 ## Full-screen metronome

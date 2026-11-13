@@ -435,9 +435,10 @@ void drawGroup(int group)
 
 void drawFader(int x, int width, int colour, float value)
 {
-    fillRect(dim(colour, 0.08), x, 8, width, 7);
-    int height = int(value * 7.0 + 0.5);
-    if (height > 0) fillRect(dim(colour, 0.5), x, 15 - height, width, height);
+    // The last occupied row fades between the established resting/lit levels.
+    for (int row = 0; row < 7; ++row)
+        fillRect(dim(colour, 0.08 + 0.42 * clamp(0.0, 1.0, value * 7.0 - float(row))),
+                 x, 14 - row, width, 1);
 }
 
 void borderPixel(int position, int colour)

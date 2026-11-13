@@ -208,7 +208,8 @@ class LiveController:
             for opcode, cc in ((p.SET_VOLUME, 98), (p.SET_SEND_1, 99), (p.SET_SEND_2, 100),
                                (p.SET_SEND_3, 101), (p.SET_CONTROL_4, 108), (p.SET_PAN, 102)):
                 try:
-                    fields[cc] = normalized(self._parameter(group.group, opcode))
+                    fields[cc] = normalized(self._parameter(group.group, opcode),
+                                            preserve_positive=opcode != p.SET_PAN)
                 except (AttributeError, RuntimeError, ValueError, IndexError, KeyError, TypeError):
                     pass  # One missing send never disables native volume/pan/mute.
             fields[103] = p.CAP_MIXER | p.CAP_ADVANCE

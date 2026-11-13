@@ -30,11 +30,14 @@ def _same(left, right):
     return left is right or left == right
 
 
-def normalized(parameter):
+def normalized(parameter, preserve_positive=False):
     width = parameter.max - parameter.min
     if width <= 0:
         raise ValueError("parameter has no usable range")
-    return max(0, min(127, int(round(127 * (parameter.value - parameter.min) / width))))
+    offset = parameter.value - parameter.min
+    # Reserve zero for the true fader minimum, even below half a wire step.
+    minimum = 1 if preserve_positive and offset > 0 else 0
+    return max(minimum, min(127, int(round(127 * offset / width))))
 
 
 class GroupParameterBindings:
@@ -148,7 +151,8 @@ class GroupParameterBindings:
         if not self.valid():
             return None
         try:
-            return tuple(normalized(parameter) for parameter in self.parameters)
+            return tuple(normalized(parameter, preserve_positive=index < 5)
+                         for index, parameter in enumerate(self.parameters))
         except (RuntimeError, AttributeError, TypeError, ValueError):
             self._invalid = True
             self.error = "assignment value read failed"

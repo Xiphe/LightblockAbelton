@@ -4,7 +4,7 @@ The Lightpad renders and animates locally on a 15 by 15 LED grid. Live interpret
 
 | Source | Role | Code + heap | Free of 7,200 bytes |
 | --- | --- | ---: | ---: |
-| `main.littlefoot` | Group overview, held mixer and recording controls | 7,106 | 94 |
+| `main.littlefoot` | Group overview, held mixer and recording controls | 7,110 | 90 |
 | `metronome.littlefoot` | Full-screen meter, click and tap tempo | 5,331 | 1,869 |
 | `status.littlefoot` | Connection status and standalone idle | 5,320 | 1,880 |
 | `idle-animation.littlefoot` | Shared touchable tunnel, included by status | Included above | |
@@ -28,6 +28,7 @@ From the checkout root with the pinned source-built `blocksctl` on PATH:
 
 ```sh
 python3 lightpad/tests/test_current_device.py
+python3 lightpad/tests/test_fader_fill.py
 python3 lightpad/tests/test_status_device.py
 python3 lightpad/tests/test_status_idle.py
 python3 lightpad/tests/test_failure_flash.py
@@ -38,7 +39,7 @@ python3 lightpad/tests/test_metronome_layout.py
 python3 lightpad/tests/test_metronome_swing.py
 ```
 
-The 87 checks compile actual Littlefoot bytecode and execute it in `tests/littlefoot_harness.py` with fake graphics, clock, touch and MIDI natives. They open no device, MIDI port, Live process or app. They cover snapshots, contact context, failure flash, dots/pages, marker animation, metronome geometry/swing and status/idle behavior. The idle comparison fixture is `tests/fixtures/idle-fractal-prototype.littlefoot`; it is test data, not another runtime program.
+The 91 checks compile actual Littlefoot bytecode and execute it in `tests/littlefoot_harness.py` with fake graphics, clock, touch and MIDI natives. They open no device, MIDI port, Live process or app. They cover snapshots, contact context, fractional fader fill, failure flash, dots/pages, marker animation, metronome geometry/swing and status/idle behavior. The idle comparison fixture is `tests/fixtures/idle-fractal-prototype.littlefoot`; it is test data, not another runtime program.
 
 `tests/fixtures/current_device.json` and `status_device.json` pin intentional source/binary/resource and scene changes. Review a rendering change before updating fixtures. The VM checks opcodes, bounds and its fixed 800-byte globals/stack reserve; this reserve is not extra program memory.
 

@@ -29,6 +29,26 @@ class AssignmentParameter(Parameter):
 
 
 class LiveControllerTests(unittest.TestCase):
+    def test_snapshot_tiny_external_fader_values_remain_positive_but_pan_rounding_is_unchanged(self):
+        c = self.make()
+        mixer = self.song.tracks[0].mixer_device
+        parameters = (mixer.volume,) + tuple(mixer.sends)
+        # Live's volume minimum need not be numerical zero.
+        mixer.volume.min = .0003162277571
+        for parameter in parameters:
+            parameter.value = parameter.min
+        mixer.panning.value = mixer.panning.min
+        fields = c.snapshot(0)
+        self.assertEqual([fields[cc] for cc in (98, 99, 100, 101, 108, 102)], [0] * 6)
+        for parameter in parameters:
+            parameter.value = parameter.min + (parameter.max - parameter.min) * 1e-12
+        mixer.panning.value = mixer.panning.min + 1e-12
+        fields = c.snapshot(0)
+        self.assertEqual([fields[cc] for cc in (98, 99, 100, 101, 108)], [1] * 5)
+        self.assertEqual(fields[102], 0)
+        mixer.panning.value = 0
+        self.assertEqual(c.snapshot(0)[102], 64)
+
     def make(self, **kwargs):
         self.song=Song(**kwargs)
         self.controller=LiveController(self.song, quantizations=Q, monotonic=lambda:0.)

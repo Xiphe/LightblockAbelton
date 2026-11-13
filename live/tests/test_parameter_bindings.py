@@ -83,6 +83,18 @@ def command(op, arg=127, group=0):
 
 
 class ParameterBindingTests(unittest.TestCase):
+    def test_faders_distinguish_exact_minimum_from_tiny_external_increases_without_changing_pan(self):
+        song = Song()
+        bindings = GroupParameterBindings(song, song.tracks[0])
+        for parameter in bindings.parameters:
+            parameter.value = parameter.min
+        self.assertEqual(bindings.values(), (0, 0, 0, 0, 0, 0))
+        for parameter in bindings.parameters:
+            parameter.value = parameter.min + (parameter.max - parameter.min) * 1e-12
+        self.assertEqual(bindings.values(), (1, 1, 1, 1, 1, 0))
+        song.tracks[0].mixer_device.panning.value = 0
+        self.assertEqual(bindings.values()[-1], 64)
+
     def test_four_default_sends_and_pan_have_actual_readback(self):
         song = Song()
         group = song.tracks[0]
