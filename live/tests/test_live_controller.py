@@ -5,8 +5,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from LightpadController import protocol as p
 from LightpadController.live_controller import LiveController
 from live_test_support import Song, Track, Clip
+from live_test_support import Parameter
+from types import SimpleNamespace as NS
 
 Q={'q_bar':4,'q_half':5,'q_quarter':7,'q_eight':9,'q_sixtenth':11}
+
+
+class AssignmentParameter(Parameter):
+    def __init__(self, name, value=.25):
+        self.name, self.writes, self.reads = name, [], 0
+        super().__init__(value)
+        self.writes.clear()
+
+    @property
+    def value(self):
+        self.reads += 1
+        return self._value
+
+    @value.setter
+    def value(self, value):
+        self.writes.append(value)
+        self._value = value
 
 
 class LiveControllerTests(unittest.TestCase):
@@ -441,6 +460,77 @@ class LiveControllerTests(unittest.TestCase):
         self.assertEqual(c.dispatch(self.command(p.SET_MUTE,arg=127)),p.APPLIED)
         c.configure_targets(0,targets)
         self.assertEqual(c.dispatch(self.command(p.SET_SEND_1,arg=50)),p.APPLIED)
+
+    def test_guarded_index_macro_checks_names_before_first_parameter_read_or_write(self):
+        for device_name, parameter_name in [('Unrelated rack', 'Reverb'),
+                                             ('Random Rev + Delay V2', 'Wrong macro')]:
+            with self.subTest(device=device_name, parameter=parameter_name):
+                c=self.make();group=self.song.tracks[0]
+                macro=AssignmentParameter(parameter_name)
+                group.devices=[NS(name=device_name,parameters=[macro])]
+                target={'kind':'device','device_path':[0],'parameter_index':0,
+                        'expected_device_name':'Random Rev + Delay V2',
+                        'expected_parameter_name':'Reverb'}
+                c.configure_targets(0,[target]+[{'kind':'send','index':i} for i in range(1,4)])
+                self.assertEqual(c.snapshot(0)[99],0)
+                self.assertEqual((macro.reads,macro.writes),(0,[]))
+                self.assertEqual(c.dispatch(self.command(p.SET_SEND_1,arg=100)),p.NOT_READY)
+                self.assertEqual((macro.reads,macro.writes),(0,[]))
+                self.assertNotIn((0,0),c._explicit_bindings)
+                for op in (p.SET_VOLUME,p.SET_PAN,p.SET_MUTE,p.SET_CONTROL_4):
+                    self.assertEqual(c.dispatch(self.command(op,arg=40 if op!=p.SET_MUTE else 127)),p.APPLIED)
+                self.assertEqual(c.dispatch(self.command(p.SET_SEND_1,group=1,arg=70)),p.APPLIED)
+                self.assertEqual(self.song.calls,[])
+
+    def test_guarded_index_macro_remains_writable_when_names_match(self):
+        c=self.make();macro=AssignmentParameter('Reverb')
+        self.song.tracks[0].devices=[NS(name='Random Rev + Delay V2',parameters=[macro])]
+        target={'kind':'device','device_path':[0],'parameter_index':0,
+                'expected_device_name':'Random Rev + Delay V2','expected_parameter_name':'Reverb'}
+        c.configure_targets(0,[target]+[{'kind':'send','index':i} for i in range(1,4)])
+        self.assertEqual(c.snapshot(0)[99],32)
+        self.assertEqual(c.dispatch(self.command(p.SET_SEND_1,arg=100)),p.APPLIED)
+        self.assertEqual(macro.writes,[100/127.])
+
+    def test_named_macro_finds_unique_parameter_and_retains_its_identity(self):
+        c=self.make();macro=AssignmentParameter('Reverb');other=AssignmentParameter('Device On')
+        rack=NS(name='Random Rev + Delay V2',parameters=[other,macro])
+        self.song.tracks[0].devices=[rack]
+        target={'kind':'device','device_path':[0],'expected_device_name':rack.name,'parameter_name':'Reverb'}
+        c.configure_targets(0,[target]+[{'kind':'send','index':i} for i in range(1,4)])
+        self.assertEqual(c.snapshot(0)[99],32)
+        self.assertEqual(c.dispatch(self.command(p.SET_SEND_1,arg=100)),p.APPLIED)
+        rack.parameters.reverse()
+        self.assertEqual(c.dispatch(self.command(p.SET_SEND_1,arg=50)),p.APPLIED)
+        self.assertEqual(macro.writes,[100/127.,50/127.])
+        self.assertEqual(other.writes,[])
+        replacement=AssignmentParameter('Reverb')
+        rack.parameters=[other,replacement]
+        self.assertEqual(c.dispatch(self.command(p.SET_SEND_1,arg=80)),p.NOT_READY)
+        self.assertEqual(replacement.writes,[])
+
+    def test_missing_or_ambiguous_named_macro_never_falls_back_to_an_index(self):
+        for names in [('Other',),('Reverb','Reverb')]:
+            with self.subTest(names=names):
+                c=self.make();macros=[AssignmentParameter(name) for name in names]
+                self.song.tracks[0].devices=[NS(name='Random Rev + Delay V2',parameters=macros)]
+                target={'kind':'device','device_path':[0],'expected_device_name':'Random Rev + Delay V2',
+                        'parameter_name':'Reverb','parameter_index':0}
+                c.configure_targets(0,[target]+[{'kind':'send','index':i} for i in range(1,4)])
+                self.assertEqual(c.dispatch(self.command(p.SET_SEND_1,arg=100)),p.NOT_READY)
+                self.assertTrue(all((macro.reads,macro.writes)==(0,[]) for macro in macros))
+                self.assertNotIn((0,0),c._explicit_bindings)
+
+    def test_named_macro_rename_stops_writes_without_disabling_other_bars(self):
+        c=self.make();macro=AssignmentParameter('Reverb')
+        rack=NS(name='Random Rev + Delay V2',parameters=[macro]);self.song.tracks[0].devices=[rack]
+        target={'kind':'device','device_path':[0],'expected_device_name':rack.name,'parameter_name':'Reverb'}
+        c.configure_targets(0,[target]+[{'kind':'send','index':i} for i in range(1,4)])
+        self.assertEqual(c.dispatch(self.command(p.SET_SEND_1,arg=100)),p.APPLIED)
+        macro.name='Renamed'
+        self.assertEqual(c.dispatch(self.command(p.SET_SEND_1,arg=80)),p.NOT_READY)
+        self.assertEqual(macro.writes,[100/127.])
+        self.assertEqual(c.dispatch(self.command(p.SET_SEND_2,arg=60)),p.APPLIED)
 
     def test_missing_sends_do_not_disable_volume_pan_or_group_mute(self):
         c=self.make();self.song.tracks[0].mixer_device.sends=[]

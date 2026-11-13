@@ -98,7 +98,20 @@ class LiveController:
                 if position+1 < len(path):
                     owner = device.chains[path[position+1]]
                     identities.append(owner)
-            parameter = device.parameters[target['parameter_index']]
+            if 'expected_device_name' in target and device.name != target['expected_device_name']:
+                raise ValueError('configured device name does not match')
+            if 'parameter_name' in target:
+                name = target['parameter_name']
+                if not isinstance(name, str) or not name:
+                    raise ValueError('configured parameter name must be a nonempty string')
+                matches = [parameter for parameter in device.parameters if parameter.name == name]
+                if len(matches) != 1:
+                    raise ValueError('configured parameter name is missing or ambiguous')
+                parameter = matches[0]
+            else:
+                parameter = device.parameters[target['parameter_index']]
+            if 'expected_parameter_name' in target and parameter.name != target['expected_parameter_name']:
+                raise ValueError('configured parameter name does not match')
         else:
             raise ValueError('unknown mixer assignment')
         if specs is not None:

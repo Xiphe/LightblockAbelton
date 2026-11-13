@@ -37,20 +37,23 @@ An already running manual recording can be adopted. The selected recording group
 
 Normal configuration in [configuration.py](LightpadController/configuration.py) uses `LIVE_STATE_MODE = True` with no manifest or proof opt-in. Keep those defaults for normal use.
 
-The four white controls default to the first four sends. `PARAMETER_TARGETS` optionally gives four explicit targets per zero-based group number. For example, R1 can use two sends, a device parameter and another send:
+The four white controls default to the first four sends; source `PARAMETER_TARGETS` remains `{}`. This is application-wide script configuration, keyed by zero-based group number. This example changes only R1's first three controls and keeps its fourth on send D. The racks must occupy device positions 0 and 1 with these exact names:
 
 ```python
 PARAMETER_TARGETS = {0: (
-    {"kind": "send", "index": 0},
-    {"kind": "send", "index": 1},
-    {"kind": "device", "device_path": [0], "parameter_index": 3},
+    {"kind": "device", "device_path": [0], "expected_device_name": "Random Rev + Delay V2",
+     "parameter_name": "Reverb"},
+    {"kind": "device", "device_path": [0], "expected_device_name": "Random Rev + Delay V2",
+     "parameter_name": "Delay"},
+    {"kind": "device", "device_path": [1], "expected_device_name": "Stereo Random Filter",
+     "parameter_name": "FX Vol"},
     {"kind": "send", "index": 3},
 )}
 ```
 
-Indices are zero-based. A nested path alternates device/chain/device indices, such as `[0, 1, 2]`. Check target names in your Set before performing. Explicit assignments retain Native identity for the loaded Set and disable only the affected control if its target is reordered or replaced. Default sends follow Live's send order. Volume, pan and mute remain independent. Assignment and input-selection screens are not implemented.
+Names are case-sensitive, and a named parameter must match uniquely. A missing/ambiguous macro or mismatched rack disables only that control; volume, pan, mute and other controls stay usable. Indexed targets using `parameter_index` remain valid, with optional `expected_parameter_name` and `expected_device_name` guards. Indices are zero-based; nested device paths alternate device/chain/device indices. Rack reordering or replacement after binding requires an explicit rebind; name matching does not silently adopt another rack.
 
-Change source configuration and use the matched installer with Live/helper closed; do not edit an active installed script. The app and script must retain matching protocol/health support.
+Apply source configuration through the matched installer with Live/helper closed, then restart Live to reload the script. Configuration is shared across Sets, so other Sets without those named racks leave the affected bars unavailable. Do not edit an active installed script. Assignment and input-selection screens are not implemented.
 
 ## Code and tests
 
