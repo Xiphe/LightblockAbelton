@@ -91,7 +91,7 @@ void initialise()
     statusState = 1; statusReason = 0; contacts = 0;
     linked = false; announced = false; statusTap = false;
     statusAt = getMillisecondCounter(); helloAt = statusAt;
-    sendCC(15, 110, 18);
+    sendCC(15, 110, 19);
 }
 
 void updateConnection()
@@ -106,13 +106,13 @@ void updateConnection()
     }
     if (!linked && now - helloAt >= 1000)
     {
-        sendCC(15, 110, 18); helloAt = now;
+        sendCC(15, 110, 19); helloAt = now;
     }
 }
 
 void handleMessage(int m0, int m1, int header)
 {
-    if (header != 0x23a8 || m1 != 0 || (m0 & 0xffff0000) != 0x53540000
+    if (header != 0x63a9 || m1 != 0 || (m0 & 0xffff0000) != 0x53540000
         || (m0 & 255) > 5 || ((m0 >> 8) & 255) > 127) return;
     bool wasIdle = idleVisible();
     statusState = m0 & 255;

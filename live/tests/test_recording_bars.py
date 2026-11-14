@@ -187,17 +187,17 @@ class PresentationBarTests(unittest.TestCase):
     def test_reuses_only_recording_byte_five_and_caps_wire_count_without_extra_ccs(self):
         host = self.host(144)
         payload = host.ui.presentation()
-        self.assertEqual(payload[5:], (111,0))
+        self.assertEqual(payload[5:7], (111,0))
         for raw,expected in ((111,111),(112,111),(127,111),(70,70)):
             host.ui._recording_bars=lambda *_,raw=raw:raw
             self.assertEqual(host.ui.presentation()[5],expected)
         frame = p.encode_presentation(1,payload)
         wire = compact_wire.project_wire(frame)
-        self.assertEqual(len(frame),9)
-        self.assertEqual(len(wire),9)
-        self.assertEqual([m[1] for m in wire],[35]+list(range(40,48)))
+        self.assertEqual(len(frame),10)
+        self.assertEqual(len(wire),10)
+        self.assertEqual([m[1] for m in wire],[35]+list(range(40,49)))
         host.ui.view,host.ui.chord_mask = 0,129
-        self.assertEqual(host.ui.presentation()[5:],(1,1))
+        self.assertEqual(host.ui.presentation()[5:7],(1,1))
 
     def test_queued_wrong_take_stale_and_provider_failure_emit_zero_but_finish_pending_does_not(self):
         host = self.host(3)
@@ -206,7 +206,7 @@ class PresentationBarTests(unittest.TestCase):
         self.assertEqual(host.ui.presentation()[5],3)
         for state,token in ((1,7),(2,8),(4,7)):
             host.fields[0].update({106:state,107:token})
-            self.assertEqual(host.ui.presentation()[5:],(0,0))
+            self.assertEqual(host.ui.presentation()[5:7],(0,0))
         host.fields[0].update({106:2,107:7})
         host.ui.begin_wait = True
         self.assertEqual(host.ui.presentation()[5],0)
@@ -243,7 +243,7 @@ class SurfaceBarTests(RecordingSurfaceCase):
         take,slot=self.record()
         self.native.song.current_song_time=slot.clip.start_time+12
         before=list(self.native.calls)
-        self.assertEqual(self.surface._ui.presentation()[5:],(3,0))
+        self.assertEqual(self.surface._ui.presentation()[5:7],(3,0))
         self.assertEqual(self.native.calls,before)
         selected=[]
         original=self.surface._output.send
@@ -256,7 +256,7 @@ class SurfaceBarTests(RecordingSurfaceCase):
         views=[m for m in selected if m[0][:2]==(191,20)]
         self.assertTrue(views)
         self.assertEqual(views[-1][6][2],3)
-        self.assertEqual(len(compact_wire.project_wire(views[-1])),9)
+        self.assertEqual(len(compact_wire.project_wire(views[-1])),10)
         self.assertEqual(self.native.calls,before)
 
     def test_retry_replaces_actual_surface_queued_old_count_before_new_take_view_sends(self):

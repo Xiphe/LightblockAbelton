@@ -12,13 +12,16 @@ from .live_recording import LiveRecording
 from .metronome import MetronomeControls
 from .parameter_bindings import normalized, PARAMETER_OPCODES
 from .timing import Clock
+from .patching import Patching, PendingRouting
 
 
 class LiveController:
     def __init__(self, song, quantizations=None, assignments=None, emit=None, monotonic=None):
         self.song = song
         self.state = LiveState(song)
-        self.recording = LiveRecording(song, self.state, quantizations, emit, monotonic)
+        self.patching = Patching(song, self.state)
+        self.recording = LiveRecording(song, self.state, quantizations, emit, monotonic,
+                                       patching=self.patching)
         self.assignments = copy.deepcopy(dict(assignments or {}))
         self._explicit_bindings = {}
         self.controls = MetronomeControls(song, lambda: True, now=monotonic)
@@ -26,6 +29,7 @@ class LiveController:
         self._depth = 0
         self._cached = False
         self._events = []
+        self._routing_command = None
 
     def begin_read_batch(self):
         self._depth += 1
@@ -50,7 +54,7 @@ class LiveController:
             ready = bool(state.groups)
             return dict(state=5 if ready else 4 if state.issues else 3,
                         reason='ready' if ready else 'remote_groups_ambiguous' if state.issues else 'no_remote_groups',
-                        recording_busy=self.active_recording() is not None,
+                        recording_busy=self.active_recording() is not None or self._routing_command is not None,
                         issues={str(k): v for k, v in {**state.issues, **self.recording.issues}.items()})
         except Exception as error:
             return dict(state=4, reason='live_state_unavailable', recording_busy=True,
@@ -60,19 +64,81 @@ class LiveController:
         self._read()
         take = self.recording.take
         return ((take.group, take.take_id) if take is not None
-                and take.state in ('queued', 'recording', 'finish_queued', 'canceling') else None)
+                and self.recording.phase(take) in ('queued', 'recording', 'finish_queued', 'canceling') else None)
 
     def modal_allowed(self):
         try:
             self._read()
             return (bool(self.state.groups) and self.active_recording() is None
-                    and not self.recording._advance)
+                    and not self.recording._advance and self._routing_command is None
+                    and not self.patching.needs_preparation())
         except Exception:
             return False
 
     def meter_state(self):
         meter, click = self.controls.meter(), self.controls.metronome()
         return meter + (click,) if meter is not None and click is not None else None
+
+    def patch_state(self):
+        return self.patching.snapshot()
+
+    def control_indices(self):
+        self._read()
+        # Missing loop groups still publish an empty state; Constants exist
+        # only when their real direct-child tracks are present in this Set.
+        return tuple(range(8)) + tuple(sorted(self.state.constants))
+
+    def freeze_patch_catalog(self):
+        self.patching.freeze()
+
+    def thaw_patch_catalog(self):
+        self.patching.thaw()
+
+    def has_sources(self, group):
+        try:
+            self._read()
+            if self._routing_command is not None:
+                return False
+            if group not in self.state.groups:
+                return False
+            if not self.patching.enabled:
+                return True
+            sources = self.patching.selected(group)
+            for source in sources:
+                self.patching.validate(source)
+                if self.patching.owners(source) & ~(1 << group):
+                    return False
+            return bool(sources)
+        except (AttributeError, RuntimeError, ValueError, TypeError, IndexError):
+            return False
+
+    def _start_routing(self, command, start):
+        if self.active_recording() is not None or self._routing_command is not None:
+            return p.BUSY
+        try:
+            job = start()
+            self._routing_command = (command, job)
+            self.invalidate_read_batch()
+            return None
+        except PendingRouting:
+            return p.BUSY
+        except (AttributeError, RuntimeError, ValueError, TypeError, IndexError) as error:
+            self.patching.issues[command.group] = str(error)
+            return p.NOT_READY
+
+    def toggle_patch(self, group, source, command=None):
+        command = command or p.Command(0, group, p.TOGGLE_PATCH, source)
+        return self._start_routing(command, lambda: self.patching.start_toggle(group, source))
+
+    def set_monitor(self, group, command=None):
+        command = command or p.Command(0, group, p.SET_MONITOR, 0)
+        return self._start_routing(command, lambda: self.patching.start_monitor(group))
+
+    def advance_preparations(self):
+        """One Live display callback; never called by MIDI/position listeners."""
+        self.invalidate_read_batch()
+        self.patching.advance_preparations()
+        self.invalidate_read_batch()
 
     def _parameter(self, group, opcode):
         mixer = group.mixer_device
@@ -81,7 +147,7 @@ class LiveController:
         if opcode == p.SET_PAN:
             return mixer.panning
         index = {p.SET_SEND_1: 0, p.SET_SEND_2: 1, p.SET_SEND_3: 2, p.SET_CONTROL_4: 3}[opcode]
-        group_index = next(i for i, item in self.state.groups.items() if same(item.group, group))
+        group_index = next(i for i, item in self.state.control_tracks.items() if same(item, group))
         specs = self.assignments.get(group_index)
         target = specs[index] if specs is not None else {'kind': 'send', 'index': index}
         identities = [group, mixer]
@@ -132,13 +198,13 @@ class LiveController:
                 del self._explicit_bindings[key]
 
     def _mix(self, command):
-        group = self._read().groups.get(command.group)
-        if group is None:
+        track = self._read().control_tracks.get(command.group)
+        if track is None:
             return p.NOT_READY
         if command.op == p.SET_MUTE:
-            group.group.mute = command.arg == 127
+            track.mute = command.arg == 127
             return p.APPLIED
-        parameter = self._parameter(group.group, command.op)
+        parameter = self._parameter(track, command.op)
         if not getattr(parameter, 'is_enabled', True):
             return p.NOT_READY
         fraction = .5 if command.op == p.SET_PAN and command.arg == 64 else command.arg / 127.
@@ -154,17 +220,25 @@ class LiveController:
                 return p.APPLIED
             if command.op == p.ACK_COMPLETION:
                 return self.recording.acknowledge(command.group, command.arg)
+            if command.op == getattr(p, 'SET_MONITOR', 19):
+                return self.set_monitor(command.group, command)
+            if command.op == getattr(p, 'TOGGLE_PATCH', 20):
+                return self.toggle_patch(command.group, command.arg, command)
             if command.op in (p.TAP_TEMPO, p.SET_NUMERATOR, p.SET_DENOMINATOR, p.SET_METRONOME):
                 return self.controls.dispatch(command)
             if command.op == p.SET_MUTE or command.op in PARAMETER_OPCODES:
                 return self._mix(command)
             if command.op == p.BEGIN:
+                if self._routing_command is not None:
+                    return p.BUSY
                 outcome = self.recording.begin(command.group)
             elif command.op in (p.ACCEPT, p.ACCEPT_NEXT):
                 outcome = self.recording.accept(command.group, command.op == p.ACCEPT_NEXT)
             elif command.op in (p.ABORT, p.RETRY):
                 outcome = self.recording.cancel(command, command.op == p.RETRY)
             elif command.op == p.ADVANCE:
+                if self._routing_command is not None:
+                    return p.BUSY
                 outcome = self.recording.advance(command)
             else:
                 return p.BAD_COMMAND
@@ -172,6 +246,8 @@ class LiveController:
             immediate = next((result for candidate, result in events if candidate == command), None)
             self._events.extend((candidate, result) for candidate, result in events if candidate != command)
             return immediate if immediate is not None else outcome
+        except PendingRouting:
+            return p.BUSY
         except (AttributeError, RuntimeError, ValueError, TypeError, IndexError, KeyError) as error:
             self.recording.issues[command.group] = str(error)
             return p.NOT_READY
@@ -181,12 +257,22 @@ class LiveController:
     def tick(self):
         self.invalidate_read_batch()
         events, self._events = self._events, []
+        pending = self._routing_command
+        if pending is not None and pending[1].done:
+            command, job = pending
+            self._routing_command = None
+            if job.error is not None:
+                self.patching.issues[command.group] = str(job.error)
+            else:
+                self.patching.issues.pop(command.group, None)
+            events.append((command, p.NOT_READY if job.error is not None else p.APPLIED))
         events.extend(self.recording.tick())
         self.invalidate_read_batch()
         return events
 
     def needs_tick(self):
-        return bool(self._events) or self.recording.needs_tick()
+        return (bool(self._events) or self._routing_command is not None
+                or self.patching.needs_preparation() or self.recording.needs_tick())
 
     def _fields(self, sequence, outcome):
         fields = {i: 0 for i in range(91, 109)}
@@ -196,24 +282,30 @@ class LiveController:
     def snapshot(self, index, sequence=0, outcome=p.NONE):
         fields = self._fields(sequence, outcome)
         try:
-            group = self._read().groups.get(index)
-            if group is None:
+            state = self._read()
+            track = state.control_tracks.get(index)
+            if track is None:
                 return fields
-            running_clips = [item for item in group.playing if not item.clip.is_recording]
-            fields[91] = p.PLAYING if running_clips else p.EMPTY
-            fields[92] = 127 if group.group.mute else 0
-            color = int(group.group.color)
+            group = state.groups.get(index)
+            running_clips = [item for item in group.playing if not item.clip.is_recording] if group else ()
+            fields[91] = p.PLAYING if group is None or running_clips else p.EMPTY
+            fields[92] = 127 if track.mute else 0
+            color = int(track.color)
             for cc, shift in ((95, 16), (96, 8), (97, 0)):
                 fields[cc] = round(((color >> shift) & 255)*127/255)
             for opcode, cc in ((p.SET_VOLUME, 98), (p.SET_SEND_1, 99), (p.SET_SEND_2, 100),
                                (p.SET_SEND_3, 101), (p.SET_CONTROL_4, 108), (p.SET_PAN, 102)):
                 try:
-                    fields[cc] = normalized(self._parameter(group.group, opcode),
+                    fields[cc] = normalized(self._parameter(track, opcode),
                                             preserve_positive=opcode != p.SET_PAN)
                 except (AttributeError, RuntimeError, ValueError, IndexError, KeyError, TypeError):
                     pass  # One missing send never disables native volume/pan/mute.
-            fields[103] = p.CAP_MIXER | p.CAP_ADVANCE
-            if bool(self.song.is_playing) and not getattr(group.group, 'is_frozen', False):
+            fields[103] = p.CAP_MIXER
+            if group is None:
+                return fields
+            fields[103] |= p.CAP_ADVANCE
+            if (bool(self.song.is_playing) and not getattr(track, 'is_frozen', False)
+                    and self.has_sources(index)):
                 try:
                     read_grid(self.song)
                     if 'q_bar' in self.recording.quantizations:
@@ -223,9 +315,9 @@ class LiveController:
             take = self.recording.take
             if take is not None and take.group == index:
                 fields[106] = {'queued': 1, 'recording': 2, 'finish_queued': 3,
-                               'completed': 4, 'canceling': 1}.get(take.state, 0)
+                               'completed': 4, 'canceling': 1}.get(self.recording.phase(take), 0)
                 fields[107] = take.take_id
-                if take.state == 'queued':
+                if self.recording.phase(take) == 'queued':
                     fields[94] = min(127, self.countdown_remaining_bars(index, take.take_id))
             clock = self.group_clock(index)
             if clock is not None:
@@ -255,7 +347,7 @@ class LiveController:
         self._read()
         take = self.recording.take
         return (take if take is not None and take.group == group and take.take_id == take_id
-                and take.state in states and group in self.state.groups else None)
+                and self.recording.phase(take) in states and group in self.state.groups else None)
 
     def _context(self, group):
         return p.PLAYING if any(not x.clip.is_recording for x in self.state.groups[group].playing) else p.EMPTY
@@ -288,6 +380,8 @@ class LiveController:
     def recording_bars(self, group, take_id):
         try:
             take = self._take(group, take_id, ('recording', 'finish_queued'))
+            if take is not None:
+                take = self.recording.representative(take)
             if take is None or take.anchor is None or not take.clip.is_recording:
                 return 0
             return max(0, math.floor((self.song.current_song_time-take.anchor)/take.bar+1e-9))
@@ -297,6 +391,8 @@ class LiveController:
     def recording_clock(self, group, take_id):
         try:
             take = self._take(group, take_id, ('recording', 'finish_queued'))
+            if take is not None:
+                take = self.recording.representative(take)
             if take is None or take.anchor is None or not take.clip.is_recording:
                 return None
             position = (self.song.current_song_time-take.anchor)%take.bar

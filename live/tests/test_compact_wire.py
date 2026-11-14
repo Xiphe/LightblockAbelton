@@ -13,7 +13,7 @@ class CompactWireTests(unittest.TestCase):
                        101: 77, 102: 88, 103: 31, 104: 37, 105: p.APPLIED,
                        106: 4, 107: 127, 108: 99})
         expected = (p.PLAYING, 127, 19, 11, 22, 33, 44, 55, 66, 77, 88, 31, 4, 127, 99)
-        for group in range(8):
+        for group in range(p.GROUP_COUNT):
             for revision in (0, 127):
                 logical = p.encode_snapshot(group, revision, fields)
                 original = list(logical)
@@ -43,14 +43,14 @@ class CompactWireTests(unittest.TestCase):
         self.assertEqual(actual[1][2], timing.ONE_BAR | timing.METRONOME)
         self.assertEqual([v for _, _, v in actual], [v for _, _, v in logical])
 
-    def test_ui_is_nine_messages_with_exact_take_preview_and_chord_payload(self):
+    def test_ui_is_ten_messages_with_exact_take_preview_and_chord_payload(self):
         for payload in ((0, 7, 127, 0, 4, 0, 0), (0, 127, 127, 0, 0, 127, 1),
                         (2, 127, 7, 127, 2, 0, 0)):
             logical = p.encode_presentation(127, payload)
             actual = wire.project_wire(logical)
             self.assertEqual(actual, [(0xBF, 35, 127)] +
-                [(0xBF, 40 + index, value) for index, value in enumerate(payload)] +
-                [(0xBF, 47, 127)])
+                [(0xBF, 40 + index, value) for index, value in enumerate(payload + (127,))] +
+                [(0xBF, 48, 127)])
 
     def test_metadata_versions_and_nonframe_messages_are_not_reinterpreted(self):
         metadata = p.encode_metadata(False)

@@ -164,16 +164,16 @@ class CountdownPresentationTests(unittest.TestCase):
         host.ui.view,host.ui.recording_group,host.ui.active_take=2,0,7
         return host
 
-    def test_remaining_9_8_1_use_existing_blocks_and_7_byte_frame(self):
+    def test_remaining_9_8_1_use_existing_blocks_and_8_byte_frame(self):
         for remaining,encoded in ((9,8),(8,7),(1,0),(0,0),(112,111),(113,111)):
             host=self.host(remaining);payload=host.ui.presentation()
-            self.assertEqual(payload[5:],(encoded,0))
-            self.assertEqual(len(compact_wire.project_wire(p.encode_presentation(1,payload))),9)
+            self.assertEqual(payload[5:7],(encoded,0))
+            self.assertEqual(len(compact_wire.project_wire(p.encode_presentation(1,payload))),10)
         host=self.host(9);host.fields[0][106]=2
         self.assertEqual(host.ui.presentation()[5],3)
         host.fields[0][106]=3;self.assertEqual(host.ui.presentation()[5],3)
         host.ui.view=0;host.ui.chord_mask=129
-        self.assertEqual(host.ui.presentation()[5:],(1,1))
+        self.assertEqual(host.ui.presentation()[5:7],(1,1))
 
     def test_latest_countdown_frame_replaces_stale_count_under_existing_pacer_binding(self):
         host=self.host(9);sent=[];out=OutputPacer(sent.append)
@@ -193,7 +193,7 @@ class CountdownSurfaceTests(RecordingSurfaceCase):
         current=self.surface._timing_frame(0,True)
         self.assertEqual(number(current,73),256)
         self.assertEqual(number(current,76),64)
-        self.assertEqual(self.surface._ui.presentation()[5:],(0,0))
+        self.assertEqual(self.surface._ui.presentation()[5:7],(0,0))
         global_before=self.surface._timing_frame(8,True)
         self.native.song.current_song_time=take.schedule.start_at
         invalid=self.surface._timing_frame(0,True)
@@ -225,7 +225,7 @@ class CountdownSurfaceTests(RecordingSurfaceCase):
         views=[m for m in selected if m[0][:2]==(191,20)]
         self.assertTrue(views)
         self.assertTrue(all(m[6][2]==7 and m[4][2]==take.token%128 for m in views))
-        self.assertTrue(all(len(compact_wire.project_wire(m))==9 for m in views))
+        self.assertTrue(all(len(compact_wire.project_wire(m))==10 for m in views))
         self.assertEqual(self.native.calls,calls)
 
     def test_actual_surface_native_observation_replaces_invalid_queued_clock(self):
@@ -238,7 +238,7 @@ class CountdownSurfaceTests(RecordingSurfaceCase):
         self.assertEqual(self.surface._ui_snapshot(0)[106],2)
         self.assertEqual(number(actual,73),256)
         self.assertEqual(number(actual,76),0)
-        self.assertEqual(self.surface._ui.presentation()[5:],(0,0))
+        self.assertEqual(self.surface._ui.presentation()[5:7],(0,0))
 
 
 if __name__=='__main__':unittest.main()

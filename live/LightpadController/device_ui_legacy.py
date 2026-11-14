@@ -37,9 +37,12 @@ class _Touch:
     kind: str = ''
     ignored: bool = False
     take: int = None
+    monitor: bool = False
+    record_drag: bool = False
 
 
 class DeviceUI:
+    GROUP_COUNT = 12
     HOLD_SECONDS = .5
     TOUCH_LEASE_SECONDS = 1.0
     MIXER_FIELDS = (98, 99, 100, 101, 108, 102)
@@ -70,12 +73,14 @@ class DeviceUI:
         self._chord = False
         self._touches = {}
         self._inflight = {}
-        self._desired = [OrderedDict() for _ in range(8)]
+        self._desired = [OrderedDict() for _ in range(self.GROUP_COUNT)]
         self._receipts = {}
         self._receipt_attempted = {}
 
     def _fields(self, group):
-        return self._snapshot(group) if group is not None else None
+        if group is None:return None
+        try:return self._snapshot(group)
+        except IndexError:return None
 
     def _valid_meter(self):
         state = self._meter()
@@ -101,7 +106,9 @@ class DeviceUI:
     @staticmethod
     def group_at(x, y):
         px, py = int(x), int(y)
-        return None if py > 6 or py == 3 or px % 4 == 3 else py // 4 * 4 + px // 4
+        if px % 4 == 3:return None
+        if 8 <= py < 10:return 8 + px // 4
+        return None if py > 6 or py == 3 else py // 4 * 4 + px // 4
 
     @staticmethod
     def record_control_at(x, y):
@@ -161,7 +168,7 @@ class DeviceUI:
         self._flush(group)
 
     def _observe(self):
-        for group in range(8):
+        for group in range(self.GROUP_COUNT):
             fields = self._fields(group)
             if not self._capable(group, p.CAP_MIXER):
                 for op in self.MIXER_OPS:
@@ -279,7 +286,7 @@ class DeviceUI:
                     self.view = 1
                 elif contact.kind == 'tempo':
                     self.view = 3
-        for group in range(8):
+        for group in range(self.GROUP_COUNT):
             self._flush(group)
 
     def touch(self, kind, index, x, y):
@@ -332,10 +339,11 @@ class DeviceUI:
                 contact.value = (num, self.DENOMINATORS.index(den), 127 if click else 0)[number]
                 contact.origin = y
             elif self._capable(self.selected_group, p.CAP_MIXER):
-                other = 4 if self.selected_group < 4 else 0
-                number = 5 if other <= y < other + 3 else None
+                constant = self.selected_group >= 8
+                other = 12 if constant else 4 if self.selected_group < 4 else 0
+                number = 5 if other <= y < other + (2 if constant else 3) else None
                 px = int(x)
-                if y >= 8:
+                if (constant and y < 7) or (not constant and y >= 8):
                     number = 0 if px < 3 else None if px % 3 == 0 else px // 3
                 if number is not None:
                     contact.control = number
@@ -409,6 +417,8 @@ class DeviceUI:
         dx, dy = x - contact.x, y - contact.y
         contact.moved |= abs(dx) > 1 or abs(dy) > 1
         if contact.kind == 'group':
+            if contact.group >= 8:return
+            contact.monitor = abs(dx) >= 2 and abs(dy) <= 1.5 and not contact.record_drag
             # Returning to the original tile cancels the pending action even
             # when a touch near its top edge still has dy>=2. moved stays
             # sticky so releasing a returned drag can never become a mute tap.
@@ -417,6 +427,7 @@ class DeviceUI:
             elif not contact.down_leg:
                 if abs(dx) <= 1.5:
                     contact.down_leg, contact.elbow = True, x
+                    contact.record_drag = True
                     contact.turned = False
             else:
                 # This is current intent, not the history of visiting an L.
@@ -434,7 +445,7 @@ class DeviceUI:
                 return
             groups = self.chord_mask
             self._chord, self.chord_mask = False, 0
-            for group in range(8):
+            for group in range(self.GROUP_COUNT):
                 if groups & (1 << group) and self._available(group):
                     self._try_send(group, p.SET_MUTE, 0 if self._fields(group)[92] else 127)
             return
@@ -465,6 +476,8 @@ class DeviceUI:
                     self._try_send(group, p.ADVANCE, 0)
             elif contact.down_leg:
                 self._queue_take(group)
+            elif contact.monitor:
+                self._try_send(group, p.SET_MONITOR, 0)
             elif not contact.moved:
                 self._try_send(group, p.SET_MUTE, 0 if self._fields(group)[92] else 127)
 

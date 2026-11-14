@@ -1,7 +1,7 @@
 {
   "scope": "Approved full15x15 icon pixel masks; no hardware evidence",
   "status_event": {
-    "header": 9128,
+    "header": 25513,
     "word_magic": 1398013952,
     "reason_max": 127
   },
@@ -91,8 +91,8 @@
   },
   "program": {
     "source": "lightpad/status.littlefoot",
-    "source_sha256": "e5b621291babb074157d5e3d40417f092b1a9826ef3b2ef9da6c309976d2aac3",
-    "binary_sha256": "f808e5977aea520c43bc5bd4d9faf35b555dece50e40937a6f54ff5e676cebc9",
+    "source_sha256": "a283fc38778d5b8344dd0fb85f2b29d0d52d7c4c7d8d0a24f581e42ffc0c0bf7",
+    "binary_sha256": "a4131d0ed37b0e7b94264fd101bfe09cc7ef9e33560168d5e43be2cc73768565",
     "code": 4888,
     "heap": 432,
     "total": 5320,

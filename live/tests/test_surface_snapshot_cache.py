@@ -78,7 +78,7 @@ class SurfaceSnapshotCacheTests(unittest.TestCase):
         with patch.object(surface._ui, "tick", side_effect=repeated_ui_reads), \
                 patch.object(surface._output, "flush"):
             surface.update_display()
-        self.assertEqual(dict(self.engine.reads), dict.fromkeys(range(8), 1))
+        self.assertEqual(dict(self.engine.reads), dict.fromkeys(range(12), 1))
         self.assertEqual(self.engine.meter_reads, 1)
 
     def test_actual_values_changed_between_public_callbacks_never_reuse_old_snapshot(self):

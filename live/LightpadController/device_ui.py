@@ -43,14 +43,19 @@ class DeviceUI(LegacyUI):
     METER_TAP_SECONDS = .25
     METER_PAIR_SECONDS = .35
 
-    def __init__(self,send,snapshot,meter,now,recording_bars=None,countdown_bars=None,transport_running=None):
+    def __init__(self,send,snapshot,meter,now,recording_bars=None,countdown_bars=None,transport_running=None,monitor=None,can_record=None,patch_snapshot=None,patch_toggle=None):
         self._recording_bars=recording_bars
         self._countdown_bars=countdown_bars
+        self._monitor=monitor
+        self._can_record=can_record
+        self._patch_snapshot_callback=patch_snapshot
+        self._patch_toggle_callback=patch_toggle
         self._transport_running=transport_running
         super().__init__(send,snapshot,meter,now)
 
     def presentation(self):
-        payload=super().presentation()
+        monitored=self._monitor() if callable(self._monitor) else 127
+        payload=super().presentation()+(monitored if type(monitored) is int and 0<=monitored<8 else 127,)
         if self._flash_visible():
             selected=self._flash_group if payload[0]==0 else payload[1]
             payload=(payload[0],selected)+payload[2:4]+(payload[4]|p.ACTION_FLASH,)+payload[5:]
@@ -69,7 +74,7 @@ class DeviceUI(LegacyUI):
                 except Exception:
                     pass
         # These two bytes remain the chord mask outside the recording view.
-        return payload[:5]+(count,0)
+        return payload[:5]+(count,0)+payload[7:]
 
     def reset(self):
         super().reset()
@@ -81,6 +86,13 @@ class DeviceUI(LegacyUI):
         self._aux={}
         self._pre_start={}
         self._meter_taps={}
+        self._patch_contacts={}
+        self._patch_catalog=None
+        self._patch_pairs=set()
+        self._patch_queue=[]
+        self._patch_inflight=None
+        self._patch_flash=None
+        self._patch_flash_until=0.
 
     def _flash_key(self):
         fields=self._fields(self._flash_group)
@@ -129,7 +141,14 @@ class DeviceUI(LegacyUI):
                 self._flash_until=self._now()+.25
         return delivered
 
+    def _gesture_preview(self):
+        preview=super()._gesture_preview()
+        if preview==p.RECORD_PREVIEW and callable(self._can_record) and not self._can_record(self.selected_group):
+            return p.NO_SOURCE_PREVIEW
+        return preview
+
     def _queue_take(self,group):
+        if group>=8 or callable(self._can_record) and not self._can_record(group):return
         if callable(self._transport_running) and not self._transport_running():
             return
         self._clear_flash(group)
@@ -167,6 +186,9 @@ class DeviceUI(LegacyUI):
         self.view,self.recording_group,self.active_take=2,group,take
         self.begin_wait=self._rebind_take=self._retry_recovery=False
     def tick(self):
+        if self.view==3:
+            self._patch_tick()
+            return
         now=self._now()
         for role,released in list(self._meter_taps.items()):
             if now<released or now>released+self.METER_PAIR_SECONDS:self._meter_taps.pop(role,None)
@@ -261,6 +283,9 @@ class DeviceUI(LegacyUI):
         if any(type(v) is not bool for v in (drawer_open,can_accept,moved,dragged)) or moved and kind!=3:return
         if not all(type(v) in (int,float) and math.isfinite(v) for v in (x,y)):return
         x,y=max(0.,min(14.99,x)),max(0.,min(14.99,y))
+        if view==3:
+            if role==6:self._patch_touch(kind,index,x,y)
+            return
         old=self._roles.get(index)
         # Cancel before tick can release an old meter desire or record gesture.
         if kind==1 and old is not None:
@@ -339,3 +364,129 @@ class DeviceUI(LegacyUI):
         contact.seen=self._now()
         if kind==2:self._move(index,x,y)
         else:self._end(index,x,y);self._roles.pop(index,None)
+
+    @staticmethod
+    def patch_tile_at(x,y):
+        px,py=int(x),int(y)
+        if py<4 and px%4<3:return 'group',py//2*4+px//4
+        if 5<=py<15:return 'input',(py-5)//2*5+px//3
+        return None,None
+
+    def _patch_state(self):
+        if not callable(self._patch_snapshot_callback):return {'sources':(),'assignments':(0,)*8}
+        return self._patch_snapshot_callback()
+
+    @staticmethod
+    def _patch_keys(state):
+        return tuple(source.get('track',source.get('key',(source.get('name'),source.get('midi'))))
+                     for source in state.get('sources',()))
+
+    def _cancel_patch(self,wait_for_release=False):
+        self._patch_pairs.clear()
+        self._patch_queue.clear()
+        self._patch_inflight=None
+        self._patch_flash=None
+        if wait_for_release:
+            for contact in self._patch_contacts.values():contact.ignored=True
+        else:
+            self._patch_contacts.clear()
+            self._patch_catalog=None
+
+    def _cancel_gesture(self,clear_desired=True):
+        super()._cancel_gesture(clear_desired)
+        if hasattr(self,'_patch_contacts'):self._cancel_patch()
+
+    def _patch_context(self):
+        groups=[contact.value for contact in self._patch_contacts.values()
+                if not contact.ignored and contact.auxiliary=='group']
+        return groups[0] if len(groups)==1 else 127
+
+    def _patch_rejected(self,group,source):
+        self._patch_flash=(group,source)
+        self._patch_flash_until=self._now()+.25
+
+    def _patch_drain(self):
+        if self._patch_inflight is not None or not self._patch_queue:return
+        if any(self._now()-contact.seen>=self.TOUCH_LEASE_SECONDS for contact in self._patch_contacts.values()):
+            self._cancel_patch();return
+        # A Native completion can run before the next UI tick. Re-read the
+        # catalog here before an unissued numeric source index leaves FIFO.
+        if self._patch_keys(self._patch_state())!=self._patch_catalog:
+            self._cancel_patch(wait_for_release=True);return
+        marker=self._patch_queue.pop(0)
+        group,source,generation,catalog=marker
+        if generation!=self._generation or catalog!=self._patch_catalog or self._patch_context()!=group:
+            return
+        if not callable(self._patch_toggle_callback):
+            self._patch_rejected(group,source);return
+        self._patch_inflight=marker
+        def result(outcome):
+            if self._patch_inflight is not marker or generation!=self._generation:return
+            self._patch_inflight=None
+            if outcome not in (p.APPLIED,p.OUTCOME_QUEUED):self._patch_rejected(group,source)
+            else:self._patch_flash=None
+            self._patch_drain()
+        try:
+            accepted=bool(self._patch_toggle_callback(group,source,result))
+        except (RuntimeError,AttributeError,IndexError,TypeError,ValueError):
+            # An exception can follow a Native mutation. Its uncertain effect
+            # must never be replayed as another toggle.
+            self._patch_inflight=None
+            self._patch_rejected(group,source)
+            return
+        if not accepted and self._patch_inflight is marker:
+            self._patch_inflight=None
+            self._patch_queue.insert(0,marker)
+        # False means no Native action was issued; keep only this unissued
+        # overlap intent while its group context/catalog remains valid.
+
+    def _patch_tick(self):
+        now=self._now()
+        if any(now-contact.seen>=self.TOUCH_LEASE_SECONDS for contact in self._patch_contacts.values()):
+            self._cancel_patch();return
+        state=self._patch_state()
+        if self._patch_catalog is not None and self._patch_keys(state)!=self._patch_catalog:
+            self._cancel_patch(wait_for_release=True);return
+        context=self._patch_context()
+        self._patch_queue[:]=[item for item in self._patch_queue if item[0]==context]
+        inputs={contact.value for contact in self._patch_contacts.values()
+                if not contact.ignored and contact.auxiliary=='input'}
+        active={(context,source) for source in inputs} if context!=127 else set()
+        for group,source in sorted(active-self._patch_pairs):
+            if len(self._patch_queue)<64:
+                self._patch_queue.append((group,source,self._generation,self._patch_catalog))
+            else:self._patch_rejected(group,source)
+        self._patch_pairs=active
+        self._patch_drain()
+
+    def _patch_touch(self,kind,index,x,y):
+        if self.view!=3:
+            self._cancel_gesture()
+            self.view=3
+        if kind==1:
+            if index in self._patch_contacts:self._cancel_patch()
+            state=self._patch_state()
+            if not self._patch_contacts:self._patch_catalog=self._patch_keys(state)
+            auxiliary,value=self.patch_tile_at(x,y)
+            valid=(auxiliary=='group' and self._available(value)
+                   or auxiliary=='input' and value<len(state.get('sources',())))
+            contact=Binding(6,3,0,self._now(),self._now(),x,y,
+                            ignored=not valid,value=value,auxiliary=auxiliary or '')
+            self._patch_contacts[index]=contact
+        else:
+            contact=self._patch_contacts.get(index)
+            if contact is None:return
+            contact.seen=self._now()
+            if kind==3:self._patch_contacts.pop(index,None)
+        self._patch_tick()
+        if not self._patch_contacts:self._patch_catalog=None
+
+    def patch_presentation(self):
+        context=self._patch_context()
+        inputs={contact.value for contact in self._patch_contacts.values()
+                if not contact.ignored and contact.auxiliary=='input'}
+        held_input=next(iter(inputs)) if context==127 and len(inputs)==1 else 127
+        flash=self._patch_flash if self._now()<self._patch_flash_until else None
+        return {'context':context,'held_input':held_input,
+                'flash':flash[1] if flash is not None else 127,
+                'flash_group':flash[0] if flash is not None else 127}

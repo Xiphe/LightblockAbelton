@@ -2,6 +2,13 @@
 #include <cassert>
 int main() {
     using button_hold::Action;
+    using health::Program;
+    assert(button_hold::destination(Program::main,Action::shortPress)==Program::patch);
+    assert(button_hold::destination(Program::main,Action::longPress)==Program::metronome);
+    assert(button_hold::destination(Program::patch,Action::shortPress)==Program::main);
+    assert(button_hold::destination(Program::patch,Action::longPress)==Program::metronome);
+    assert(button_hold::destination(Program::metronome,Action::shortPress)==Program::main);
+    assert(button_hold::destination(Program::metronome,Action::longPress)==Program::patch);
     button_hold::Recognizer r;
     r.press(1000); assert(!r.poll(1399));
     assert(r.release(1399)==Action::shortPress); // no double-click wait

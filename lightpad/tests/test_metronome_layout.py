@@ -252,7 +252,7 @@ class MetronomeLayoutTests(unittest.TestCase):
             device.touch(vm, 1, x=2, y=7.5); device.touch(vm, 2, x=2, y=5.4)
             if reason == 'nonoverview': device.presentation(vm, mode=1, revision=1)
             if reason == 'stale': vm.time_ms += 3000; vm.call('repaint/v')
-            if reason == 'hello': vm.call('handleMessage/viii', 274, 0, 0xA8 | (3 << 8) | (8 << 10))
+            if reason == 'hello': vm.call('handleMessage/viii', 274, 0, 0xA9 | (3 << 8) | (12 << 11))
             if reason == 'reuse': device.touch(vm, 1, x=9, y=12.5)
             self.assertEqual(preview(vm, 'owner'), -1, reason)
             self.assertEqual(preview(vm, 'until'), 0, reason)

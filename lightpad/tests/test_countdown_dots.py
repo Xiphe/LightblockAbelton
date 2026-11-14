@@ -2,7 +2,7 @@
 """Reverse countdown on canonical compiled Littlefoot, no hardware or Live.
 
 The host supplies ceil(remaining bars)-1 plus a target-relative one-bar group
-clock. These tests encode the unchanged NativeA8 records directly and never
+clock. These tests encode the NativeA9 records directly and never
 infer actual recording from time. Shared fixtures are maintained pure helpers.
 """
 import argparse

@@ -25,7 +25,7 @@
 namespace bp = roli::BlocksProtocol;
 static volatile sig_atomic_t stopping=0;
 static void signalHandler(int) { stopping=1; }
-struct Options { std::string serial, source, modalSource, statusSource, status, lock; int trialCycles=0; };
+struct Options { std::string serial, source, modalSource, patchSource, statusSource, status, lock; int trialCycles=0; };
 struct Singleton {
     int fd=-1;
     explicit Singleton(const std::string& path) { fd=open(path.c_str(),O_CREAT|O_RDWR|O_NOFOLLOW,0600); if(fd<0 || flock(fd,LOCK_EX|LOCK_NB)) throw std::runtime_error("bridge already running or lock unavailable"); }
@@ -128,7 +128,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     roli::Block::Ptr block;
     roli::Block::Program* expected=nullptr;
     Transport* loadedTransport=nullptr;
-    juce::String source, modalSource, statusSource;
+    juce::String source, modalSource, patchSource, statusSource;
     std::atomic<health::Program> programKind{health::Program::main};
     std::atomic<bool> closeRequested{false}, readySignal{false}, streamResetRequested{false};
     health::Inbox healthInbox;
@@ -138,6 +138,8 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     std::shared_ptr<int> notificationLife=std::make_shared<int>(0);
     std::string notificationResult;
     double lastStatusSeed=-10000, healthChangedAt=0;
+    health::Program requestedProgram=health::Program::metronome;
+    bool patchActive() const { return programKind.load()==health::Program::patch; }
     bool metronomeActive() const { return programKind.load()==health::Program::metronome; }
     bool statusActive() const { return programKind.load()==health::Program::status; }
     bool statusEnabled() const { return !statusSource.isEmpty(); }
@@ -186,29 +188,32 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         if(auto click=clicks.release(now())) handleClick(*click);
     }
     void handleClick(button_hold::Action click) {
-        if(statusActive()) return; // Status details are requested only by tapping its icon.
-        if(click==button_hold::Action::longPress) {
-            ++longPresses; event("long_press","input selection reserved; no input changes"); status(); return;
-        }
-        ++singleClicks; event("single_click");
+        if(statusActive()) return;
+        bool longPress=click==button_hold::Action::longPress;
+        if(longPress) { ++longPresses; event("long_press"); }
+        else { ++singleClicks; event("single_click"); }
         if(!loaded || fault || heldTouches.load()!=0 || pendingNonce>=0) {
             event("switch_ignored","not idle, not loaded, or permission pending"); return;
         }
-        if(metronomeActive()) { switchProgram(health::Program::main); return; }
-        requestMetronome();
+        // Every modal returns on short release. Long switches directly to the other modal.
+        auto target=button_hold::destination(programKind.load(),click);
+        if(target==health::Program::main) { switchProgram(target); return; }
+        requestModal(target);
     }
-    void requestMetronome() {
-        if(statusActive() || modalSource.isEmpty() || !loaded || heldTouches.load()!=0 || pendingNonce>=0) return;
+    void requestModal(health::Program target) {
+        if(statusActive() || (target==health::Program::metronome?modalSource:patchSource).isEmpty()
+            || !loaded || heldTouches.load()!=0 || pendingNonce>=0) return;
+        requestedProgram=target;
         pendingNonce=(++permissionNonce)&127;
         permissionEpoch=inputEpoch.load(); permissionAt=now(); permissionReply=-1;
         event("permission_request",juce::String(pendingNonce));
         hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,109,pendingNonce));
     }
     void switchProgram(health::Program target,bool closeCancelsHeld=false) {
-        if(!block || !block->isConnected() || !loaded || (target==health::Program::metronome && modalSource.isEmpty()) || (target==health::Program::status && !statusEnabled())) return;
+        if(!block || !block->isConnected() || !loaded || ((target==health::Program::metronome && modalSource.isEmpty()) || (target==health::Program::patch && patchSource.isEmpty())) || (target==health::Program::status && !statusEnabled())) return;
         {
             std::lock_guard<std::mutex> touchLock(touchMutex);
-            if((!closeCancelsHeld && heldTouches.load()!=0) || (target==health::Program::metronome && inputEpoch.load()!=permissionEpoch)) {
+            if((!closeCancelsHeld && heldTouches.load()!=0) || ((target==health::Program::metronome || target==health::Program::patch) && inputEpoch.load()!=permissionEpoch)) {
                 event("switch_ignored","new pad input after permission query"); return;
             }
             loaded=false; readySignal=false;
@@ -219,8 +224,8 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         { std::lock_guard<std::mutex> lock(mutex); queue.clear(); framer.reset(); }
         programKind=target; lastStatusSeed=-10000; readyReported=false; swapAt=now(); ++swapCount;
         event("swap_begin");
-        auto text=target==health::Program::status?statusSource:target==health::Program::metronome?modalSource:source;
-        auto path=target==health::Program::status?options.statusSource:target==health::Program::metronome?options.modalSource:options.source;
+        auto text=target==health::Program::status?statusSource:target==health::Program::metronome?modalSource:target==health::Program::patch?patchSource:source;
+        auto path=target==health::Program::status?options.statusSource:target==health::Program::metronome?options.modalSource:target==health::Program::patch?options.patchSource:options.source;
         auto program=std::make_unique<SourceProgram>(*block,text,juce::File(path).getParentDirectory());
         expected=program.get();
         auto result=block->setProgram(std::move(program),roli::Block::ProgramPersistency::setAsTemp);
@@ -295,7 +300,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
                 bool fresh=now()-permissionAt<=1000;
                 event(allowed?"permission_allowed":"permission_denied",juce::String(token));
                 pendingNonce=-1;
-                if(allowed && fresh) switchProgram(health::Program::metronome);
+                if(allowed && fresh) switchProgram(requestedProgram);
             }
         }
         if(pendingNonce>=0 && now()-permissionAt>1000) {
@@ -320,6 +325,11 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             if(!modalFile.existsAsFile() || modalFile.getSize()>1024*1024) throw std::runtime_error("modal source is missing or too large");
             modalSource=modalFile.loadFileAsString();
         }
+        if(!options.patchSource.empty()) {
+            juce::File patchFile(options.patchSource);
+            if(!patchFile.existsAsFile() || patchFile.getSize()>1024*1024) throw std::runtime_error("patch source is missing or too large");
+            patchSource=patchFile.loadFileAsString();
+        }
         if(!options.statusSource.empty()) {
             juce::File statusFile(options.statusSource);
             if(!statusFile.existsAsFile() || statusFile.getSize()>1024*1024) throw std::runtime_error("status source is missing or too large");
@@ -333,11 +343,11 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         detector.raw=[this](Transport* sender,const juce::MidiMessage& message) {
             if(detector.active.load()!=sender || !message.isController()) return;
             auto m=message;
-            if(m.getChannel()==16 && m.getControllerNumber()==108 && (m.getControllerValue()==34 || m.getControllerValue()==35 || m.getControllerValue()==36)) {
+            if(m.getChannel()==16 && m.getControllerNumber()==108 && (m.getControllerValue()==34 || m.getControllerValue()==35 || m.getControllerValue()==36 || m.getControllerValue()==37)) {
                 // This is model-ready instrumentation, not an optical timestamp.
                 std::lock_guard<std::mutex> touchLock(touchMutex);
                 if(loaded && !fault && loadedGeneration.load()==sender->generation
-                    && m.getControllerValue()==(statusActive()?36:metronomeActive()?35:34)) {
+                    && m.getControllerValue()==(statusActive()?36:metronomeActive()?35:patchActive()?37:34)) {
                     readyMarkerAt=now(); readySignal=true; triggerAsyncUpdate();
                 }
                 return;
@@ -353,11 +363,11 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
                     detailRequested=m.getControllerValue(); triggerAsyncUpdate(); return;
                 }
             }
-            bool hello=m.getChannel()==16 && m.getControllerNumber()==110 && m.getControllerValue()==18;
+            bool hello=m.getChannel()==16 && m.getControllerNumber()==110 && m.getControllerValue()==19;
             if(hello) pendingHello=true;
             if(!loaded.load() || fault.load() || loadedGeneration.load()!=sender->generation) return;
             if(hello) awaitingHello=false;
-            if(hello) { pendingHello=false; m=juce::MidiMessage::controllerEvent(16,110,18); }
+            if(hello) { pendingHello=false; hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,105,patchActive()?2:metronomeActive()?1:0)); m=juce::MidiMessage::controllerEvent(16,110,19); }
             {
                 std::lock_guard<std::mutex> touchLock(touchMutex);
                 if(!loaded.load()) return;
@@ -475,7 +485,8 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         loaded=true; lastSwapMs=now()-swapAt; event("sdk_loaded",juce::String(lastSwapMs,3));
         if(pendingHello.exchange(false)) {
             awaitingHello=false;
-            hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,110,18)); ++forwarded;
+            hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,105,patchActive()?2:metronomeActive()?1:0));
+            hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,110,19)); ++forwarded;
         }
         if(statusActive()) awaitingHello=false;
         status(); triggerAsyncUpdate();
@@ -490,7 +501,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         processControl();
         if(trialLeft>0 && !statusActive() && loaded && readyReported && now()-readyAt>1500 && pendingNonce<0 && heldTouches.load()==0) {
             if(metronomeActive()) { --trialLeft; switchProgram(health::Program::main); }
-            else requestMetronome();
+            else requestModal(health::Program::metronome);
         }
         updateProgramForHealth();
         if(++statusTicks%100==0) status();
@@ -527,13 +538,14 @@ int main(int argc,char** argv) {
         Options options;
         auto bundle=bridgeBundleConfiguration();
         options.serial=bundle.serial;options.source=bundle.source;options.modalSource=bundle.modalSource;
-        options.statusSource=bundle.statusSource;options.status=bundle.status;options.lock=bundle.lock;
+        options.patchSource=bundle.patchSource;options.statusSource=bundle.statusSource;options.status=bundle.status;options.lock=bundle.lock;
         for(int i=1;i<argc;++i) { std::string arg=argv[i];
             if(arg=="--bundle-info") {
                 juce::DynamicObject::Ptr info=new juce::DynamicObject;
                 info->setProperty("serial",juce::String(options.serial));
                 info->setProperty("controller",juce::String(options.source));
                 info->setProperty("metronome",juce::String(options.modalSource));
+                info->setProperty("patch",juce::String(options.patchSource));
                 info->setProperty("status_program",juce::String(options.statusSource));
                 std::cout<<juce::JSON::toString(juce::var(info.get()),true)<<'\n';return 0;
             }
@@ -546,7 +558,7 @@ int main(int argc,char** argv) {
                          <<report.getProperty("explanation", "Check the bridge connection.").toString()<<"\n";
                 return 0;
             }
-            if(arg=="--help") { std::cout<<"lightpad-bridge --device SERIAL --source FILE [--modal-source FILE] [--status-source FILE] [--trial-cycles N] [--status-file FILE] [--lock-file FILE]\n"; return 0; } if(arg=="--version") { std::cout<<"lightpad-bridge 0.2.0\n"; return 0; } if(i+1>=argc) throw std::runtime_error("missing argument value"); std::string value=argv[++i]; if(arg=="--device") options.serial=value; else if(arg=="--source") options.source=value; else if(arg=="--modal-source") options.modalSource=value; else if(arg=="--status-source") options.statusSource=value; else if(arg=="--trial-cycles") { options.trialCycles=std::stoi(value); if(options.trialCycles<0 || options.trialCycles>6) throw std::runtime_error("invalid trial cycles"); } else if(arg=="--status-file") options.status=value; else if(arg=="--lock-file") options.lock=value; else throw std::runtime_error("unknown argument: "+arg); }
+            if(arg=="--help") { std::cout<<"lightpad-bridge --device SERIAL --source FILE [--modal-source FILE] [--patch-source FILE] [--status-source FILE] [--trial-cycles N] [--status-file FILE] [--lock-file FILE]\n"; return 0; } if(arg=="--version") { std::cout<<"lightpad-bridge 0.2.0\n"; return 0; } if(i+1>=argc) throw std::runtime_error("missing argument value"); std::string value=argv[++i]; if(arg=="--device") options.serial=value; else if(arg=="--source") options.source=value; else if(arg=="--modal-source") options.modalSource=value; else if(arg=="--patch-source") options.patchSource=value; else if(arg=="--status-source") options.statusSource=value; else if(arg=="--trial-cycles") { options.trialCycles=std::stoi(value); if(options.trialCycles<0 || options.trialCycles>6) throw std::runtime_error("invalid trial cycles"); } else if(arg=="--status-file") options.status=value; else if(arg=="--lock-file") options.lock=value; else throw std::runtime_error("unknown argument: "+arg); }
         if(options.serial.size()!=16 || options.source.empty()) throw std::runtime_error("--device requires exact 16-character serial and --source is required");
         if(options.lock.empty()) options.lock="/tmp/lightpad-bridge-"+std::to_string(getuid())+".lock";
         if(!juce::File(options.lock).getParentDirectory().createDirectory()) throw std::runtime_error("cannot create bridge support directory");

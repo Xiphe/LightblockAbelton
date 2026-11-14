@@ -12,11 +12,11 @@ def project_wire(messages):
     messages=list(messages)
     if not messages:return messages
     status,start,revision=messages[0]
-    if len(messages)==20 and 0xB0<=status<=0xB7 and start==40:
+    if len(messages)==20 and 0xB0<=status<=0xBB and start==40:
         body=[m[2] for m in messages[1:-1]]
         return _frame(status,33,revision,[body[i] for i in SNAPSHOT])
     if len(messages)==20 and 0xB0<=status<=0xBF and start==70:
         return _frame(status,34,revision,[m[2] for m in messages[1:-1]])
-    if len(messages)==9 and status==0xBF and start==20:
+    if len(messages)==10 and status==0xBF and start==20:
         return _frame(status,35,revision,[m[2] for m in messages[1:-1]])
     return messages

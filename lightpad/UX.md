@@ -4,9 +4,16 @@ Current controls and display behavior for the 15 by 15 Lightpad. See [setup](../
 
 ## Screens and timing
 
-The device has a 15 by 15 LED grid. Main overview, recording controls and the held group mixer share the main program. The full-screen metronome and global connection status are separate programs. The helper keeps the connection and Live's MIDI ports while switching programs.
+The device has a 15 by 15 LED grid. Coordinates below start at zero. Main overview, recording controls and held mixers share the main program. Full-screen input selection, metronome and global connection status are separate programs. The helper keeps the connection and Live's MIDI ports while switching programs.
 
-Short release of the physical Mode button toggles main/metronome after pad contacts lift. A hold of at least 400 ms requests input selection once; releasing that hold does not also trigger a short click. The hold is reserved; it currently opens no input-selection screen. Mode is inactive on global status. No on-screen Close button is needed in the metronome.
+The physical Mode button chooses the occasional settings programs after pad contacts lift. A hold fires once at 400 ms; releasing it does not also trigger a short click. Active recording or cleanup prevents a program change. Global status ignores Mode. The modal programs need no on-screen Close button.
+
+| Current screen | Short release | Hold at least 400 ms |
+| --- | --- | --- |
+| Main | Input selection | Metronome |
+| Input selection | Main | Metronome |
+| Metronome | Main | Input selection |
+| Global status | No action | No action |
 
 Ableton is authoritative. The device follows actual playing clips, mute, parameters and recording, including manually launched older layers and mixed rows. The timing reference is the leftmost eligible currently playing loop in the group, including muted loops. A new take captures its length and phase for that take only; another take chooses again. With no playing reference, recording uses the next safe bar.
 
@@ -35,11 +42,31 @@ Hold one group to open its mixer while held. Releasing that finger closes the mi
 
 Touch multiple groups before the mixer opens to form a mute batch. The mixer stays closed even after only one finger remains. All selected groups toggle together on the last release. Released selections remain pending, and re-tapping one removes or re-adds it. Sideways movement does not cancel. Every selected group, touched or released, shows a white dot below it and previews its future state while progress continues.
 
-Drag down on any group, including an empty one, to arm recording. Before release, its center and progressing ring become bright pure red. A compact white vertical guide appears above the tiles. Turn left or right into a downward L to arm fresh-phrase advance instead: the tile blacks out and the guide becomes an L. Move back to a straight I to re-arm recording; move onto the original group to cancel without toggling mute. A new down-drag can re-arm before release.
+Swipe horizontally in either direction on one loop group to select it as the sole monitored group. Selecting it again keeps monitoring active. Its blue dot appears below the tile; a white pending-mute dot takes priority at the same position. Group mute also mutes its monitored sound.
+
+Drag down on any loop group, including an empty one, to arm recording. Before release, its center and progressing ring become bright pure red. A compact white vertical guide appears above the tiles. Turn left or right into a downward L to arm fresh-phrase advance instead: the tile blacks out and the guide becomes an L. Move back to a straight I to re-arm recording; move onto the original group to cancel without toggling mute. A new down-drag can re-arm before release.
+
+With an `[Inputs]` catalog present, a loop group needs an assigned available capture source. Without one, the downward I preview shows a bright yellow X until release, with no red fill or white guide. Release does not start recording. Turning into an L still previews fresh-phrase advance normally, including its black tile and white guide; returning to I restores the yellow X. Returning onto the original tile cancels either gesture.
 
 The white guide is a compact indicator, not a full finger history. It draws above group tiles and never on the bottom metronome row. Release, cancellation, contact loss or a view change clears it. Multi-group muting has no gesture guide.
 
 Fresh-phrase advance stops all actual playback in only that group. It finds a free Session row after the highest currently playing row, or after the last occupied row if nothing plays. It skips occupied destinations, preserves every existing clip and leaves other groups unchanged. Mixed rows are valid and do not cause the controller to launch other clips to force alignment. There is no device-side phrase picker.
+
+## Constants
+
+The first four direct children of one `Constants` or `[Constants]` group supply four mixer-only tiles. A child may itself be a group. They occupy columns 0 through 2, 4 through 6, 8 through 10 and 12 through 14, rows 8 through 9. These flat group-colored tiles dim when muted; they have no loop progress or recording gesture.
+
+Tap to mute/unmute, hold to open the mixer, or include them in a multi-group mute batch. Pending selections show their future brightness and a white dot in row 10. Constants do not change the eight loop tiles or acquire monitoring-selection gestures.
+
+## Input selection
+
+The top four rows contain eight 3-by-2 loop-group tiles: columns 0 through 2, 4 through 6, 8 through 10 and 12 through 14, with groups 1 through 4 in rows 0 through 1 and groups 5 through 8 in rows 2 through 3. Row 4 is blank. Up to 25 descendant leaf sources under `[Inputs]` appear in Live order in a five-by-five grid below, without pages. Each source tile is three columns by two rows, filling rows 5 through 14.
+
+Hold exactly one group and touch one or more sources to toggle their assignments. The order is interchangeable: holding a source first and adding the group also works. Each physical overlap toggles once. Lift and re-touch a source to toggle it again. There is no retained selected-group context after release, and multiple held group fingers suppress assignment actions.
+
+A source held without a group shows its name in a four-pixel-high white scroll over faint group colors. Adding a group hides the name; lifting that group restores it while the source remains held. Touch highlights are immediate and remain attached to their initial tiles while fingers move. Catalog changes cancel held gestures rather than reinterpret old indices.
+
+Available sources are dim and assigned sources are bright in the held group's context. Unassigned sources already used by playing MIDI layers are very dark. A rejected pair flashes red without a notification. Actual Live routing supplies assignment and ownership feedback; the device does not maintain a second patch map. The Lightpad selects and controls sources but supplies no musical notes.
 
 ## Recording controls
 
@@ -88,7 +115,7 @@ The entire border briefly pulses white at each actual project bar, then fades ba
 
 ## Mixer while held
 
-The held group's row remains visible. The other group row becomes horizontal pan. Five vertical faders occupy rows 8 through 14:
+For a loop group, its held row remains visible, the other loop row becomes horizontal pan, and five vertical faders occupy rows 8 through 14. For Constants, their two-row strip stays visible in rows 8 through 9; faders occupy rows 0 through 6 and horizontal pan occupies rows 12 through 13. Rows 7, 10 and 11 stay blank, and the visual metronome remains in row 14. Fader columns are the same in both layouts:
 
 | Control | Columns | Color |
 | --- | --- | --- |
@@ -129,4 +156,4 @@ The status program uses the touchable idle tunnel and hidden-message interaction
 
 The installed Live template uses one empty child Audio Track per group because Live rejects childless saved groups. This adds no device interaction; recordings still create new default tracks.
 
-Input selection, assignment UI, device-side phrase selection, accepted-layer undo/recovery, global transport buttons, mute-all and an audio level meter are not available. Live supplies input routing and audio defaults. The Lightpad supplies no musical notes. Recording quantization stays one bar, with no setting UI.
+Device-side parameter-assignment editing, phrase selection, accepted-layer undo/recovery, global transport buttons, mute-all and an audio level meter are not available. Live supplies physical source inputs, instruments and audio defaults. Sets without `[Inputs]` retain default Audio Track recording. Recording quantization stays one bar, with no setting UI.

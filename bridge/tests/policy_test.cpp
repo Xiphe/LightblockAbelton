@@ -23,12 +23,12 @@ int main() {
     Identity chain(serial);auto dna=topology(serial,1,1);assert(!chain.observe(juce::MidiMessage(dna.data(),int(dna.size()))));
 {bridge::Unit unit={{176,33,127},{176,40,0},{176,41,1},{176,42,2},{176,43,3},{176,44,4},{176,45,5},{176,46,6},{176,47,7},{176,48,8},{176,49,9},{176,50,10},{176,51,11},{176,52,12},{176,53,13},{176,54,14},{176,55,127}};bp::HostPacketBuilder<200> packet;packet.writePacketSysexHeaderBytes(30);
 for(const auto& words:bridge::events(unit)) assert(packet.addProgramEventMessage(words.data()));packet.writePacketSysexFooter();
-assert(id.allow(packet.getData(),packet.size()));assert(juce::String::toHexString(packet.getData(),packet.size(),0).toStdString()=="f0002110771e0300020818402001030750027807600042040a16306860010054407e01003bf7");}
+assert(id.allow(packet.getData(),packet.size()));assert(juce::String::toHexString(packet.getData(),packet.size(),0).toStdString()=="f0002110771e030002081840200103075202700f600042040a16306860014054007d03005ef7");}
 {bridge::Unit unit={{191,34,127},{191,40,0},{191,41,1},{191,42,2},{191,43,3},{191,44,4},{191,45,5},{191,46,6},{191,47,7},{191,48,8},{191,49,9},{191,50,10},{191,51,11},{191,52,12},{191,53,13},{191,54,14},{191,55,15},{191,56,16},{191,57,17},{191,58,127}};bp::HostPacketBuilder<200> packet;packet.writePacketSysexHeaderBytes(30);
 for(const auto& words:bridge::events(unit)) assert(packet.addProgramEventMessage(words.data()));packet.writePacketSysexFooter();
-assert(id.allow(packet.getData(),packet.size()));assert(juce::String::toHexString(packet.getData(),packet.size(),0).toStdString()=="f0002110771e0300020818402001030750067907600042040a16306860610354617e01180011020000000000000035683f000030f7");}
-{bridge::Unit unit={{191,35,127},{191,40,0},{191,41,1},{191,42,2},{191,43,3},{191,44,4},{191,45,5},{191,46,6},{191,47,127}};bp::HostPacketBuilder<200> packet;packet.writePacketSysexHeaderBytes(30);
+assert(id.allow(packet.getData(),packet.size()));assert(juce::String::toHexString(packet.getData(),packet.size(),0).toStdString()=="f0002110771e030002081840200103075206730f600042040a16306860614354617d03180011020000000000001035587f000053f7");}
+{bridge::Unit unit={{191,35,127},{191,40,0},{191,41,1},{191,42,2},{191,43,3},{191,44,4},{191,45,5},{191,46,6},{191,47,127},{191,48,127}};bp::HostPacketBuilder<200> packet;packet.writePacketSysexHeaderBytes(30);
 for(const auto& words:bridge::events(unit)) assert(packet.addProgramEventMessage(words.data()));packet.writePacketSysexFooter();
-assert(id.allow(packet.getData(),packet.size()));assert(juce::String::toHexString(packet.getData(),packet.size(),0).toStdString()=="f0002110771e03000208184020010300500a7907006cf7");}
-std::cout<<"Topology/ACK/no-default-write and Python-matched A8 SDK packets passed\n";
+assert(id.allow(packet.getData(),packet.size()));assert(juce::String::toHexString(packet.getData(),packet.size(),0).toStdString()=="f0002110771e0300020818402001037f520a730f007df7");}
+std::cout<<"Topology/ACK/no-default-write and Python-matched A9 SDK packets passed\n";
 }

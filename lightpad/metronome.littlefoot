@@ -1,5 +1,5 @@
 // Fullscreen metronome modal. Confirmed Live digits, local relative-detent feedback.
-// Protocol18/A8; paired host uses the same2LED/.25LED hysteresis and fullscreen roles.
+// Protocol19/A9; paired host uses the same2LED/.25LED hysteresis and fullscreen roles.
 // No saved-default or firmware writes. Code+heap checked before upload.
 // State0..119, RX120..143, clocks144..287, touchXY288..351, pending352..367,
 // sequence368..383, clockrevisions384..392, UIflags393/revision394, meter395..396.
@@ -159,7 +159,7 @@ void initialise()
     pulseAt = -1000;
     resetConnection();
     helloAt = getMillisecondCounter();
-    sendCC(15, 110, 18);
+    sendCC(15, 110, 19);
 }
 
 void copyBytes(int target, int source, int count)
@@ -179,10 +179,10 @@ void acceptUI()
 {
     int mode = getHeapByte(120);
     int selected = getHeapByte(121), recording = getHeapByte(122);
-    int flags = getHeapByte(124), preview = flags & 12;
-    if (mode > 2 || (selected > 7 && selected != 127) || (recording > 7 && recording != 127)
+    int flags = getHeapByte(124), preview = flags & 44;
+    if (mode > 2 || (selected > 11 && selected != 127) || (recording > 7 && recording != 127)
         || (mode == 1 && selected == 127) || (mode == 2 && recording == 127)
-        || flags > 15 || getHeapByte(126) > 1 || preview == 12
+        || flags > 63 || getHeapByte(126) > 31 || (preview & (preview - 1)) != 0
         || (preview != 0 && (mode != 0 || selected == 127
             || getHeapByte(125) != 0 || getHeapByte(126) != 0))) return;
     view = mode;
@@ -274,7 +274,7 @@ void updateModel()
             if (previewOwner[field] < 0 && previewUntil[field] != 0
                 && (now >= previewUntil[field] || meterValue(field) == previewTarget[field])) previewUntil[field] = 0;
     if (!any && now - helloAt >= 1000)
-    { resetConnection(); sendCC(15, 110, 18); helloAt = now; }
+    { resetConnection(); sendCC(15, 110, 19); helloAt = now; }
     for (int f = 0; f < 16; ++f)
         if ((downFingers & (1 << f)) != 0 && uiAt != 0
             && now - sentAt[f] >= ((getHeapByte(352 + f) & 3) == 2 ? 40 : 250)) sendTouch(f, 2);
@@ -460,20 +460,22 @@ void handleMessage(int m0, int m1, int header)
 {
     int previousKind = rxKind;
     rxKind = 0;
-    if ((header & 255) != 168 || (header & 0xff800000) != 0
+    if ((header & 255) != 169 || (header & 0xff000000) != 0
         || ((m0 | m1) & 0x80808080) != 0) return;
-    int kind = (header >> 8) & 3;
-    int group = (header >> 10) & 15;
-    int part = (header >> 14) & 3;
-    int revision = (header >> 16) & 127;
-    if (group > 8 || (kind == 0 && group == 8) || (kind >= 2 && group != 8)) return;
+    int kind = (header >> 8) & 7;
+    int group = (header >> 11) & 15;
+    int part = (header >> 15) & 3;
+    int revision = (header >> 17) & 127;
+    if (kind > 3 || (kind < 2 && group > 7 && group != 12)
+        || (kind == 0 && group == 12) || (kind >= 2 && group != 12)) return;
+    if (group == 12) group = 8;
     if (kind == 3)
     {
         if (part != 0 || revision != 0 || m0 != 274 || m1 != 0) return;
         resetConnection(); ready = 3; drawerLatched = 7; return;
     }
     if (ready != 3) return;
-    int length = kind == 0 ? 15 : kind == 1 ? 18 : 7;
+    int length = kind == 0 ? 15 : kind == 1 ? 18 : 8;
     int last = (length - 1) / 8;
     if (part > last) return;
     int count = part == last ? length - part * 8 : 8;

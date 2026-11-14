@@ -46,15 +46,16 @@ def compile_programs(destination):
 
 
 def word_event(kind, bank, part, revision, values):
-    """Minimal direct A8 fixture encoder, independent of the bridge serializer."""
+    """Minimal direct A9 fixture encoder, independent of the bridge serializer."""
     if not 0 <= len(values) <= 8 or any(not 0 <= value < 128 for value in values):
         raise ValueError("eight seven-bit values maximum")
     data = bytes(values) + bytes(8 - len(values))
-    header = 0xA8 | (kind << 8) | (bank << 10) | (part << 14) | (revision << 16)
+    header = 0xA9 | (kind << 8) | (bank << 11) | (part << 15) | (revision << 17)
     return int.from_bytes(data[:4], "little"), int.from_bytes(data[4:], "little"), header
 
 
 def record(vm, kind, bank, body, revision=0):
+    bank = 12 if kind in (1, 2) and bank == 8 else bank
     words = [word_event(kind, bank, offset // 8, revision, body[offset:offset + 8])
              for offset in range(0, len(body), 8)]
     for event in words:
@@ -83,8 +84,9 @@ def clock(vm, group=8, body=None, revision=0, **options):
 
 
 def presentation(vm, mode=0, selected=0, flags=0, revision=0, body=None):
-    record(vm, 2, 8, list(body) if body is not None else
-           [mode, selected, selected if mode == 2 else 127, 7 if mode == 2 else 0, flags, 0, 0], revision)
+    body = list(body) if body is not None else [mode, selected, selected if mode == 2 else 127, 7 if mode == 2 else 0, flags, 0, 0]
+    if len(body) == 7: body.append(127)
+    record(vm, 2, 8, body, revision)
 
 
 def new(program, hello=True):
@@ -92,14 +94,14 @@ def new(program, hello=True):
     VMS.append(vm)
     vm.call("initialise/v")
     if hello:
-        vm.call("handleMessage/viii", 18 | (1 << 8), 0, 0xA8 | (3 << 8) | (8 << 10))
+        vm.call("handleMessage/viii", 274, 0, 0xA9 | (3 << 8) | (12 << 11))
     return vm
 
 
 def ready(program):
     vm = new(program)
-    for group in range(8):
-        snapshot(vm, group)
+    for group in range(12):
+        snapshot(vm, group, [0] * 15 if group >= 8 else None)
     clock(vm)
     clock(vm, 0)
     presentation(vm)
@@ -146,8 +148,8 @@ def markers(vm):
 
 def render_case(case):
     vm = new(case["program"])
-    for group in range(8):
-        snapshot(vm, group)
+    for group in range(12):
+        snapshot(vm, group, [0] * 15 if group >= 8 else None)
     for group, body in case.get("snapshots", {}).items():
         snapshot(vm, int(group), body, revision=1)
     clock(vm, **case.get("global_clock", {}))
@@ -177,13 +179,14 @@ class CurrentDeviceTests(unittest.TestCase):
                 self.assertEqual((code, heap, code + heap),
                                  (expected["code"], expected["heap"], expected["total"]))
                 self.assertLessEqual(code + heap, 7200)
+                self.assertEqual(expected["free"], 7200-code-heap)
                 vm = new(name, hello=False)
-                self.assertEqual(vm.midi, [[191, 110, 18]])
+                self.assertEqual(vm.midi, [[191, 110, 19]])
 
     def test_snapshot_commit_is_atomic_and_native_interruptions_fail_closed(self):
         body = [2, 0, 64, 100, 30, 20, 90, 0, 0, 0, 64, 31, 0, 7, 0]
         start, tail = word_event(0, 0, 0, 0, body[:8]), word_event(0, 0, 1, 0, body[8:])
-        bad = [(0, 0, 0), (274, 0, 0xA8 | (3 << 8) | (8 << 10) | (1 << 23)),
+        bad = [(0, 0, 0), (274, 0, 0xA9 | (3 << 8) | (12 << 11) | (1 << 23)),
                word_event(0, 0, 3, 0, []), word_event(0, 0, 1, 4, body[8:]),
                (start[0] | 128, start[1], start[2]),
                (tail[0], tail[1] | (1 << 24), tail[2]),
@@ -211,7 +214,7 @@ class CurrentDeviceTests(unittest.TestCase):
             body = clock_payload(0)
             body[index] = value
             clock(vm, 0, body, revision=1)
-            self.assertEqual(vm.heap_bytes(144, 1), bytes(1), (index, value))
+            self.assertEqual(vm.heap_bytes(204, 1), bytes(1), (index, value))
         for kind in ("span_zero", "bar_zero", "position_at_end", "first_after_bar"):
             vm = ready("main")
             body = clock_payload(0)
@@ -220,17 +223,17 @@ class CurrentDeviceTests(unittest.TestCase):
             if kind == "position_at_end": body[5:8] = body[2:5]
             if kind == "first_after_bar": body[8:11] = [1, 3, 0]
             clock(vm, 0, body, revision=1)
-            self.assertEqual(vm.heap_bytes(144, 1), bytes(1), kind)
+            self.assertEqual(vm.heap_bytes(204, 1), bytes(1), kind)
 
     def test_committed_clock_and_ui_replays_cannot_change_the_model(self):
         vm = ready("main")
-        old_clock = vm.heap_bytes(272, 16)
+        old_clock = vm.heap_bytes(332, 16)
         clock(vm, revision=0, position=2.5)
-        self.assertEqual(vm.heap_bytes(272, 16), old_clock)
+        self.assertEqual(vm.heap_bytes(332, 16), old_clock)
         presentation(vm, mode=2, flags=2, revision=0)
         touch(vm, 1)
         self.assertEqual((frames(vm)[-1]["role"], frames(vm)[-1]["view"]), (6, 0))
-        self.assertEqual(vm.heap_bytes(393, 1), bytes(1))
+        self.assertEqual(vm.heap_bytes(453, 1), bytes([1]))
 
     def test_main_bottom_and_gutters_are_blocked_with_no_tap_or_editor(self):
         vm = ready("main")
@@ -311,7 +314,8 @@ class CurrentDeviceTests(unittest.TestCase):
             self.assertEqual(markers(vm), [])
             clock(vm)
             if name == "main":
-                for group in range(7): snapshot(vm, group)
+                for group in range(12):
+                    if group != 7: snapshot(vm, group)
                 vm.call("repaint/v")
                 self.assertEqual(markers(vm), [])
                 snapshot(vm, 7)

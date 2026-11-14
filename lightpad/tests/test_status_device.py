@@ -20,7 +20,7 @@ SOURCE = ROOT / 'lightpad/status.littlefoot'
 FIXTURE = json.loads((Path(__file__).parent / 'fixtures/status_device.json').read_text())
 PROGRAM = None
 VMS = []
-HEADER = 0x23a8
+HEADER = 0x63a9
 MAGIC = 0x53540000
 NAMES = {1: 'Bridge connection', 2: 'Live connection', 3: 'Remote groups', 4: 'Unexpected failure'}
 COLORS = {1: 0x4191ff, 2: 0xf0f0f0, 3: 0xff9118, 4: 0xff1818}
@@ -74,7 +74,7 @@ class StatusDeviceTests(unittest.TestCase):
     def test_standalone_boot_runs_approved_idle_without_live_or_helper(self):
         vm = new(); repaint(vm)
         assert_screen(self, vm, 1)
-        self.assertEqual(vm.midi, [[191, 110, 18]])
+        self.assertEqual(vm.midi, [[191, 110, 19]])
         self.assertLessEqual(vm.code_size + vm.heap_size, 7200)
         self.assertEqual((vm.code_size, vm.heap_size), (FIXTURE['program']['code'], FIXTURE['program']['heap']))
         self.assertEqual(hashlib.sha256(PROGRAM).hexdigest(), FIXTURE['program']['binary_sha256'])
@@ -86,7 +86,7 @@ class StatusDeviceTests(unittest.TestCase):
         for value in range(2, 5):
             vm = new(); state(vm, value, reason=127); repaint(vm)
             assert_screen(self, vm, value)
-            self.assertEqual(vm.midi, [[191, 110, 18], [191, 108, 36]])
+            self.assertEqual(vm.midi, [[191, 110, 19], [191, 108, 36]])
 
     def test_status_ready_is_not_a_fabricated_live_group_screen(self):
         connecting = new(); state(connecting, 0); repaint(connecting)
@@ -103,7 +103,7 @@ class StatusDeviceTests(unittest.TestCase):
         repaint(vm, 400)
         self.assertEqual(len(vm.circles), 16)
         self.assertNotEqual(vm.circles, before)
-        self.assertEqual(vm.midi, [[191, 110, 18], [191, 108, 36]], 'animation sends no control traffic')
+        self.assertEqual(vm.midi, [[191, 110, 19], [191, 108, 36]], 'animation sends no control traffic')
         self.assertGreater(len({call[0] for call in vm.circles}), 8)
 
     def test_atomic_replay_heartbeats_extend_freshness_without_reannouncing(self):
@@ -116,8 +116,8 @@ class StatusDeviceTests(unittest.TestCase):
 
     def test_malformed_or_unrelated_events_neither_change_state_nor_refresh_it(self):
         invalid = [(MAGIC | 6, 0, HEADER), (MAGIC | (128 << 8) | 2, 0, HEADER),
-                   (MAGIC | 2, 1, HEADER), (MAGIC | 2, 0, HEADER | (1 << 16)),
-                   (MAGIC | 2, 0, HEADER | (1 << 14)), (MAGIC | 2, 0, HEADER ^ (1 << 10)),
+                   (MAGIC | 2, 1, HEADER), (MAGIC | 2, 0, HEADER | (1 << 17)),
+                   (MAGIC | 2, 0, HEADER | (1 << 15)), (MAGIC | 2, 0, HEADER ^ (1 << 11)),
                    (MAGIC | 2, 0, HEADER ^ (1 << 8)), (MAGIC | 2, 0, HEADER | (1 << 23)),
                    (0x53550002, 0, HEADER), (274, 0, HEADER), (0, 0, 0)]
         for event in invalid:
@@ -129,12 +129,12 @@ class StatusDeviceTests(unittest.TestCase):
 
     def test_hello_retries_only_without_a_helper_and_cannot_refresh_the_link(self):
         vm = new(); repaint(vm, 999)
-        self.assertEqual(vm.midi.count([191, 110, 18]), 1)
-        repaint(vm, 1); self.assertEqual(vm.midi.count([191, 110, 18]), 2)
+        self.assertEqual(vm.midi.count([191, 110, 19]), 1)
+        repaint(vm, 1); self.assertEqual(vm.midi.count([191, 110, 19]), 2)
         state(vm, 4); repaint(vm, 2000)
-        self.assertEqual(vm.midi.count([191, 110, 18]), 2)
+        self.assertEqual(vm.midi.count([191, 110, 19]), 2)
         repaint(vm, 1500); assert_screen(self, vm, 1)
-        self.assertEqual(vm.midi.count([191, 110, 18]), 3)
+        self.assertEqual(vm.midi.count([191, 110, 19]), 3)
 
     def test_icon_tap_is_helper_only_and_does_not_require_live_feedback(self):
         for value in range(6):

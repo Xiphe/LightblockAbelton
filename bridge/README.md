@@ -43,7 +43,7 @@ python3 bridge/build.py \
   --output '/tmp/Lightpad Bridge.app'
 ```
 
-The build verifies all 685 vendor files and the inline connection hash, runs five native CTests, compiles all three pad programs, enforces their individual 7,200-byte budgets and packages supplier notices. `--status-program SOURCE` selects another reviewed status entry point; the default is `lightpad/status.littlefoot`.
+The build verifies all 685 vendor files and the inline connection hash, runs five native CTests, compiles all four pad programs, enforces their individual 7,200-byte budgets and packages supplier notices. `--status-program SOURCE` selects another reviewed status entry point; the default is `lightpad/status.littlefoot`.
 
 Packaging resolves quoted relative Littlefoot includes, copies them into the bundle and records their hashes. Includes must stay within their source directory; absolute paths, parent traversal, symlinks, cycles and conflicting destinations are rejected. Status needs both `idle-animation.littlefoot` and `idle-statements-prototype.littlefoot`.
 
@@ -66,7 +66,7 @@ python3 bridge/install.py stage \
   --output /tmp/lightpad-install-plan
 ```
 
-The plan validates the signed app identity, all three programs, matching host health support and normal Live-state configuration. Defaults are `~/Applications/Lightpad Bridge.app`, `~/Music/Ableton/User Library/Remote Scripts/LightpadController` and `~/Library/LaunchAgents/net.xiphe.lightpad-bridge.plist`. Use a new plan directory if one exists. `--no-login` omits the login agent; `install.py stage --help` lists custom destinations.
+The plan validates the signed app identity, all four programs, matching host health support and normal Live-state configuration. Defaults are `~/Applications/Lightpad Bridge.app`, `~/Music/Ableton/User Library/Remote Scripts/LightpadController` and `~/Library/LaunchAgents/net.xiphe.lightpad-bridge.plist`. Use a new plan directory if one exists. `--no-login` omits the login agent; `install.py stage --help` lists custom destinations.
 
 Save the pad's standalone startup while all SDK owners are closed:
 
@@ -75,7 +75,7 @@ Save the pad's standalone startup while all SDK owners are closed:
   --device YOUR_16_CHARACTER_SERIAL --timeout 30
 ```
 
-Keep the two idle includes beside status. This replaces the saved startup program, not firmware. CLI success means the save was requested; fully power-cycle the pad and confirm idle/touch behavior before continuing. Main and metronome are temporary uploads and leave this saved startup intact.
+Keep the two idle includes beside status. This replaces the saved startup program, not firmware. CLI success means the save was requested; fully power-cycle the pad and confirm idle/touch behavior before continuing. Main, patch selector and metronome are temporary uploads and leave this saved startup intact.
 
 Apply the matched app/script/login files:
 

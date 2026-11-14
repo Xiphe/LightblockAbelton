@@ -77,7 +77,7 @@ int main() {
     assert(!health::diagnosticTap(true,16,107,3,Program::main,true));
     assert(!health::diagnosticTap(true,16,107,3,Program::status,false));
     health::NotificationGate g;assert(g.accept(0));assert(!g.accept(749));assert(g.accept(750));
-    auto words=health::event(health::State::noGroups,2);assert(words[0]==int32_t(0x53540203));assert(words[1]==0);assert(words[2]==0x23a8);
+    auto words=health::event(health::State::noGroups,2);assert(words[0]==int32_t(0x53540203));assert(words[1]==0);assert(words[2]==(0xa9|(3<<8)|(12<<11)));
     assert(health::explanation(health::State::noGroups,0).body.find("[R1]")!=std::string::npos);
     assert(health::explanation(health::State::failure,health::programLoadFailed).body.find("repair")!=std::string::npos);
 }

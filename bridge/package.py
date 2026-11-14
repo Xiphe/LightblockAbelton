@@ -98,7 +98,7 @@ def compile_program(source, binary, compiler="blocksctl"):
 
 
 def package(binary, controller, metronome, device, output, notices=(),
-            compiler="blocksctl", build_metadata=None, status_program=None):
+            compiler="blocksctl", build_metadata=None, status_program=None, patch_program=None):
     binary, controller, metronome, output = (
         Path(p).resolve() for p in (binary, controller, metronome, output))
     notices = [Path(p).resolve() for p in notices]
@@ -114,10 +114,15 @@ def package(binary, controller, metronome, device, output, notices=(),
     if len({p.name for p in notices}) != len(notices) or any(not p.is_file() for p in notices):
         raise ValueError("Notice files must exist and have unique filenames")
 
+    patch_program = Path(patch_program).resolve() if patch_program is not None else None
+    if patch_program is not None and not patch_program.is_file():
+        raise ValueError("Patch program must exist")
     entries = {"main": (controller, "controller.littlefoot"),
                "metronome": (metronome, "metronome.littlefoot")}
     if status_program is not None:
         entries["status"] = (status_program, "status.littlefoot")
+    if patch_program is not None:
+        entries["patch"] = (patch_program, "patch.littlefoot")
     trees = {name: source_files(path, entry) for name, (path, entry) in entries.items()}
     sources = {}
     for files in trees.values():
@@ -142,7 +147,7 @@ def package(binary, controller, metronome, device, output, notices=(),
                 for destination in sorted(trees[name]) if destination != entry}
     manifest = dict(
         baseline="Live-authoritative controller with global connection status",
-        protocol="18/A8", input_binary_sha256=sha(binary), programs=programs,
+        protocol="19/A9", input_binary_sha256=sha(binary), programs=programs,
         code_signing=dict(mode="ad-hoc bundle", identifier=BUNDLE_ID),
         automatic_login_start=False, saved_default_writes=False,
         firmware_writes=False,
@@ -191,10 +196,11 @@ if __name__ == "__main__":
     parser.add_argument("--metronome", required=True, type=Path)
     parser.add_argument("--device", required=True)
     parser.add_argument("--status-program", type=Path)
+    parser.add_argument("--patch-program", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--compiler", default="blocksctl")
     parser.add_argument("--notice", action="append", type=Path, default=[])
     args = parser.parse_args()
     app, info = package(args.binary, args.controller, args.metronome, args.device,
-                        args.output, args.notice, args.compiler, status_program=args.status_program)
+                        args.output, args.notice, args.compiler, status_program=args.status_program, patch_program=args.patch_program)
     print(json.dumps({"app": str(app), "packaged_binary_sha256": sha(app / "Contents/MacOS/lightpad-bridge"), **info}))

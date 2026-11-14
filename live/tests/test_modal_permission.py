@@ -2,6 +2,7 @@
 import unittest
 from unittest.mock import patch
 from controller_test_support import RecordingSurfaceCase
+from LightpadController import protocol as p
 
 def cached_gate(snapshot_times, ui_time, view, held, now):
     return len(snapshot_times) == 8 and view == 0 and (not held) and (0 <= now - ui_time <= 1) and all((phase == 0 and 0 <= now - received <= 1 for phase, received in snapshot_times))
@@ -73,7 +74,7 @@ class PermissionTests(RecordingSurfaceCase):
         accepted = tuple(group.accepted)
         clip = slot.clip
         self.query(True)
-        self.surface.receive_midi((191, 110, 18))
+        self.surface.receive_midi((191, 110, p.VERSION))
         self.query(True)
         self.assertEqual(tuple(group.accepted), accepted)
         self.assertIs(slot.clip, clip)
@@ -85,7 +86,7 @@ class PermissionTests(RecordingSurfaceCase):
         self.query(True)
         self.raw(1, 6, finger=1, x=1.5, y=1.5)
         self.query(False)
-        self.surface.receive_midi((191, 110, 18))
+        self.surface.receive_midi((191, 110, p.VERSION))
         self.query(True)
         self.surface.receive_midi((176, 20, 5))
         self.query(False)
@@ -114,7 +115,7 @@ class PermissionTests(RecordingSurfaceCase):
     def test_scope_failure_zeros_phase_even_with_active_take(self):
         take, slot = self.record()
         with patch.object(self.surface._engine, '_scope_valid', return_value=False):
-            self.surface.receive_midi((191, 110, 18))
+            self.surface.receive_midi((191, 110, p.VERSION))
             now = self.now.now
             cached = [(self.surface._engine.snapshot(g)[106], now) for g in range(8)]
             self.assertEqual(self.surface._ui.view, 0)

@@ -18,7 +18,7 @@ from littlefoot_harness import Harness
 ROOT = Path(__file__).resolve().parents[2]
 PAD = ROOT / 'lightpad'
 REFERENCE = Path(__file__).parent / 'fixtures/idle-fractal-prototype.littlefoot'
-MAGIC, HEADER = 0x53540000, 0x23a8
+MAGIC, HEADER = 0x53540000, 0x63a9
 
 
 class StatusIdleTests(unittest.TestCase):

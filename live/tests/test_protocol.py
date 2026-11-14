@@ -148,7 +148,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(self.feed(parser, frame(5)), [p.Replay(command, p.APPLIED)])
 
     def test_unknown_op_and_invalid_args_reject_full_frames(self):
-        for op, arg, group in [(19, 0, 0), (127, 0, 0), (p.SET_MUTE, 1, 0),
+        for op, arg, group in [(21, 0, 0), (127, 0, 0), (p.SET_MUTE, 1, 0),
                                (p.BEGIN, 1, 0), (p.TAP_TEMPO, 0, 1)]:
             parser = self.make_parser()
             messages = frame(2, group, op, arg)
@@ -192,11 +192,12 @@ class ProtocolTests(unittest.TestCase):
         for group in range(p.GROUP_COUNT):
             snapshot = p.encode_snapshot(group, 17, fields)
             self.assertEqual(dict((cc, value) for _, cc, value in snapshot)[58], fields[108])
-            progress = p.encode_progress(group, 13, 127)
-            self.assertEqual(progress, [(0xB0 + group, 43, 13), (0xB0 + group, 44, 127)])
+            progress = p.encode_progress(group, 13, 127) if group < p.LOOP_GROUP_COUNT else []
+            if group < p.LOOP_GROUP_COUNT:
+                self.assertEqual(progress, [(0xB0 + group, 43, 13), (0xB0 + group, 44, 127)])
             commands = frame(group, group, p.SET_CONTROL_4, 127)
             self.assertEqual([cc for _, cc, _ in commands], [60, 61, 62, 63])
-            traffic.extend(snapshot + progress + commands + t.encode_view_timing(group, 1, clock))
+            traffic.extend(snapshot + progress + commands + (t.encode_view_timing(group, 1, clock) if group < p.LOOP_GROUP_COUNT else []))
         excluded = {6, 38} | set(range(64, 70)) | set(range(96, 102)) | set(range(120, 128))
         self.assertFalse({cc for _, cc, _ in traffic} & excluded)
         self.assertEqual(p.encode_metadata(False), [(0xBF, 110, p.VERSION), (0xBF, 111, 1), (0xBF, 112, 0)])
@@ -219,21 +220,21 @@ class ProtocolTests(unittest.TestCase):
         payload = (2, 7, 7, 126, 2, 127, 1)
         self.assertEqual(p.encode_presentation(127, payload),
                          [(0xBF, cc, value) for cc, value in
-                          zip(range(20, 29), (127,) + payload + (127,))])
-        for bad in [(4, 0, 0, 0, 0, 0, 0), (0, 8, 127, 0, 0, 0, 0),
+                          zip(range(20, 30), (127,) + payload + (127, 127))])
+        for bad in [(4, 0, 0, 0, 0, 0, 0), (0, 12, 127, 0, 0, 0, 0),
                     (0, 127, 8, 0, 0, 0, 0), (0, 127, 127, 0, 32, 0, 0),
-                    (0, 127, 127, 0, 0, 0, 2), (True, 0, 0, 0, 0, 0, 0),
+                    (0, 127, 127, 0, 0, 0, 32), (True, 0, 0, 0, 0, 0, 0),
                     payload[:-1]]:
             with self.assertRaises(ValueError):
                 p.encode_presentation(0, bad)
 
-    def test_preview_flags_keep_the_same_atomic_nine_message_frame(self):
+    def test_preview_flags_keep_the_same_atomic_ten_message_frame(self):
         self.assertEqual((p.RECORD_PREVIEW, p.ADVANCE_PREVIEW), (4, 8))
         for flag in (p.RECORD_PREVIEW, p.ADVANCE_PREVIEW):
             payload = (0, 7, 127, 0, flag, 0, 0)
             frame = p.encode_presentation(5, payload)
             self.assertEqual(frame, [(0xBF, cc, value) for cc, value in
-                             zip(range(20, 29), (5,) + payload + (5,))])
+                             zip(range(20, 30), (5,) + payload + (127, 5))])
         for payload in ((0, 0, 127, 0, 12, 0, 0),
                         (1, 0, 127, 0, p.RECORD_PREVIEW, 0, 0),
                         (0, 127, 127, 0, p.RECORD_PREVIEW, 0, 0),

@@ -54,8 +54,8 @@ class LightpadController(ControlSurface):
         self._closed = False
         self._ui_cache = None
         self._parser = p.CommandParser()
-        self._revision = [0] * 8
-        self._outcomes = [(0, p.NONE)] * 8
+        self._revision = [0] * p.GROUP_COUNT
+        self._outcomes = [(0, p.NONE)] * p.GROUP_COUNT
         self._pending_results = {}
         self._ui_pending = {}
         self._ui_sequence = 0
@@ -63,7 +63,12 @@ class LightpadController(ControlSurface):
         self._touch_seen = {}
         self._presentation_revision = 0
         self._last_presentation = None
-        self._last = [None] * 8
+        self._last = [None] * p.GROUP_COUNT
+        self._program = 0
+        self._patch_last = {}
+        self._patch_meta_sent = None
+        self._patch_revision = 0
+        self._patch_ui_at = None
         self._heartbeat = 0
         self._progress_at = 0
         self._timing_revision = [0] * 9
@@ -105,7 +110,9 @@ class LightpadController(ControlSurface):
         self._ui = DeviceUI(self._ui_send, self._ui_snapshot, self._ui_meter, time.monotonic,
                             recording_bars=self._ui_recording_bars,
                             countdown_bars=self._ui_countdown_bars,
-                            transport_running=(lambda: bool(self.song().is_playing)) if self._production else None)
+                            transport_running=(lambda: bool(self.song().is_playing)) if self._production else None,
+                            monitor=self._ui_monitor, can_record=self._ui_can_record,
+                            patch_snapshot=self._ui_patch_snapshot, patch_toggle=self._ui_patch_toggle)
         self._ui._frame_context = lambda: self._touch_parser.latest
         self._touch_parser.pre_touch = self._ui.pre_touch
         if self._production:
@@ -144,7 +151,7 @@ class LightpadController(ControlSurface):
         self._configuration_failed = False
         self._ui.reset()
         self._invalidate_ui()
-        self._last = [None] * 8
+        self._last = [None] * p.GROUP_COUNT
         self._last_presentation = None
         self.log_message('Lightpad controller recovered its live group discovery')
 
@@ -263,7 +270,7 @@ class LightpadController(ControlSurface):
             else:
                 fields = (self._engine.snapshot(group) if self._engine is not None else
                           self._groups.snapshot(group))
-        except (RuntimeError, ValueError, AttributeError):
+        except (RuntimeError, ValueError, AttributeError, IndexError, KeyError):
             fields = None
         if self._ui_cache is not None:
             self._ui_cache[group] = fields
@@ -276,6 +283,26 @@ class LightpadController(ControlSurface):
     def _ui_recording_bars(self, group, take_id):
         read = getattr(self._engine, 'recording_bars', None)
         return read(group, take_id) if callable(read) else 0
+
+    def _ui_patch_snapshot(self):
+        if self._ui_cache is not None and 'patch' in self._ui_cache:
+            return self._ui_cache['patch']
+        read = getattr(self._engine, 'patch_state', None)
+        state = read() if callable(read) else {'sources': (), 'assignments': (0,) * 8, 'monitor': None}
+        if self._ui_cache is not None:
+            self._ui_cache['patch'] = state
+        return state
+
+    def _ui_monitor(self):
+        monitor = self._ui_patch_snapshot().get('monitor')
+        return monitor if type(monitor) is int and 0 <= monitor < 8 else 127
+
+    def _ui_can_record(self, group):
+        read = getattr(self._engine, 'has_sources', None)
+        return bool(read(group)) if callable(read) else True
+
+    def _ui_patch_toggle(self, group, source, callback):
+        return self._ui_send(group, p.TOGGLE_PATCH, source, callback)
 
     def _ui_meter(self):
         if self._ui_cache is not None and 'meter' in self._ui_cache:
@@ -343,11 +370,13 @@ class LightpadController(ControlSurface):
                     or self._parser._frames or self._parser._pending or self._ui_pending
                     or self._pending_results or self._ready_completions):
                 return False
-            if (ui.view != 0 or ui.anchor is not None or ui.chord_mask or ui._chord
+            if (ui.view not in (0, 3) or ui.anchor is not None or ui.chord_mask or ui._chord
                     or ui.begin_wait or ui._rebind_take or ui._retry_recovery
                     or ui._inflight or ui._receipts or any(ui._desired)
                     or ui._pre_start or any(not c.ignored for c in ui._touches.values())
-                    or any(not c.ignored for c in ui._roles.values()) or ui._aux):
+                    or any(not c.ignored for c in ui._roles.values()) or ui._aux
+                    or getattr(ui, '_patch_contacts', {}) or getattr(ui, '_patch_queue', ())
+                    or getattr(ui, '_patch_inflight', None) is not None):
                 return False
             allowed = getattr(engine, 'modal_allowed', None)
             if callable(allowed):
@@ -378,6 +407,14 @@ class LightpadController(ControlSurface):
         if len(message) >= 2 and message[:2] == (0xBF, 109):
             if len(message) == 3 and all(type(v) is int for v in message) and 0 <= message[2] < 128:
                 self._send_midi((0xBF, 109 if self._modal_permission() else 108, message[2]), optimized=False)
+            return
+        if len(message) == 3 and message[:2] == (0xBF, 105):
+            if type(message[2]) is int and message[2] in (0, 1, 2):
+                self._program = message[2]
+                self._patch_last = {}
+                self._patch_meta_sent = None
+                self._patch_ui_at = None
+                self._output.discard_data()
             return
         touch = self._touch_parser.receive(message)
         if len(message) >= 2 and message[:2] == (0xBF, 19):
@@ -447,6 +484,8 @@ class LightpadController(ControlSurface):
     def _publish_presentation(self, force=False):
         if self._closed or not self._parser.ready:
             return
+        if getattr(self, '_program', 0) == 2:
+            self._publish_patch(force)
         payload = self._ui.presentation()
         now = time.monotonic()
         if force or payload != self._last_presentation or self._output.presentation_due(now):
@@ -460,10 +499,49 @@ class LightpadController(ControlSurface):
                                       on_sent=self._ui.presentation_receipt(payload))
             self._last_presentation = payload
 
+    def _publish_patch(self, force=False):
+        from .patch_wire import records
+        read = getattr(self._ui, 'patch_presentation', None)
+        presentation = read() if callable(read) else {}
+        actual = records(self._ui_patch_snapshot(), presentation)
+        previous = getattr(self, '_patch_last', {})
+        now = time.monotonic()
+        meta = actual['meta',]
+        if previous.get(('meta',)) != meta:
+            # A count change clears the device's complete catalog, assignments
+            # and name buffer. Discard the old generation and reseed every row.
+            self._output.discard_data()
+            self._patch_last = previous = {('meta',): meta}
+            self._patch_meta_sent = None
+            self._patch_ui_at = None
+        if getattr(self, '_patch_meta_sent', None) != meta:
+            # Assignments/UI have shorter deadlines than catalog rows. Wait for
+            # actual meta delivery, otherwise their initial frames are rejected
+            # by the device and never repaired by latest-only publication.
+            self._patch_revision = (getattr(self, '_patch_revision', 0) + 1) % 128
+            self._output.data(('meta',), p.encode_patch(self._patch_revision, meta), now,
+                              urgent=True,
+                              on_sent=lambda meta=meta: setattr(self, '_patch_meta_sent', meta))
+            return
+        old_name = next((key[1] for key in previous if key[0] == 'name'), None)
+        new_name = presentation.get('held_input', 127)
+        if old_name != new_name:
+            self._output.discard_data(('name',))
+        for key, body in actual.items():
+            heartbeat = key == ('ui',) and (self._patch_ui_at is None or now - self._patch_ui_at >= 1.)
+            if force or previous.get(key) != body or heartbeat:
+                self._patch_revision = (getattr(self, '_patch_revision', 0) + 1) % 128
+                self._output.data(key, p.encode_patch(self._patch_revision, body), now,
+                                  urgent=key[0] in ('ui', 'assignment'),
+                                  on_sent=(lambda: setattr(self, '_patch_ui_at', time.monotonic())) if key == ('ui',) else None)
+        self._patch_last = actual
+
     def _publish(self, force=False, only=None):
         if self._closed or not self._parser.ready:
             return
-        for group in range(8) if only is None else [only]:
+        controls = getattr(self._engine, 'control_indices', None)
+        indices = controls() if callable(controls) else range(8)
+        for group in indices if only is None else [only]:
             sequence, outcome = self._outcomes[group]
             try:
                 if self._configuration_failed:
@@ -503,7 +581,7 @@ class LightpadController(ControlSurface):
         feedback = self._ui_meter() + (tempo,)
         changed = self._last_global_feedback is not None and feedback != self._last_global_feedback
         self._last_global_feedback = feedback
-        indices = [8] + (list(range(8)) if only is None else [only])
+        indices = [8] + ([] if getattr(self, '_program', 0) == 2 else (list(range(8)) if only is None else [only] if only < 8 else []))
         for index in indices:
             self._output.clock(index, lambda index=index: self._timing_frame(index, force),
                                time.monotonic(), urgent=index == 8 and changed)
@@ -560,6 +638,14 @@ class LightpadController(ControlSurface):
         if self._closed:
             return
         self._recover_live_engine()
+        # Live refreshes offered routing channels between display callbacks.
+        # MIDI fragments and song-position listeners must never advance these
+        # preparations within the callback that changed a routing type.
+        advance = getattr(self._engine, 'advance_preparations', None)
+        if callable(advance):
+            self._invalidate_ui()
+            advance()
+            self._invalidate_ui()
         # Continue observing owned native effects if the device disconnects.
         self._tick()
         self._publish_health()

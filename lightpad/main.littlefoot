@@ -1,16 +1,16 @@
-// PRIVATE34 main: groups/mixer/record + visual-only bottom metronome. No modal controls.
-// PRIVATE v18/A8 fixed metronome editor; paired31 host required for auxiliary buttons.
+// Main loop/Constants overview, held mixer and recording controls.
+// Protocol19/A9. Live owns gestures and musical state.
 // No saved-default or firmware writes. Code+heap checked before upload.
-// State0..119, RX120..143, clocks144..287, touchXY288..351, pending352..367,
-// sequence368..383, clockrevisions384..392, UIflags393/revision394, meter395..396.
-#heapsize: 397
+// State0..179, RX180..203, clocks204..347, touchXY348..411, pending412..427,
+// sequence428..443, clockrevisions444..452, UIrevision453, meter454..455; UIflags/monitor are globals.
+#heapsize: 456
 int nonGroupTouches;
 int rxGroup;
 int rxKind;
 int rxCursor;
 int rxRevision;
 bool announced;
-int fresh[8];
+int fresh[12];
 int clockAt[9];
 int sentAt[16];
 int pulseAt;
@@ -22,6 +22,8 @@ int downFingers;
 int ready;
 int helloAt;
 int uiAt;
+int uiFlags;
+int monitorGroup;
 int view;
 int selectedGroup;
 int recordingGroup;
@@ -37,20 +39,22 @@ int guideY;
 bool guideEnabled;
 
 int field(int group, int number) { return getHeapByte(group * 15 + number); }
-int timed(int group, int number) { return getHeapByte(144 + group * 16 + number); }
+int timed(int group, int number) { return getHeapByte(204 + group * 16 + number); }
 int read21(int offset)
 {
     int value = getHeapInt(offset);
     return (value & 127) | ((value >> 1) & 0x3f80) | ((value >> 2) & 0x1fc000);
 }
 
-int clockNumber(int group, int number) { return read21(144 + group * 16 + number); }
-int rxNumber(int group, int number) { return read21(120 + number); }
-bool available(int group)
+int clockNumber(int group, int number) { return read21(204 + group * 16 + number); }
+bool freshGroup(int group)
 {
-    return ready == 3 && fresh[group] != 0
-        && getMillisecondCounter() - fresh[group] < 3000 && field(group, 0) > 0;
+    int stamp = fresh[group];
+    return stamp != 0 && getMillisecondCounter() - stamp < 3000;
 }
+int clockAge(int group) { return getMillisecondCounter() - clockAt[group]; }
+bool available(int group)
+{ return ready == 3 && freshGroup(group) && field(group, 0) > 0; }
 bool capable(int group, int capability)
 {
     return available(group) && (field(group, 11) & capability) != 0;
@@ -69,11 +73,10 @@ int dim(int colour, float amount)
 
 
 
-int meterValue(int number) { return getHeapByte(395 + number); }
 
 
-int touchX(int finger) { return getHeapBits(2304 + finger * 32, 16); }
-int touchY(int finger) { return getHeapBits(2320 + finger * 32, 16); }
+int touchX(int finger) { return getHeapBits(2784 + finger * 32, 16); }
+int touchY(int finger) { return getHeapBits(2800 + finger * 32, 16); }
 int groupFingers() { return downFingers & ~nonGroupTouches; }
 
 
@@ -92,25 +95,28 @@ void resetConnection()
     chordGroups = 0;
     markerKey = -1;
     uiAt = 0;
+    uiFlags = 0;
+    monitorGroup = 127;
     pulseReady = false;
     for (int group = 0; group < 9; ++group)
     {
-        setHeapByte(144 + group * 16, 0);
-        setHeapByte(384 + group, 0);
-        if (group < 8) fresh[group] = 0;
+        setHeapByte(204 + group * 16, 0);
+        setHeapByte(444 + group, 0);
+
     }
-    setHeapByte(394, 0);
-    for (int finger = 0; finger < 16; ++finger) setHeapByte(352 + finger, (downFingers & (1 << finger)) != 0 ? 20 : 0);
+    for (int group = 0; group < 12; ++group) fresh[group] = 0;
+    setHeapByte(453, 0);
+    for (int finger = 0; finger < 16; ++finger) setHeapByte(412 + finger, (downFingers & (1 << finger)) != 0 ? 20 : 0);
 }
 
 void initialise()
 {
-    for (int byte = 0; byte < 397; ++byte) setHeapByte(byte, 0);
+    for (int byte = 0; byte < 456; ++byte) setHeapByte(byte, 0);
     downFingers = 0;
     pulseAt = -1000;
     resetConnection();
     helloAt = getMillisecondCounter();
-    sendCC(15, 110, 18);
+    sendCC(15, 110, 19);
 }
 
 void copyBytes(int target, int source, int count)
@@ -119,64 +125,65 @@ void copyBytes(int target, int source, int count)
 }
 void snapshot(int group)
 {
-    int base = 120;
-    if (getHeapByte(base) > 2 || (getHeapByte(base + 1) != 0 && getHeapByte(base + 1) != 127)
-        || getHeapByte(base + 11) > 31 || getHeapByte(base + 12) > 4) return;
-    copyBytes(group * 15, base, 15);
+    if (getHeapByte(180) > 2 || (getHeapByte(181) != 0 && getHeapByte(181) != 127)
+        || getHeapByte(191) > 31 || getHeapByte(192) > 4) return;
+    copyBytes(group * 15, 180, 15);
     fresh[group] = getMillisecondCounter();
 }
 
 void acceptUI()
 {
-    int mode = getHeapByte(120);
-    int selected = getHeapByte(121);
-    int recording = getHeapByte(122);
-    int flags = getHeapByte(124);
-    int preview = flags & 12;
-    if (mode > 2 || (selected > 7 && selected != 127) || (recording > 7 && recording != 127)
-        || (mode == 1 && selected == 127) || (mode == 2 && recording == 127)
-        || flags > 31 || getHeapByte(126) > 1 || preview == 12
-        || (mode == 2 && (getHeapByte(125) > 111 || getHeapByte(126) != 0))
+    int mode = getHeapByte(180);
+    int selected = getHeapByte(181);
+    int recording = getHeapByte(182);
+    int flags = getHeapByte(184);
+    int preview = flags & 44;
+    if (mode > 2 || (selected > 11 && (selected != 127 || mode == 1))
+        || (recording > 7 && (recording != 127 || mode == 2))
+        || (getHeapByte(187) > 7 && getHeapByte(187) != 127)
+        || flags > 63 || getHeapByte(186) > 31 || (preview & (preview - 1)) != 0
+        || (mode == 2 && (getHeapByte(185) > 111 || getHeapByte(186) != 0))
         || (preview != 0 && (mode != 0 || selected == 127
-            || getHeapByte(125) != 0 || getHeapByte(126) != 0))) return;
-    if (mode != 0 || getHeapByte(125) != 0 || getHeapByte(126) != 0)
+            || getHeapByte(185) != 0 || getHeapByte(186) != 0))) return;
+    if (mode != 0 || getHeapByte(185) != 0 || getHeapByte(186) != 0)
     {
         guideFinger = downFingers == 0 ? -1 : -2;
         guideEnabled = false;
     }
     else if (preview == 0) guideEnabled = false;
-    else if ((getHeapByte(393) & 12) == 0 && guideFinger >= 0)
+    else if ((uiFlags & 44) == 0 && guideFinger >= 0)
     {
         if (groupFingers() == (1 << guideFinger)) guideEnabled = true;
     }
     if (view != 2 && mode == 2) pulseReady = false;
-    setHeapByte(393, flags);
+    uiFlags = flags;
+    monitorGroup = getHeapByte(187);
     view = mode;
     selectedGroup = selected;
     recordingGroup = recording;
     // Overview stores the pending mute mask. Recording reuses the same word
     // for completed bars (low7bits) bound to the presentation's take ID.
-    chordGroups = getHeapByte(125) | ((mode == 2 ? getHeapByte(123) : getHeapByte(126)) << 7);
+    chordGroups = getHeapByte(185) | ((mode == 2 ? getHeapByte(183) : getHeapByte(186)) << 7);
     uiAt = getMillisecondCounter();
 }
 
 
 void sendTouch(int finger, int kind)
 {
-    int seq = getHeapByte(368 + finger);
-    int pending = getHeapByte(352 + finger);
+    int seq = getHeapByte(428 + finger);
+    int pending = getHeapByte(412 + finger);
     int x = touchX(finger), y = touchY(finger);
     int contextGroup = view == 2 ? recordingGroup : view == 1 ? selectedGroup : 0;
-    int canAccept = view == 2 && (pending & 28) == 0 && available(recordingGroup) && (getHeapByte(393) & 2) != 0 ? 64 : 0;
+    int canAccept = view == 2 && (pending & 28) == 0 && available(recordingGroup) && (uiFlags & 2) != 0 ? 64 : 0;
     sendCC(finger, 20, seq);
-    sendCC(finger, 21, kind | (pending & 28));
+    sendCC(finger, 21, kind | (pending & 28) | (view == 1 && contextGroup >= 8 ? 64 : 0));
     sendCC(finger, 22, x & 127);
     sendCC(finger, 23, (x >> 7) | (view << 4) | canAccept);
     sendCC(finger, 24, y & 127);
-    sendCC(finger, 25, (y >> 7) | (contextGroup << 4));
+    sendCC(finger, 25, (y >> 7) | ((contextGroup & 7) << 4));
     sendCC(finger, 26, seq);
-    setHeapByte(368 + finger, (seq + 1) & 127);
-    setHeapByte(352 + finger, pending & ~3);
+    setHeapByte(428 + finger, (seq + 1) & 127);
+    setHeapByte(412 + finger, pending & ~3);
     sentAt[finger] = getMillisecondCounter();
 }
 
@@ -184,7 +191,7 @@ void rememberTouch(int finger, float x, float y)
 {
     int px = int(clamp(0.0, 1919.0, x * 960.0));
     int py = int(clamp(0.0, 1919.0, y * 960.0));
-    setHeapInt(288 + finger * 4, px | (py << 16));
+    setHeapInt(348 + finger * 4, px | (py << 16));
 }
 
 void touchEvent(int kind, int index, float x, float y)
@@ -207,7 +214,7 @@ void touchEvent(int kind, int index, float x, float y)
     else if (!held) return;
     if (ready != 3 || uiAt == 0 || getMillisecondCounter() - uiAt >= 3000 || (kind == 3 && !held))
     {
-        if (kind == 1) { setHeapByte(352 + index, 20); nonGroupTouches = nonGroupTouches | bit; }
+        if (kind == 1) { setHeapByte(412 + index, 20); nonGroupTouches = nonGroupTouches | bit; }
         return;
     }
     rememberTouch(index, x, y);
@@ -218,10 +225,10 @@ void touchEvent(int kind, int index, float x, float y)
         if (view == 0)
         {
             r = 5;
-            if (py < 7 && px % 4 < 3 && py % 4 < 3) r = 6;
+            if (px % 4 < 3 && ((py < 7 && py % 4 < 3) || (py >= 8 && py < 10))) r = 6;
 
         }
-        setHeapByte(352 + index, r << 2);
+        setHeapByte(412 + index, r << 2);
         if (r != 6) nonGroupTouches = nonGroupTouches | bit;
         else
         {
@@ -230,7 +237,7 @@ void touchEvent(int kind, int index, float x, float y)
         }
     }
 
-    if (kind == 2) setHeapByte(352 + index, (getHeapByte(352 + index) & ~3) | 2);
+    if (kind == 2) setHeapByte(412 + index, (getHeapByte(412 + index) & ~3) | 2);
     if (kind != 2 || getMillisecondCounter() - sentAt[index] >= 40) sendTouch(index, kind);
 }
 
@@ -242,18 +249,18 @@ void updateModel()
 {
     int now = getMillisecondCounter();
     bool any = false;
-    for (int group = 0; group < 8; ++group)
+    for (int group = 0; group < 12; ++group)
     {
-        if (fresh[group] != 0 && now - fresh[group] >= 3000)
+        if (fresh[group] != 0 && !freshGroup(group))
         {
             fresh[group] = 0;
-            setHeapByte(144 + group * 16, 0);
+            if (group < 8) setHeapByte(204 + group * 16, 0);
         }
         if (fresh[group] != 0) any = true;
     }
     if (uiAt != 0 && now - uiAt >= 3000)
     {
-            nonGroupTouches = 0;
+        nonGroupTouches = 0;
         view = 0;
         chordGroups = 0;
         uiAt = 0;
@@ -272,13 +279,13 @@ void updateModel()
     if (!any && now - helloAt >= 1000)
     {
         resetConnection();
-        sendCC(15, 110, 18);
+        sendCC(15, 110, 19);
         helloAt = now;
     }
     for (int finger = 0; finger < 16; ++finger)
     {
         if ((downFingers & (1 << finger)) != 0 && uiAt != 0
-            && now - sentAt[finger] >= ((getHeapByte(352 + finger) & 3) == 2 ? 40 : 250)) sendTouch(finger, 2);
+            && now - sentAt[finger] >= ((getHeapByte(412 + finger) & 3) == 2 ? 40 : 250)) sendTouch(finger, 2);
     }
 }
 
@@ -296,7 +303,7 @@ float positionNow(int index)
     float position = float(clockNumber(index, 5));
     if ((timed(index, 0) & 4) != 0)
     {
-        int age = clamp(0, 1000, getMillisecondCounter() - clockAt[index]);
+        int age = clamp(0, 1000, clockAge(index));
         int tempo = timed(index, 14) + (timed(index, 15) << 7);
         position += float(age) * float(tempo) / 15000.0;
     }
@@ -317,39 +324,36 @@ float progressFor(int group)
 
 void acceptClock(int group)
 {
-    int base = 120;
-    int context = getHeapByte(base) & 3;
-    bool continuous = (timed(group, 0) & 3) == context
-                   && getMillisecondCounter() - clockAt[group] < 1000
-                   && clockNumber(group, 11) == rxNumber(group, 11)
-                   && clockNumber(group, 8) == rxNumber(group, 8);
-    setHeapByte(144 + group * 16, 0);
+    int context = getHeapByte(180) & 3;
+    int previousContext = timed(group, 0) & 3;
+    setHeapByte(204 + group * 16, 0);
     if (context == 0) return;
-    if (context > 2 || getHeapByte(base) > (group == 8 ? 14 : 6) || (group == 8 && (context != 1 || getHeapByte(base + 1) != 0))) return;
-    if (group < 8 && (!available(group) || getHeapByte(base + 1) != field(group, 13)
+    if (context > 2 || getHeapByte(180) > (group == 8 ? 14 : 6) || (group == 8 && (context != 1 || getHeapByte(181) != 0))) return;
+    if (group < 8 && (!available(group) || getHeapByte(181) != field(group, 13)
         || context != field(group, 0))) return;
     // Decode candidate numeric fields directly from the isolated RX buffer.
-    int span = rxNumber(group, 2);
-    int position = rxNumber(group, 5);
-    int first = rxNumber(group, 8);
-    int bar = rxNumber(group, 11);
-    int tempo = getHeapByte(base + 14) + (getHeapByte(base + 15) << 7);
-    int numerator = getHeapByte(base + 16);
-    int denominator = getHeapByte(base + 17);
+    int span = read21(182);
+    int position = read21(185);
+    int first = read21(188);
+    int bar = read21(191);
+    int tempo = getHeapByte(194) + (getHeapByte(195) << 7);
+    int numerator = getHeapByte(196);
+    int denominator = getHeapByte(197);
     if (span <= 0 || bar <= 0 || tempo == 0 || numerator == 0
         || numerator > 99 || denominator > 16 || ((0x10116 >> (denominator & 31)) & 1) == 0
         || first > bar || position >= span) return;
     if (abs(bar - numerator * 256 / denominator) > 1
         || (context == 1 && abs(span - bar) > 1
             && !(group < 8 && field(group, 12) == 1 && span == bar * 8 && first == 0))) return;
-    copyBytes(144 + group * 16, base, 16);
-    clockAt[group] = getMillisecondCounter();
     if (group == 8)
     {
-        setHeapByte(395, numerator);
-        setHeapByte(396, denominator);
-        if (!continuous) pulseReady = false;
+        if (previousContext != context || clockAge(8) >= 1000
+            || clockNumber(8, 11) != bar || clockNumber(8, 8) != first) pulseReady = false;
+        setHeapByte(454, numerator);
+        setHeapByte(455, denominator);
     }
+    copyBytes(204 + group * 16, 180, 16);
+    clockAt[group] = getMillisecondCounter();
 }
 
 void ringPixel(int x, int y, int position, int colour)
@@ -361,26 +365,18 @@ void ringPixel(int x, int y, int position, int colour)
 bool previewActive()
 {
     if (!guideEnabled || guideFinger < 0 || view != 0 || chordGroups != 0) return false;
-    return groupFingers() == (1 << guideFinger) && (getHeapByte(393) & 12) != 0;
-}
-
-void guideLine(int x, int y, int endX, int endY)
-{
-    if (x == endX)
-    {
-        int top = min(y, endY);
-        if (top < 14) fillRect(0xffffffff, x, top, 1, min(13, max(y, endY)) - top + 1);
-    }
-    else if (y < 14) fillRect(0xffffffff, min(x, endX), y, abs(endX - x) + 1, 1);
+    return groupFingers() == (1 << guideFinger) && (uiFlags & 44) != 0;
 }
 
 void drawGuide()
 {
-    if (!previewActive()) return;
+    if (!previewActive() || (uiFlags & 32) != 0) return;
     int x = touchX(guideFinger) >> 7;
     int y = touchY(guideFinger) >> 7;
-    guideLine(guideX, guideY, guideX, y);
-    if ((getHeapByte(393) & 8) != 0) guideLine(guideX, y, x, y);
+    int top = min(guideY, y);
+    fillRect(0xffffffff, guideX, top, 1, min(13, max(guideY, y)) - top + 1);
+    if ((uiFlags & 8) != 0 && y < 14)
+        fillRect(0xffffffff, min(guideX, x), y, abs(guideX - x) + 1, 1);
 }
 
 void drawGroup(int group)
@@ -388,29 +384,31 @@ void drawGroup(int group)
     int x = (group % 4) * 4;
     int y = (group / 4) * 4;
     // Host-owned short failure feedback. No view change or local retry timer.
-    if ((getHeapByte(393) & 16) != 0 && selectedGroup == group)
-    { fillRect(0xffff9118, x, y, 3, 3); return; }
+    if ((uiFlags & 16) != 0 && selectedGroup == group)
+    { fillRect(0xffff9118, x, y, 3, group >= 8 ? 2 : 3); return; }
+    int effectiveMute = field(group, 1) == 127 ? 1 : 0;
+    if (chordGroups != 0 && (chordGroups & (1 << group)) != 0)
+        effectiveMute = 1 - effectiveMute;
+    if (group >= 8)
+    {
+        if (available(group)) fillRect(dim(colour(group), effectiveMute == 1 ? 0.08 : 0.5), x, 8, 3, 2);
+        return;
+    }
     if (!available(group))
     {
-        fillRect(0xff000000, x, y, 3, 3);
         // Fresh state zero is an unassigned tile, not a connection fault.
-        if (fresh[group] == 0 || getMillisecondCounter() - fresh[group] >= 3000)
+        if (!freshGroup(group))
             glyph(0xff302000, x, y, 0x1445);
         return;
     }
     int state = field(group, 0);
     bool preview = previewActive() && selectedGroup == group;
-    if (preview && (getHeapByte(393) & 8) != 0)
-    {
-        fillRect(0xff000000, x, y, 3, 3);
-        return;
-    }
-    bool armed = preview && (getHeapByte(393) & 4) != 0;
+    if (preview && (uiFlags & 8) != 0) return;
+    if (preview && (uiFlags & 32) != 0)
+    { glyph(0xffffff00, x, y, 0x1445); return; }
+    bool armed = preview && (uiFlags & 4) != 0;
     int c = armed ? 0xffff0000 : colour(group);
     float position = progressFor(group) * 8.0;
-    int effectiveMute = field(group, 1) == 127 ? 1 : 0;
-    if (chordGroups != 0 && (chordGroups & (1 << group)) != 0)
-        effectiveMute = 1 - effectiveMute;
     float ringBrightness = !armed && state == 2 && effectiveMute == 1 ? 0.3 : 1.0;
     for (int p = 0; p < 8; ++p)
     {
@@ -438,18 +436,10 @@ void drawFader(int x, int width, int colour, float value)
     // The last occupied row fades between the established resting/lit levels.
     for (int row = 0; row < 7; ++row)
         fillRect(dim(colour, 0.08 + 0.42 * clamp(0.0, 1.0, value * 7.0 - float(row))),
-                 x, 14 - row, width, 1);
+                 x, (selectedGroup >= 8 ? 6 : 14) - row, width, 1);
 }
 
 void borderPixel(int position, int colour)
-{
-    if (position < 15) fillPixel(colour, position, 0);
-    else if (position < 29) fillPixel(colour, 14, position - 14);
-    else if (position < 43) fillPixel(colour, 42 - position, 14);
-    else fillPixel(colour, 0, 56 - position);
-}
-
-void markerPixel(int position, int colour)
 {
     if (position < 15) blendPixel(colour, position, 0);
     else if (position < 29) blendPixel(colour, 14, position - 14);
@@ -479,8 +469,8 @@ void drawMarkers(int count, int key)
         int pixel = int(point);
         float fraction = point - float(pixel);
         float alpha = was ? (will ? 1.0 : 1.0 - progress) : progress;
-        markerPixel(pixel, makeARGB(int(alpha * (1.0 - fraction) * 255.0), 176, 176, 176));
-        if (pixel < 55) markerPixel(pixel + 1, makeARGB(int(alpha * fraction * 255.0), 176, 176, 176));
+        borderPixel(pixel, makeARGB(int(alpha * (1.0 - fraction) * 255.0), 176, 176, 176));
+        if (pixel < 55) borderPixel(pixel + 1, makeARGB(int(alpha * fraction * 255.0), 176, 176, 176));
     }
 }
 
@@ -509,7 +499,7 @@ void trackBar()
     if (forward < -halfSpan)
     {
         pulseAt = now;
-    swingParity = swingParity ^ (meterValue(0) & 1);
+    swingParity = swingParity ^ (getHeapByte(454) & 1);
         lastPosition = current;
     }
     else if (forward > 0.0 && forward <= halfSpan) lastPosition = current;
@@ -520,7 +510,7 @@ void drawMetronome()
     bool running = globalRunning();
     if (running)
     {
-        float beat = metronomePosition * float(meterValue(1)) / 256.0 + float(swingParity);
+        float beat = metronomePosition * float(getHeapByte(455)) / 256.0 + float(swingParity);
         beat -= float(int(beat / 2.0)) * 2.0;
         float point = (1.0 - abs(beat - 1.0)) * 14.0;
         int x = int(point);
@@ -540,14 +530,15 @@ void repaint()
     fillRect(0xff000000, 0, 0, 15, 15);
     if (view == 0)
     {
-        for (int group = 0; group < 8; ++group) drawGroup(group);
+        for (int group = 0; group < 12; ++group) drawGroup(group);
+        if (monitorGroup < 8) fillPixel(0xff3080ff, (monitorGroup % 4) * 4 + 1, (monitorGroup / 4) * 4 + 3);
         // Trial pending marker in the free gutter, alongside the future-state preview.
         if (chordGroups != 0)
         {
-            for (int group = 0; group < 8; ++group)
+            for (int group = 0; group < 12; ++group)
             {
                 if ((chordGroups & (1 << group)) == 0 || !available(group)) continue;
-                fillPixel(0xffb0b0b0, (group % 4) * 4 + 1, (group / 4) * 4 + 3);
+                fillPixel(0xffb0b0b0, (group % 4) * 4 + 1, (group < 8 ? (group / 4) * 4 + 3 : 10));
             }
         }
         drawGuide();
@@ -559,21 +550,23 @@ void repaint()
         int row = selectedGroup / 4;
         for (int column = 0; column < 4; ++column) drawGroup(row * 4 + column);
         if (!capable(selectedGroup, 16)) return;
-        int panY = row == 0 ? 4 : 0;
-        fillRect(dim(c, 0.08), 0, panY, 15, 3);
+        int panY = row == 2 ? 12 : row == 0 ? 4 : 0;
+        int panHeight = row == 2 ? 2 : 3;
+        fillRect(dim(c, 0.08), 0, panY, 15, panHeight);
         // Horizontal relative pan: left minimum, right maximum.
         fillRect(dim(c, 0.18), 0, panY + 1, 15, 1);
         int panPosition = int(controlLevel(selectedGroup, 5) * 14.0 + 0.5);
         fillPixel(0xff404040, 7, panY + 1);
-        fillRect(dim(c, 0.65), panPosition, panY, 1, 3);
+        fillRect(dim(c, 0.65), panPosition, panY, 1, panHeight);
         drawFader(0, 3, c, controlLevel(selectedGroup, 0));
         for (int fader = 1; fader < 5; ++fader)
             drawFader(fader * 3 + 1, 2, 0xffffffff, controlLevel(selectedGroup, fader));
+        if (row == 2) drawMetronome();
     }
     if (view == 2)
     {
         int group = recordingGroup;
-        bool canAccept = available(group) && (getHeapByte(393) & 2) != 0;
+        bool canAccept = available(group) && (uiFlags & 2) != 0;
         float brightness = canAccept ? 0.5 : 0.10;
         int acceptColour = dim(0xff60ff80, brightness);
         int nextColour = dim(0xff60c0ff, capable(group, 4) ? brightness : 0.10);
@@ -581,18 +574,18 @@ void repaint()
         recordingButton(dim(acceptColour, 0.15), acceptColour, 8, 1, 0x11510);
         recordingButton(0xff241700, 0xffffb040, 1, 8, 0x725e2);
         recordingButton(dim(nextColour, 0.15), nextColour, 8, 8, 0x8e28a8);
-        if ((getHeapByte(393) & 1) != 0) { markerKey = -1; return; }
+        if ((uiFlags & 1) != 0) { markerKey = -1; return; }
         int recording = field(group, 12);
         bool queued = recording == 1;
         float phase = 0.0;
         if (!queued) phase = progressFor(group);
         else if (available(group) && field(group, 13) == (chordGroups >> 7)
             && (timed(group, 0) & 3) == field(group, 0) && timed(group, 1) == field(group, 13)
-            && getMillisecondCounter() - clockAt[group] < 1000
+            && clockAge(group) < 1000
             && abs(clockNumber(group, 2) - clockNumber(group, 11) * ((chordGroups & 127) >= 8 ? 8 : 1)) <= 1)
             phase = 1.0 - positionNow(group) / float(clockNumber(group, 2));
         float position = phase * 56.0;
-        int progressColour = (getHeapByte(393) & 16) != 0 ? 0xffff9118 : queued ? 0xffff0000 : colour(group);
+        int progressColour = (uiFlags & 16) != 0 ? 0xffff9118 : queued ? 0xffff0000 : colour(group);
         for (int pixel = 0; pixel < 56; ++pixel)
         {
             float amount = clamp(0.0, 1.0, position - float(pixel));
@@ -636,7 +629,7 @@ void repaint()
 // partial units are explicitly discarded; no mixed-channel data can commit.
 
 
-bool globalRunning() { return (timed(8, 0) & 7) == 5 && getMillisecondCounter() - clockAt[8] < 1000; }
+bool globalRunning() { return (timed(8, 0) & 7) == 5 && clockAge(8) < 1000; }
 void recordingButton(int back, int fore, int x, int y, int bits)
 { fillRect(back, x, y, 6, 6); glyph(fore, x + 1, y + 1, bits); }
 
@@ -646,39 +639,40 @@ void handleMessage(int m0, int m1, int header)
 {
     int previousKind = rxKind;
     rxKind = 0;
-    if ((header & 255) != 168 || (header & 0xff800000) != 0
+    if ((header & 255) != 169 || (header & 0xff000000) != 0
         || ((m0 | m1) & 0x80808080) != 0) return;
-    int kind = (header >> 8) & 3;
-    int group = (header >> 10) & 15;
-    int part = (header >> 14) & 3;
-    int revision = (header >> 16) & 127;
-    if (group > 8 || (kind == 0 && group == 8) || (kind >= 2 && group != 8)) return;
+    int kind = (header >> 8) & 7;
+    int group = (header >> 11) & 15;
+    int part = (header >> 15) & 3;
+    int revision = (header >> 17) & 127;
+    if (kind > 3 || group > 12 || (kind == 0 && group == 12)
+        || (kind == 1 && group >= 8 && group != 12) || (kind >= 2 && group != 12)) return;
+    if (group == 12) group = 8;
     if (kind == 3)
     {
         if (part != 0 || revision != 0 || m0 != 274 || m1 != 0) return;
         resetConnection(); ready = 3; return;
     }
     if (ready != 3) return;
-    int length = kind == 0 ? 15 : kind == 1 ? 18 : 7;
-    int last = (length - 1) / 8;
+    int last = kind == 0 ? 1 : kind == 1 ? 2 : 0;
     if (part > last) return;
-    int count = part == last ? length - part * 8 : 8;
-    if (count < 4) { if ((m0 >> (count * 8)) != 0 || m1 != 0) return; }
-    else if (count == 4) { if (m1 != 0) return; }
-    else if (count < 8) { if ((m1 >> ((count - 4) * 8)) != 0) return; }
+    if (part == last)
+    {
+        if (kind == 1 && ((m0 & 0xffff0000) != 0 || m1 != 0)) return;
+        if (kind == 0 && (m1 & 0xff000000) != 0) return;
+    }
     if (part == 0)
     {
-        rxKind = kind + 1; rxGroup = group; rxRevision = revision;
+        rxGroup = group; rxRevision = revision;
     }
     else if (previousKind != kind + 1 || rxGroup != group || rxRevision != revision || rxCursor != part)
     { rxKind = 0; return; }
-    setHeapInt(120 + part * 8, m0); setHeapInt(124 + part * 8, m1);
+    setHeapInt(180 + part * 8, m0); setHeapInt(184 + part * 8, m1);
     if (part < last) { rxKind = kind + 1; rxCursor = part + 1; return; }
-    rxKind = 0;
     if (kind == 0) snapshot(group);
     else
     {
-        int previous = kind == 1 ? 384 + group : 394;
+        int previous = kind == 1 ? 444 + group : 453;
         if (getHeapByte(previous) == revision + 1) return;
         setHeapByte(previous, revision + 1);
         if (kind == 1) acceptClock(group); else acceptUI();
@@ -688,7 +682,7 @@ void handleMessage(int m0, int m1, int header)
 void announceReady()
 {
     if (announced || ready != 3 || uiAt == 0 || getMillisecondCounter() - uiAt >= 3000
-        || (timed(8, 0) & 3) != 1 || getMillisecondCounter() - clockAt[8] >= 1000) return;
-    for (int g = 0; g < 8; ++g) if (fresh[g] == 0 || getMillisecondCounter() - fresh[g] >= 3000) return;
+        || (timed(8, 0) & 3) != 1 || clockAge(8) >= 1000) return;
+    for (int g = 0; g < 12; ++g) if (!freshGroup(g)) return;
     announced = true; sendCC(15, 108, 34);
 }

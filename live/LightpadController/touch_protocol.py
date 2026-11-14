@@ -110,7 +110,7 @@ class TouchParser:
         flag = bool(frame[3] & 64)
         can_accept = flag if role==0 else False
         dragged = flag if role==1 and kind!=START else False
-        group = frame[5] >> 4
+        group = (frame[5] >> 4) | (8 if view == 1 and drawer_open else 0)
         if value != frame[0] or kind not in (START, MOVE, END) or role==7 or moved and kind!=END or role==1 and kind==START and flag:
             return None
         x = frame[2] | ((frame[3] & 15) << 7)
@@ -139,11 +139,12 @@ class TouchParser:
 
 def encode_touch(kind,index,x,y,seq,role,drawer_open=False,view=0,group=0,can_accept=False,moved=False,dragged=False):
     """Pure fixture encoder; exactly seven ordinary CC messages."""
-    for value,lo,hi in ((kind,1,3),(index,0,15),(seq,0,127),(role,0,6),(view,0,3),(group,0,7)):
+    for value,lo,hi in ((kind,1,3),(index,0,15),(seq,0,127),(role,0,6),(view,0,3),(group,0,11 if view == 1 else 7)):
         if not _integer(value,lo,hi):raise ValueError('role touch range')
     if any(type(v) is not bool for v in (drawer_open,can_accept,moved,dragged)) or moved and kind!=END:raise ValueError('role touch flags')
     if dragged and (role!=1 or kind==START):raise ValueError('dragged onlyhandle nonStart')
     px,py=int(x*128),int(y*128)
     if not 0<=px<=1919 or not 0<=py<=1919:raise ValueError('coordinates')
-    values=(seq,kind|(role<<2)|(int(moved)<<5)|(int(drawer_open)<<6),px&127,(px>>7)|(view<<4)|(int(dragged if role==1 and kind!=START else can_accept)<<6),py&127,(py>>7)|(group<<4),seq)
+    opened = drawer_open or view == 1 and group >= 8
+    values=(seq,kind|(role<<2)|(int(moved)<<5)|(int(opened)<<6),px&127,(px>>7)|(view<<4)|(int(dragged if role==1 and kind!=START else can_accept)<<6),py&127,(py>>7)|((group & 7)<<4),seq)
     return tuple((0xB0+index,20+i,value) for i,value in enumerate(values))

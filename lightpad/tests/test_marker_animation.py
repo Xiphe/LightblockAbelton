@@ -137,7 +137,7 @@ class MarkerAnimationTests(unittest.TestCase):
                 device.presentation(vm, mode=0, revision=3); repaint(vm)
                 dots.ui(vm, 2, revision=4); repaint(vm)
             else:
-                vm.call('handleMessage/viii', 274, 0, 0xA8 | (3 << 8) | (8 << 10))
+                vm.call('handleMessage/viii', 274, 0, 0xA9 | (3 << 8) | (12 << 11))
                 for group in range(8): dots.snapshot(vm, group=group, revision=1)
                 dots.ui(vm, 2, revision=1); repaint(vm)
             self.assertEqual(dots.white_dots(vm), {0, 18, 37}, reason)

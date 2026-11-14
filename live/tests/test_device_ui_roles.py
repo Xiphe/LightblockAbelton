@@ -79,7 +79,7 @@ class UITests(unittest.TestCase):
         self.touch(START, 6)
         self.touch(END, 6, after=0.05)
         self.assertEqual(self.host.sent, [(0, p.SET_MUTE, 127)])
-        self.assertEqual(len(self.ui.presentation()), 7)
+        self.assertEqual(len(self.ui.presentation()), 8)
         self.assertFalse(hasattr(self.ui, 'drawer_endpoint'))
         self.host.finish()
         self.touch(START, 6)

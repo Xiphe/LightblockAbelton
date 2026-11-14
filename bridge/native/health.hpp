@@ -7,7 +7,7 @@
 
 namespace health {
 enum class State : uint8_t { connecting=0, bridgeUnavailable=1, liveUnavailable=2, noGroups=3, failure=4, ready=5 };
-enum class Program : uint8_t { main, metronome, status };
+enum class Program : uint8_t { main, metronome, status, patch };
 enum Reason : uint8_t { none=0, waitingForLive=1, noRemoteGroups=2, hostFailure=3, starting=4,
     deviceDisconnected=5, deviceBusy=6, programLoadFailed=7, deviceRejected=8, staleFeedback=9, protocolMismatch=10 };
 struct Frame { uint8_t sequence=0; State state=State::connecting; uint8_t reason=none, flags=0; };
@@ -71,7 +71,7 @@ inline Transition transition(Program current,bool loaded,bool hasStatus,uint16_t
     if(current==Program::status) return monitor.usable(now)?Transition::main:Transition::none;
     return monitor.needsStatus(current,now) && now-changedAt>=250?Transition::status:Transition::none;
 }
-inline const char* programName(Program p) { return p==Program::main?"main":p==Program::metronome?"metronome":"status"; }
+inline const char* programName(Program p) { return p==Program::main?"main":p==Program::metronome?"metronome":p==Program::patch?"patch":"status"; }
 inline const char* stateName(State s) {
     switch(s) {
         case State::connecting:return "connecting";
@@ -105,6 +105,6 @@ struct NotificationGate {
     bool accept(double now) { if(now-last<750) return false; last=now; return true; }
 };
 inline std::array<int32_t,3> event(State state,uint8_t reason) {
-    return {int32_t(0x53540000u | uint32_t(state) | (uint32_t(reason)<<8)),0,0xa8 | (3<<8) | (8<<10)};
+    return {int32_t(0x53540000u | uint32_t(state) | (uint32_t(reason)<<8)),0,0xa9 | (3<<8) | (12<<11)};
 }
 }

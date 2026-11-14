@@ -14,6 +14,8 @@ BridgeBundleConfiguration bridgeBundleConfiguration()
         return {text([bundle objectForInfoDictionaryKey:@"LightpadBridgeDeviceSerial"]),
             text([root stringByAppendingPathComponent:@"controller.littlefoot"]),
             text([root stringByAppendingPathComponent:@"metronome.littlefoot"]),
+            [[NSFileManager defaultManager] fileExistsAtPath:[root stringByAppendingPathComponent:@"patch.littlefoot"]]
+                ? text([root stringByAppendingPathComponent:@"patch.littlefoot"]) : std::string(),
             [[NSFileManager defaultManager] fileExistsAtPath:[root stringByAppendingPathComponent:@"status.littlefoot"]]
                 ? text([root stringByAppendingPathComponent:@"status.littlefoot"]) : std::string(),
             text([support stringByAppendingPathComponent:@"status.json"]),

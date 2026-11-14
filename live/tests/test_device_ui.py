@@ -115,7 +115,7 @@ class DeviceUITests(unittest.TestCase):
 
     def test_other_overview_paths_neither_record_nor_fall_back_to_tap(self):
         for state in (p.EMPTY, p.PLAYING):
-            for x, y in ((1.5, 3), (1.5, 0), (4, 1.5), (4, 4)):
+            for x, y in ((1.5, 3), (1.5, 0), (4, 4)):
                 with self.subTest(state=state, end=(x, y)):
                     host = Host()
                     host.fields[0][91] = state

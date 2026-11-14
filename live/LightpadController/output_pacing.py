@@ -58,6 +58,21 @@ class OutputPacer:
             'deadline': min(previous['deadline'], now + .25) if previous else now + .25,
             'on_sent': on_sent, 'binding': tuple(binding) if binding is not None else None}
 
+    def data(self, key, messages, now, urgent=False, on_sent=None):
+        """Coalesced modal graphics within the same device transport budget."""
+        key = ('data',) + tuple(key)
+        previous = self.frames.get(key)
+        messages = list(messages)
+        self.frames[key] = {'make': lambda: messages, 'messages': messages,
+            'deadline': min(previous['deadline'], now + (.15 if urgent else 1.5)) if previous else now + (.15 if urgent else 1.5),
+            'on_sent': on_sent, 'urgent': urgent}
+
+    def discard_data(self, prefix=()):
+        prefix = ('data',) + tuple(prefix)
+        for key in list(self.frames):
+            if key[:len(prefix)] == prefix:
+                del self.frames[key]
+
     def offer(self, messages, now, on_sent=None):
         if len(messages) != 20:
             for message in messages:
@@ -133,7 +148,7 @@ class OutputPacer:
 
     @staticmethod
     def _urgent(key, job):
-        return key[0] in ('result', 'terminal') or (key[0] == 'clock' and job.get('urgent', False))
+        return key[0] in ('result', 'terminal') or (key[0] in ('clock', 'data') and job.get('urgent', False))
 
     def _pick(self, now, skipped):
         candidates = []
@@ -153,6 +168,8 @@ class OutputPacer:
                     sent = self._state_sent.get(0xB0 + group)
                     if sent is None or self._binding(sent) != (phrase, take):
                         continue
+            elif key[0] == 'data':
+                index = 8
             else:
                 status = key[1]
                 index = status - 0xB0
@@ -227,10 +244,12 @@ class OutputPacer:
             if key[0] == 'presentation':
                 self._presentation_at = now
                 index = 8
+            elif key[0] == 'data':
+                index = 8
             else:
                 index = key[1] if key[0] == 'clock' else key[1] - 0xB0
             self._round_robin = (index + 1) % 9
-            if key[0] not in ('clock', 'presentation'):
+            if key[0] not in ('clock', 'presentation', 'data'):
                 status = key[1]
                 self._state_at[status] = now
                 self._state_sent[status] = messages

@@ -4,21 +4,21 @@
   "programs": {
     "main": {
       "source": "lightpad/main.littlefoot",
-      "source_sha256": "ea69bd1ecf8147a6786df6ce9353a9af8e08179186f754dcf5e01850034de66f",
-      "binary_sha256": "3b1619912e76d873409cfcdfa2031bae397bc757e5a3cc6eed7f52a37133e807",
-      "code": 6578,
-      "heap": 532,
-      "total": 7110,
-      "free": 90
+      "source_sha256": "cb295058be278530139119e4d930f0695c4ff7be5f4b74020b03885aad5a9ae4",
+      "binary_sha256": "a3648cbde744e50276b924f3373108f1ea005687476f040e30693b0c5d25ca2d",
+      "code": 6583,
+      "heap": 604,
+      "total": 7187,
+      "free": 13
     },
     "metronome": {
       "source": "lightpad/metronome.littlefoot",
-      "source_sha256": "a8dc06e5ea181d8a8147053cd32a80fde1866dfc8de9ff9c39b64494a86a275b",
-      "binary_sha256": "1e79a289a6e70ced3420842c623915f837c0ff6e03581c51ad31a222708c5444",
-      "code": 4751,
+      "source_sha256": "a85483f24c5da6d67e3b73c4c0b292b2eaa3493fe3775c904e7acb66245f02e4",
+      "binary_sha256": "9451f68ecdf0e88a22fdcbd73d64ed3720552598ee6970397682bf39a319c1df",
+      "code": 4785,
       "heap": 580,
-      "total": 5331,
-      "free": 1869
+      "total": 5365,
+      "free": 1835
     }
   },
   "led_cases": [

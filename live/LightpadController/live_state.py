@@ -146,12 +146,19 @@ class LiveState:
     def __init__(self, song):
         self.song = song
         self.groups = {}
+        self.constants = {}
         self.issues = {}
         self.tracks = ()
         self.refresh()
 
     def refresh(self):
         self.tracks = tuple(self.song.tracks)
+        constant_groups = [track for track in self.tracks if bool(track.is_foldable)
+                           and (str(track.name) == 'Constants'
+                                or re.match(r'^\[Constants\](?:\s|$)', str(track.name)))]
+        self.constants = ({8 + index: track for index, track in enumerate(
+            [track for track in self.tracks if same(getattr(track, 'group_track', None), constant_groups[0])][:4])}
+            if len(constant_groups) == 1 else {})
         candidates, issues = {}, {}
         for track in self.tracks:
             match = MARKER.match(str(track.name))
@@ -188,6 +195,10 @@ class LiveState:
             groups[index] = GroupState(index, group, children, tuple(playing), tuple(recording))
         self.groups, self.issues = groups, issues
         return self
+
+    @property
+    def control_tracks(self):
+        return {**{index: item.group for index, item in self.groups.items()}, **self.constants}
 
     @staticmethod
     def _owner(track, groups):

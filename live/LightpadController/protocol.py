@@ -1,4 +1,4 @@
-"""MIDI CC framing for controller protocol v4, without a Live dependency.
+"""MIDI CC framing for controller protocol 19, without a Live dependency.
 
 Only Command events may reach the mutation layer. Call complete() once that
 layer has chosen an outcome. Replay events contain the cached outcome and must
@@ -8,12 +8,14 @@ never execute the command again. Malformed frames are discarded as a unit.
 from collections import namedtuple
 
 
-VERSION = 18
-GROUP_COUNT = 8
+VERSION = 19
+LOOP_GROUP_COUNT = 8
+GROUP_COUNT = 12
 META_STATUS = 0xBF
 RECORD_PREVIEW = 4
 ADVANCE_PREVIEW = 8
 ACTION_FLASH = 16
+NO_SOURCE_PREVIEW = 32
 HELLO_CC = 110
 
 REFRESH, SET_MUTE, BEGIN, ACCEPT, ACCEPT_NEXT, RETRY, ABORT, ADVANCE = range(8)
@@ -21,6 +23,7 @@ SET_VOLUME, SET_SEND_1, SET_SEND_2, SET_SEND_3, SET_PAN, TAP_TEMPO = range(8, 14
 ACK_COMPLETION = 14
 SET_CONTROL_4 = 15
 SET_NUMERATOR, SET_DENOMINATOR, SET_METRONOME = range(16, 19)
+SET_MONITOR, TOGGLE_PATCH = 19, 20
 
 UNAVAILABLE, EMPTY, PLAYING, QUEUED, RECORDING, FINISH_QUEUED = range(6)
 NONE, APPLIED, OUTCOME_QUEUED, REJECTED, CAPACITY, NOT_READY, BAD_COMMAND, BUSY, STALE = range(9)
@@ -51,7 +54,13 @@ def _integer(value, low, high):
 
 
 def _valid_command(command):
-    if not _integer(command.op, REFRESH, SET_METRONOME):
+    if not _integer(command.op, REFRESH, TOGGLE_PATCH):
+        return False
+    if command.op == SET_MONITOR:
+        return command.group < LOOP_GROUP_COUNT and command.arg == 0
+    if command.op == TOGGLE_PATCH:
+        return command.group < LOOP_GROUP_COUNT and 0 <= command.arg < 25
+    if command.group >= LOOP_GROUP_COUNT and command.op not in (REFRESH, SET_MUTE, SET_VOLUME, SET_SEND_1, SET_SEND_2, SET_SEND_3, SET_PAN, SET_CONTROL_4):
         return False
     if command.op == SET_NUMERATOR:
         return command.group == 0 and 1 <= command.arg <= 99
@@ -184,24 +193,39 @@ def encode_snapshot(group, revision, fields):
 
 
 def encode_progress(group, phase, countdown):
+    if not _integer(group, 0, LOOP_GROUP_COUNT - 1):
+        raise ValueError('only loop groups have progress')
     return [_cc(group, 43, phase), _cc(group, 44, countdown)]
 
 
 def encode_presentation(revision, payload):
     """Atomic global screen selection, independent of native group state."""
     payload = tuple(payload)
-    if (not _integer(revision, 0, 127) or len(payload) != 7
+    if len(payload) == 7:
+        payload += (127,)
+    if (not _integer(revision, 0, 127) or len(payload) != 8
             or not all(_integer(value, 0, 127) for value in payload)
-            or payload[0] > 3 or payload[1] not in tuple(range(8)) + (127,)
+            or payload[0] > 3 or payload[1] not in tuple(range(GROUP_COUNT)) + (127,)
             or payload[2] not in tuple(range(8)) + (127,)
-            or payload[4] > 31 or payload[6] > 1):
+            or payload[4] > 63 or payload[6] > 31
+            or payload[7] not in tuple(range(8)) + (127,)):
         raise ValueError("invalid presentation")
-    preview = payload[4] & (RECORD_PREVIEW | ADVANCE_PREVIEW)
-    if (preview == (RECORD_PREVIEW | ADVANCE_PREVIEW)
+    preview = payload[4] & (RECORD_PREVIEW | ADVANCE_PREVIEW | NO_SOURCE_PREVIEW)
+    if (preview not in (0, RECORD_PREVIEW, ADVANCE_PREVIEW, NO_SOURCE_PREVIEW)
             or preview and (payload[0] != 0 or payload[1] > 7 or payload[5] or payload[6])):
         raise ValueError("invalid gesture preview")
     return [(META_STATUS, cc, value) for cc, value in
-            zip(range(20, 29), (revision,) + payload + (revision,))]
+            zip(range(20, 30), (revision,) + payload + (revision,))]
+
+
+def encode_patch(revision, body):
+    """Fixed-size selector data unit, paced with all other graphics."""
+    body = tuple(body)
+    if (not _integer(revision, 0, 127) or not 1 <= len(body) <= 18
+            or not all(_integer(v, 0, 127) for v in body) or body[0] > 4):
+        raise ValueError('invalid patch frame')
+    body += (0,) * (18 - len(body))
+    return [(META_STATUS, 36, revision)] + [(META_STATUS, 40 + i, v) for i, v in enumerate(body)] + [(META_STATUS, 58, revision)]
 
 
 def encode_metadata(running):

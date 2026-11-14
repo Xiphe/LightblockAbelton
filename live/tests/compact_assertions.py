@@ -1,5 +1,5 @@
 """Assertions at the compact wire and unchanged logical delivery boundary."""
-BODY_LENGTH = {33: 15, 34: 18, 35: 7}
+BODY_LENGTH = {33: 15, 34: 18, 35: 8, 36: 18}
 SNAPSHOT_FIELDS = (91, 92, 93, 95, 96, 97, 98, 99, 100, 101, 102, 103, 106, 107, 108)
 
 
@@ -18,7 +18,7 @@ def assert_frame(case, messages, start=None):
     case.assertEqual([message[0] for message in messages], [messages[0][0]] * size(start))
     case.assertEqual(messages[-1][2], messages[0][2])
     if start == 33:
-        case.assertIn(messages[0][0], range(0xB0, 0xB8))
+        case.assertIn(messages[0][0], range(0xB0, 0xBC))
     elif start == 35:
         case.assertEqual(messages[0][0], 0xBF)
 

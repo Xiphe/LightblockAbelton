@@ -358,11 +358,17 @@ class SurfacePacingTests(unittest.TestCase):
     def test_near_100ms_jitter_and_adjacent_receives_preserve_the_same_freshness_and_rates(self):
         self._assert_sustained_callbacks((0.0997, 0.1003), adjacent_receive=True)
 
-    def _assert_sustained_callbacks(self, intervals, adjacent_receive=False):
+    def test_twelve_controls_keep_snapshots_and_eight_loop_clocks_fresh(self):
+        self._assert_sustained_callbacks((.1,), controls=12)
+
+    def _assert_sustained_callbacks(self, intervals, adjacent_receive=False, controls=8):
         now = [100.0]
         sent = []
 
         class RunningEngine(EightClockEngine):
+            def control_indices(self):
+                return range(controls)
+
             def snapshot(self, group, sequence=0, outcome=p.NONE):
                 fields = super().snapshot(group, sequence, outcome)
                 fields[93] = int(((now[0] - 100.0) * 2 % 8) * 16)
@@ -403,7 +409,7 @@ class SurfacePacingTests(unittest.TestCase):
                     song.current_song_time = (now[0] - 100.0) * 2
                     surface.receive_midi((0xB0, 39, 0))
 
-        snapshots = {group: [] for group in range(8)}
+        snapshots = {group: [] for group in range(controls)}
         clocks = {status: [] for status in list(range(0xB0, 0xB8)) + [0xBF]}
         frame_times, metadata_times = [], []
         cursor = 0

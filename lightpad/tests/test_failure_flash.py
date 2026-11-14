@@ -93,7 +93,7 @@ class FailureFlashTests(unittest.TestCase):
 
     def test_reserved_higher_flag_is_rejected_atomically(self):
         vm = ready(); before = [row[:] for row in vm.leds]
-        show(vm, flags=32)
+        show(vm, flags=64)
         self.assertEqual(vm.leds, before)
 
 

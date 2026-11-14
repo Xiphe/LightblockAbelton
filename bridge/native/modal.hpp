@@ -58,7 +58,7 @@ struct Touches {
         int kind=v[1]&3, role=(v[1]>>2)&7;
         int view=(v[3]>>4)&3, group=v[5]>>4;
         bool moved=(v[1]&32)!=0, extra=(v[3]&64)!=0;
-        if(v[0]!=v[6] || kind==0 || role==7 || view==3
+        if(v[0]!=v[6] || kind==0 || role==7
             || (moved && kind!=3) || (role==1 && kind==1 && extra)) return false;
         int x=v[2]+((v[3]&15)<<7), y=v[4]+((v[5]&15)<<7);
         if(x>1919 || y>1919) return false;
