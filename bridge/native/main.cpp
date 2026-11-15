@@ -4,6 +4,7 @@
 #include <CoreMIDI/CoreMIDI.h>
 #include "protocol.hpp"
 #include "spike_fader.hpp"
+#include "performance.hpp"
 #include "modal.hpp"
 #include "short_long.hpp"
 #include "health.hpp"
@@ -26,7 +27,7 @@
 namespace bp = roli::BlocksProtocol;
 static volatile sig_atomic_t stopping=0;
 static void signalHandler(int) { stopping=1; }
-struct Options { std::string serial, source, modalSource, statusSource, status, lock; int trialCycles=0; bool optimisticFaderSpike=false; int spikeAckDelayMs=0; };
+struct Options { std::string serial, source, modalSource, statusSource, status, lock; int trialCycles=0; bool optimisticFaderSpike=false, audioPerformance=false; int spikeAckDelayMs=0; };
 struct Singleton {
     int fd=-1;
     explicit Singleton(const std::string& path) { fd=open(path.c_str(),O_CREAT|O_RDWR|O_NOFOLLOW,0600); if(fd<0 || flock(fd,LOCK_EX|LOCK_NB)) throw std::runtime_error("bridge already running or lock unavailable"); }
@@ -185,6 +186,54 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             ++units; ++sent;
         }
     }
+    std::mutex performanceMutex;
+    performance::IntentFrame performanceInput;
+    performance::AckFrame performanceAcks;
+    performance::ObservationFrame performanceObservations;
+    performance::Reconciler performanceModel;
+    int performanceGeneration=1, performanceEpochCounter=0;
+    double performanceHandshakeAt=-10000, performanceFeedbackRetryAt=0;
+    std::atomic<bool> performanceDeviceBusy{false};
+    std::atomic<double> performanceLastLiveAt{-10000};
+    void performancePump() {
+        if(!loaded || fault || !block || !block->isConnected()
+            || block->getProgram()!=expected || detector.active.load()!=loadedTransport
+            || detector.activeGeneration.load()!=loadedGeneration.load()) return;
+        auto* transport=detector.active.load(); if(!transport) return;
+        int index=transport->identity.ack.load();
+        if(index<0 || index!=transport->identity.target.load()) return;
+        std::optional<performance::Dispatch> command;
+        std::optional<performance::Feedback> feedback;
+        int handshakeCC=0;
+        { std::lock_guard<std::mutex> lock(performanceMutex);
+          if(now()-performanceHandshakeAt>=1000) {
+              handshakeCC=performanceModel.liveReady?79:78; performanceHandshakeAt=now();
+          }
+          command=performanceModel.takeDispatch(now());
+          if(!statusActive() && now()>=performanceFeedbackRetryAt) feedback=performanceModel.takeFeedback(now()); }
+        // Commands always leave before graphics; no MIDI/SDK calls under the model mutex.
+        if(handshakeCC) hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,handshakeCC,performanceGeneration));
+        if(command) {
+            for(auto data:std::array<std::array<int,2>,6>{{{69,command->generation},{70,command->seq},
+                {71,command->key},{72,command->value&127},{73,(command->value>>7)&127},{74,command->seq}}})
+                hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(1,data[0],data[1]));
+            forwarded+=6;
+        }
+        if(feedback) {
+            std::array<int32_t,3> words{{int32_t(feedback->a),int32_t(feedback->b),feedback->header()}};
+            bp::HostPacketBuilder<200> packet; packet.writePacketSysexHeaderBytes(uint8_t(index));
+            if(!packet.addProgramEventMessage(words.data())) { fail("performance SDK packet capacity"); return; }
+            packet.writePacketSysexFooter();
+            if(!transport->sendMessageToDevice(packet.getData(),size_t(packet.size()))) {
+                recoverStream("performance SDK feedback rejected");
+                { std::lock_guard<std::mutex> lock(performanceMutex);
+                  performanceModel.feedbackFailed(*feedback); performanceFeedbackRetryAt=now()+50; }
+                return;
+            }
+            awaitingHello=false;
+            ++units; ++sent;
+        }
+    }
     std::atomic<double> readyMarkerAt{0};
     button_hold::Recognizer clicks;
     std::vector<roli::ControlButton*> modeButtons;
@@ -232,7 +281,8 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             ++longPresses; event("long_press","input selection reserved; no input changes"); status(); return;
         }
         ++singleClicks; event("single_click");
-        if(!loaded || fault || heldTouches.load()!=0 || pendingNonce>=0) {
+        if(!loaded || fault || heldTouches.load()!=0 || pendingNonce>=0
+            || (options.audioPerformance && (performanceDeviceBusy.load() || healthMonitor.busy()))) {
             event("switch_ignored","not idle, not loaded, or permission pending"); return;
         }
         if(metronomeActive()) { switchProgram(health::Program::main); return; }
@@ -319,7 +369,10 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         auto target=health::transition(programKind.load(),loaded.load(),statusEnabled(),heldTouches.load(),
             pendingNonce>=0,healthMonitor,now(),healthChangedAt);
         if(target==health::Transition::main) { switchProgram(health::Program::main); return; }
-        if(target==health::Transition::status) { switchProgram(health::Program::status); return; }
+        if(target==health::Transition::status) {
+            if(options.audioPerformance && performanceDeviceBusy.load()) return;
+            switchProgram(health::Program::status); return;
+        }
         seedStatus();
     }
     void processControl() {
@@ -403,6 +456,23 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
                     detailRequested=m.getControllerValue(); triggerAsyncUpdate(); return;
                 }
             }
+            if(options.audioPerformance) {
+                std::lock_guard<std::mutex> touchLock(touchMutex);
+                if(!loaded.load() || fault.load() || loadedGeneration.load()!=sender->generation) return;
+                if(m.getChannel()==16 && m.getControllerNumber()==106) {
+                    heldTouches=uint16_t(m.getControllerValue()); ++inputEpoch; return;
+                }
+                if(m.getChannel()==16 && m.getControllerNumber()==107) {
+                    performanceDeviceBusy=m.getControllerValue()!=0; return;
+                }
+                std::lock_guard<std::mutex> lock(performanceMutex);
+                if(m.getChannel()==16 && m.getControllerNumber()==110 && m.getControllerValue()==19)
+                    performanceModel.reseed(now());
+                else if(auto wanted=performanceInput.push(m.getChannel(),m.getControllerNumber(),m.getControllerValue())) {
+                    ++inputEpoch; performanceModel.intent(*wanted,now());
+                }
+                triggerAsyncUpdate(); return;
+            }
             bool hello=m.getChannel()==16 && m.getControllerNumber()==110 && m.getControllerValue()==18;
             if(hello) pendingHello=true;
             if(!loaded.load() || fault.load() || loadedGeneration.load()!=sender->generation) return;
@@ -464,6 +534,21 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             permissionReply=m.getControllerValue() | (m.getControllerNumber()==109?128:0);
             triggerAsyncUpdate(); return;
         }
+        if(options.audioPerformance) {
+            if(m.getChannel()==16 && m.getControllerNumber()==79) {
+                std::lock_guard<std::mutex> lock(performanceMutex);
+                performanceModel.handshake(m.getControllerValue(),now()); performanceLastLiveAt=performanceModel.lastLiveAt;
+            } else {
+                std::lock_guard<std::mutex> lock(performanceMutex);
+                if(auto ack=performanceAcks.push(m.getChannel(),m.getControllerNumber(),m.getControllerValue())) {
+                    performanceModel.receiveAck(*ack,now()); performanceLastLiveAt=performanceModel.lastLiveAt;
+                }
+                if(auto fact=performanceObservations.push(m.getChannel(),m.getControllerNumber(),m.getControllerValue())) {
+                    performanceModel.receiveObservation(*fact,now()); performanceLastLiveAt=performanceModel.lastLiveAt;
+                }
+            }
+            triggerAsyncUpdate(); return;
+        }
         if(!loaded.load() || fault.load() || awaitingHello.load()) return;
         auto generation=loadedGeneration.load();
         ++received;
@@ -482,6 +567,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             event("device_model_ready",juce::String(lastReadyMs,3)); status();
         }
         processControl();
+        if(options.audioPerformance) { performancePump(); return; }
         if(fault) return;
         if(!loaded || detector.active.load()!=loadedTransport || !block || !block->isConnected() || block->getProgram()!=expected) return;
         auto* transport=detector.active.load(); int index=transport->identity.ack.load(); if(index<0 || index!=transport->identity.target.load()) return;
@@ -525,6 +611,13 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             spikeInputFrame.reset(); spikeLiveFrame.reset();
             spike.reset((++spikeEpochCounter%127)+1,now()); spikeHandshakeAt=-10000;
         }
+        if(options.audioPerformance) {
+            std::lock_guard<std::mutex> lock(performanceMutex);
+            performanceInput.reset(); performanceAcks.reset(); performanceObservations.reset();
+            performanceGeneration=(++performanceEpochCounter%127)+1;
+            performanceModel.reset(performanceGeneration,now()); performanceHandshakeAt=-10000; performanceFeedbackRetryAt=0;
+            performanceDeviceBusy=false; performanceLastLiveAt=-10000;
+        }
         if(!block || fault) { status(); return; }
         block->addProgramLoadedListener(this); attachButtons();
         auto initialSource=statusActive()?statusSource:source;
@@ -540,6 +633,11 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         if(options.optimisticFaderSpike) {
             awaitingHello=false; pendingHello=false; readyReported=true;
             readyAt=now(); status(); triggerAsyncUpdate(); return;
+        }
+        if(options.audioPerformance) {
+            awaitingHello=false; pendingHello=false;
+            { std::lock_guard<std::mutex> lock(performanceMutex); performanceInput.reset(); performanceModel.reseed(now()); }
+            performanceDeviceBusy=false; status(); triggerAsyncUpdate(); return;
         }
         if(pendingHello.exchange(false)) {
             awaitingHello=false;
@@ -564,6 +662,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             else requestMetronome();
         }
         updateProgramForHealth();
+        if(options.audioPerformance) performancePump();
         if(++statusTicks%100==0) status();
     }
     void status(const std::string& overrideState={}) {
@@ -590,6 +689,23 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             object->setProperty("spike_last_native_ack_at_ms",spike.lastAckAt);
             object->setProperty("spike_max_intent_to_dispatch_ms",spike.maxIntentToDispatchMs);
             object->setProperty("spike_max_native_ack_ms",spike.maxNativeAckMs);
+        }
+        if(options.audioPerformance) {
+            std::lock_guard<std::mutex> lock(performanceMutex);
+            object->setProperty("audio_performance",true);
+            object->setProperty("performance_live_ready",performanceModel.liveReady);
+            object->setProperty("performance_pending",performanceModel.pending());
+            object->setProperty("performance_queued_discrete",performanceModel.queuedDiscrete());
+            object->setProperty("performance_intents",juce::int64(performanceModel.receivedIntents));
+            object->setProperty("performance_dispatches",juce::int64(performanceModel.dispatched));
+            object->setProperty("performance_acks",juce::int64(performanceModel.acknowledged));
+            object->setProperty("performance_rejected",juce::int64(performanceModel.rejectedIntents));
+            object->setProperty("performance_timeouts",juce::int64(performanceModel.timedOutCommands));
+            object->setProperty("performance_max_command_queue_ms",performanceModel.maxIntentToDispatchMs);
+            object->setProperty("performance_max_native_ack_ms",performanceModel.maxNativeAckMs);
+            object->setProperty("performance_generation",performanceGeneration);
+            object->setProperty("performance_device_busy",performanceDeviceBusy.load());
+            object->setProperty("performance_live_age_ms",now()-performanceLastLiveAt.load());
         }
         object->setProperty("program_loaded",loaded.load()); object->setProperty("device_model_ready",readyReported);
         object->setProperty("playable",loaded.load() && readyReported && !statusActive() && (!statusEnabled() || healthMonitor.usable(now())));
@@ -637,6 +753,7 @@ int main(int argc,char** argv) {
                          <<report.getProperty("explanation", "Check the bridge connection.").toString()<<"\n";
                 return 0;
             }
+            if(arg=="--audio-performance") { options.audioPerformance=true; continue; }
             if(arg=="--optimistic-fader-spike") { options.optimisticFaderSpike=true; continue; }
             if(arg=="--spike-ack-delay-ms") {
                 if(i+1>=argc) throw std::runtime_error("missing spike ACK delay");
@@ -645,6 +762,7 @@ int main(int argc,char** argv) {
                 continue;
             }
             if(arg=="--help") { std::cout<<"lightpad-bridge --device SERIAL --source FILE [--modal-source FILE] [--status-source FILE] [--trial-cycles N] [--status-file FILE] [--lock-file FILE]\n"; return 0; } if(arg=="--version") { std::cout<<"lightpad-bridge 0.2.0\n"; return 0; } if(i+1>=argc) throw std::runtime_error("missing argument value"); std::string value=argv[++i]; if(arg=="--device") options.serial=value; else if(arg=="--source") options.source=value; else if(arg=="--modal-source") options.modalSource=value; else if(arg=="--status-source") options.statusSource=value; else if(arg=="--trial-cycles") { options.trialCycles=std::stoi(value); if(options.trialCycles<0 || options.trialCycles>6) throw std::runtime_error("invalid trial cycles"); } else if(arg=="--status-file") options.status=value; else if(arg=="--lock-file") options.lock=value; else throw std::runtime_error("unknown argument: "+arg); }
+        if(options.audioPerformance && options.optimisticFaderSpike) throw std::runtime_error("performance and fader-spike modes are exclusive");
         if(options.spikeAckDelayMs && !options.optimisticFaderSpike) throw std::runtime_error("spike ACK delay requires spike mode");
         if(options.serial.size()!=16 || options.source.empty()) throw std::runtime_error("--device requires exact 16-character serial and --source is required");
         if(options.lock.empty()) options.lock="/tmp/lightpad-bridge-"+std::to_string(getuid())+".lock";

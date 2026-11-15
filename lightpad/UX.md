@@ -54,11 +54,11 @@ There is no Back or close-and-continue action. Accept and Cancel return to overv
 | --- | --- |
 | Begin | Next captured group-loop wrap, or next safe bar with no reference |
 | Accept | Finish at the next safe bar and keep the take |
-| Accept-and-next | Finish at the next safe bar, then wait for the replacement take's captured reference wrap |
+| Accept-and-next | Finish at the next safe bar and start the replacement take at that same boundary, without a base-loop wait |
 | Retry | Discard the current unaccepted take immediately, choose a fresh reference and wait for its next safe wrap or bar |
 | Cancel | Discard only the current unaccepted take and leave recording controls |
 
-A too-late unissued action moves to the next legal boundary. The action is respected without another press. Accept-and-next can finish/start at a coincident boundary when Native admission is safe. Already issued operations are observed rather than blindly replayed. Countdown follows the actual queued start; reaching a predicted boundary alone does not pretend that recording began.
+A too-late unissued action moves to the next legal boundary. The action is respected without another press. Accept-and-next plans the old finish and prepared replacement start together for the same safe bar. If admission is too late, both move together to the following bar. Already issued operations are observed rather than blindly replayed. Countdown follows the actual queued start; reaching a predicted boundary alone does not pretend that recording began.
 
 Accept and Accept-and-next are inactive before actual recording. A contact begun while inactive stays ignored even if recording starts before release. Controls belong to the touched take and cannot act on its replacement. Cancel removes a queued take; Retry replaces its request. Previously accepted layers survive both. Recording preserves the group's mute state.
 

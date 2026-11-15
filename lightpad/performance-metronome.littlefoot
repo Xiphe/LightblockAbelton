@@ -1,0 +1,240 @@
+// Local fullscreen metronome. Same F2 semantic protocol as performance-main.
+#heapsize: 204
+int down;
+int epoch;
+int resync;
+int resyncAt;
+int revision;
+int seen;
+int sequence;
+int tempo;
+int meter;
+int span;
+int position;
+int clockAt;
+float lastPosition;
+float metroPosition;
+int pulseReady;
+int parity;
+int owner[2];
+int origin[2];
+int start[2];
+int step[2];
+int until[2];
+int taps[2];
+int tapAt;
+int sentAt;
+
+int dim(int c, float amount) { return blendARGB(0xff000000, (int(amount * 255.0) << 24) | (c & 0xffffff)); }
+int field(int f, int offset) { return 12 + f * 12 + offset; }
+int role(int f) { return getHeapByte(field(f, 0)); }
+int number(int f) { return getHeapByte(field(f, 1)); }
+int countBits(int bits) { int n = 0; while (bits != 0) { bits = bits & (bits - 1); ++n; } return n; }
+int denominatorIndex(int v) { int n = 0; while (v > 1) { v = v / 2; ++n; } return n; }
+int keyFor(int n) { return n < 2 ? 114 + n : 113; }
+void sendValue(int n)
+{
+    sequence = (sequence + 1) & 127; setHeapByte(6 + n, sequence); setHeapByte(9 + n, 1);
+    sendCC(0, 69, epoch); sendCC(0, 70, sequence); sendCC(0, 71, keyFor(n));
+    sendCC(0, 72, getHeapByte(n)); sendCC(0, 73, 0); sendCC(0, 74, sequence);
+    sentAt = getMillisecondCounter();
+}
+void want(int n, int value)
+{
+    if (getHeapByte(n) == value) return;
+    setHeapByte(n, value); setHeapByte(9 + n, getHeapByte(9 + n) | 2);
+    if (getMillisecondCounter() - sentAt >= 40) sendValue(n);
+}
+void flush()
+{
+    for (int n = 0; n < 3; ++n) if ((getHeapByte(9 + n) & 2) != 0) sendValue(n);
+}
+void actual(int n, int value)
+{
+    setHeapByte(3 + n, value);
+    if (getHeapByte(9 + n) == 0 && (n == 2 || owner[n] < 0)) setHeapByte(n, value);
+}
+void initialise()
+{
+    for (int i = 0; i < 204; ++i) setHeapByte(i, 0);
+    for (int n = 0; n < 2; ++n) { owner[n] = -1; taps[n] = -1000; setHeapByte(n, 4); setHeapByte(3 + n, 4); }
+    tempo = 15360; meter = 516;
+}
+void moveMeter(int f, int y)
+{
+    int n = number(f);
+    if (owner[n] != f) return;
+    int delta = origin[n] - y, value = step[n];
+    for (int i = 0; i < 32; ++i)
+    {
+        bool up = value >= 0 ? delta >= (value + 1) * 256 : delta > value * 256 + 32;
+        bool downwards = value <= 0 ? delta <= (value - 1) * 256 : delta < value * 256 - 32;
+        if (up) ++value; else if (downwards) --value; else break;
+    }
+    step[n] = value;
+    int target = start[n] + value;
+    want(n, n == 0 ? clamp(1, 99, target) : 1 << clamp(0, 4, target));
+    if (abs(y - origin[n]) >= 128) setHeapByte(field(f, 3), 1);
+}
+void touchEvent(int kind, int f, float x, float y)
+{
+    if (f < 0 || f >= 16) return;
+    int px = int(clamp(0.0, 1919.0, x * 960.0)), py = int(clamp(0.0, 1919.0, y * 960.0));
+    int bit = 1 << f;
+    if (kind == 1)
+    {
+        down = down | bit; setHeapByte(field(f, 0), 0); setHeapByte(field(f, 3), 0);
+        setHeapInt(field(f, 4), px); setHeapInt(field(f, 8), getMillisecondCounter());
+        if (px / 128 != 7 && py >= 128)
+        {
+            int n = px < 896 ? 0 : 1;
+            if (py < 1280 && owner[n] < 0)
+            {
+                owner[n] = f; origin[n] = py; step[n] = 0;
+                start[n] = n == 0 ? getHeapByte(n) : denominatorIndex(getHeapByte(n));
+                setHeapByte(field(f, 0), 1); setHeapByte(field(f, 1), n);
+            }
+            else if (py >= 1280) setHeapByte(field(f, 0), n == 0 ? 2 : 3);
+        }
+        sendCC(15, 106, countBits(down));
+    }
+    else if ((down & bit) == 0) return;
+    if (role(f) == 1)
+    {
+        if (abs(px - getHeapInt(field(f, 4))) >= 128) setHeapByte(field(f, 3), 1);
+        moveMeter(f, py);
+    }
+    if (kind != 3) return;
+    down = down & ~bit;
+    if (role(f) == 1)
+    {
+        int n = number(f), now = getMillisecondCounter();
+        bool tap = getHeapByte(field(f, 3)) == 0 && now - getHeapInt(field(f, 8)) <= 250;
+        if (tap && getHeapInt(field(f, 8)) - taps[n] <= 350)
+        { want(n, 4); taps[n] = -1000; }
+        else taps[n] = tap ? now : -1000;
+        owner[n] = -1; until[n] = now + 200;
+        if ((getHeapByte(9 + n) & 2) != 0) sendValue(n);
+        if (getHeapByte(9 + n) == 0) setHeapByte(n, getHeapByte(3 + n));
+    }
+    if (role(f) == 2) { want(2, getHeapByte(2) == 0 ? 127 : 0); if ((getHeapByte(11) & 2) != 0) sendValue(2); }
+    if (role(f) == 3)
+    {
+        sequence = (sequence + 1) & 127;
+        sendCC(0, 69, epoch); sendCC(0, 70, sequence); sendCC(0, 71, 112);
+        sendCC(0, 72, 0); sendCC(0, 73, 0); sendCC(0, 74, sequence);
+    }
+    setHeapByte(field(f, 0), 0); sendCC(15, 106, countBits(down));
+}
+void touchStart(int i, float x, float y, float z, float vz) { touchEvent(1, i, x, y); }
+void touchMove(int i, float x, float y, float z, float vz) { touchEvent(2, i, x, y); }
+void touchEnd(int i, float x, float y, float z, float vz) { touchEvent(3, i, x, y); }
+void handleMessage(int a, int b, int header)
+{
+    if ((header & 255) != 242 || header < 0 || ((a | b) & 0xf0000000) != 0) return;
+    int kind = (header >> 8) & 7, gen = (header >> 11) & 127, rev = (header >> 18) & 8191;
+    if (gen == 0 || (kind != 0 && gen != epoch)) return;
+    int distance = (rev - revision) & 8191;
+    if (gen == epoch && seen && (distance == 0 || distance >= 4096)) return;
+    if (kind != 0 && distance > 1) resync = 1;
+    revision = rev; seen = 1;
+    if (kind == 0)
+    {
+        if (gen != epoch) sequence = a & 127;
+        epoch = gen; resync = 0;
+        for (int n = 0; n < 3; ++n) if (getHeapByte(9 + n) != 0) sendValue(n);
+        sendCC(15, 108, 35); sendCC(15, 106, countBits(down)); sendCC(15, 107, 0); return;
+    }
+    if (kind == 7) { kind = 2; b = 16383; }
+    if (kind == 2)
+    {
+        int key = a & 127, n = key == 113 ? 2 : key - 114;
+        if (key < 113 || key > 115 || n < 0 || n > 2 || a >> 7 != getHeapByte(6 + n) || getHeapByte(9 + n) != 1) return;
+        setHeapByte(9 + n, 0);
+        if (b != 16383 && b < 128) setHeapByte(3 + n, b);
+        if (n == 2 || owner[n] < 0) setHeapByte(n, getHeapByte(3 + n));
+    }
+    if (kind == 4 && (a & 15) == 8)
+    {
+        int length = a >> 4;
+        if (length <= 0 || b >= length) return;
+        if (span != length) pulseReady = 0;
+        span = length; position = b; clockAt = getMillisecondCounter();
+    }
+    if (kind == 6)
+    {
+        if (a == 0 && b > 0) tempo = b;
+        if (a == 1)
+        {
+            meter = b; actual(0, b & 127); actual(1, (b >> 7) & 127); actual(2, (b & 32768) != 0 ? 127 : 0);
+        }
+    }
+}
+int meterValue(int n) { return getHeapByte(n); }
+void drawMeterNumber(int value, int x)
+{
+    if (value < 1 || value > 99) return;
+    for (int n = 0; n < 2; ++n)
+    {
+        int digit = n == 0 ? value / 10 : value % 10;
+        if (n == 0 && digit == 0) continue;
+        int bits = digit < 2 ? 978156399 : digit < 4 ? 1022620647 : digit < 6 ? 1021823469 : digit < 8 ? 613678031 : 1022884847;
+        bits = (bits >> ((digit & 1) * 15)) & 32767;
+        int left = value < 10 ? x + 2 : x + n * 4;
+        for (int bit = 0; bit < 15; ++bit)
+            if ((bits & (1 << bit)) != 0) fillPixel(0xffb0b0b0, left + bit % 3, 3 + bit / 3);
+    }
+}
+
+void drawMeterField(int n)
+{
+    int x = n * 8;
+    bool active = owner[n] >= 0 || until[n] > getMillisecondCounter();
+    int background = n == 0 ? 0xff071724 : 0xff1b0c26;
+    fillRect(active ? 0xff000000 : background, x, 1, 7, 9);
+    if (active)
+    {
+        for (int s = -7; s <= 7; ++s)
+        {
+            int value = start[n] + s, y = (origin[n] - s * 256) / 128;
+            if (y >= 1 && y < 10 && value >= (n == 0 ? 1 : 0) && value <= (n == 0 ? 99 : 4)) fillRect(background, x, y, 7, 1);
+        }
+        fillRect(n == 0 ? 0xff45b6eb : 0xffbb6de0, x, clamp(1, 9, (origin[n] - step[n] * 256) / 128), 7, 1);
+    }
+    drawMeterNumber(meterValue(n), x);
+}
+void repaint()
+{
+    if (resync && getMillisecondCounter() - resyncAt >= 1000)
+    { resync = 0; resyncAt = getMillisecondCounter(); sendCC(15, 110, 19); }
+    if (getMillisecondCounter() - sentAt >= 40) flush();
+    fillRect(0xff000000, 0, 0, 15, 15);
+    if ((meter & 16384) != 0 && span > 0)
+    {
+        float length = float(span) / 256.0;
+        metroPosition = float(position) / 256.0 + float(getMillisecondCounter() - clockAt) * float(tempo) / 7680000.0;
+        metroPosition -= float(int(metroPosition / length)) * length;
+        if (!pulseReady) { pulseReady = 1; lastPosition = metroPosition; parity = 0; }
+        float delta = metroPosition - lastPosition;
+        if (delta < -length * .5) { parity = parity ^ (meter & 1); lastPosition = metroPosition; }
+        else if (delta > 0.0 && delta <= length * .5) lastPosition = metroPosition;
+        float beat = metroPosition * float((meter >> 7) & 127) / 4.0 + float(parity);
+        beat -= float(int(beat / 2.0)) * 2.0;
+        float point = (1.0 - abs(beat - 1.0)) * 14.0;
+        int x = int(point); float fraction = point - float(x);
+        fillPixel(dim(0xffffffff, (1.0 - fraction) * .75), x, 0);
+        if (x < 14) fillPixel(dim(0xffffffff, fraction * .75), x + 1, 0);
+    }
+    else fillPixel(0xff202020, 7, 0);
+    drawMeterField(0); drawMeterField(1);
+    bool click = meterValue(2) != 0;
+    fillRect(click ? 0xff0b2b17 : 0xff30100e, 0, 10, 7, 5);
+    fillRect(click ? 0xff247746 : 0xff87382c, 1, 11, 5, 3);
+    fillRect(0xffb0b0b0, click ? 4 : 1, 11, 2, 3);
+    bool tap = false;
+    for (int f = 0; f < 16; ++f) if (role(f) == 3) tap = true;
+    fillRect(tap ? 0xff303030 : 0xff161616, 8, 10, 7, 5);
+}
+int currentNumerator() { return getHeapByte(0); }
+int currentDenominator() { return getHeapByte(1); }
+int currentClick() { return getHeapByte(2); }
