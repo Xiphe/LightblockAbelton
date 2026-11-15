@@ -9,6 +9,28 @@ from PerformanceController.fake_native import PerformanceSong, Track, Parameter
 
 Q={'q_bar':4,'q_half':5,'q_quarter':7,'q_eight':9,'q_sixtenth':11}
 
+class AssignmentParameter(Parameter):
+    def __init__(self,name,value=.25):
+        self.name,self.reads,self.writes=name,0,[]
+        super().__init__(value)
+        self.writes.clear()
+    @property
+    def value(self):
+        self.reads+=1
+        return self._value
+    @value.setter
+    def value(self,value):
+        self.writes.append(value);self._value=value
+
+class AssignmentRack:
+    def __init__(self,name,names):
+        self.name,self.parameter_reads=name,0
+        self._parameters=[AssignmentParameter(name) for name in names]
+    @property
+    def parameters(self):
+        self.parameter_reads+=1
+        return self._parameters
+
 class BackendChecks(unittest.TestCase):
     def make(self,groups=2,compatible=True,assignments=None):
         self.clock=0.;self.song=PerformanceSong(groups,compatible)
@@ -19,6 +41,101 @@ class BackendChecks(unittest.TestCase):
         for unused in range(n):
             self.clock+=.101;self.backend.tick()
     def warm(self):self.ticks(16)
+    def named_macros(self):
+        b=self.make(groups=1);group=b.state.groups[0].group
+        first=AssignmentRack('Random Rev + Delay V2',
+            ['Device On','Reverb','Reverb Variance','Reverb Crazyness','Delay',
+             'Delay Variance','Delay Crazyness'])
+        second=AssignmentRack('Stereo Random Filter',
+            ['Device On','Change Rate','Rate Range','Macro 3','Macro 4','FX Vol'])
+        group.devices=[first,second]
+        targets=[{'kind':'device','device_path':[0],
+                  'expected_device_name':first.name,'parameter_name':name}
+                 for name in ('Reverb','Delay')]
+        targets+=[{'kind':'device','device_path':[1],
+                   'expected_device_name':second.name,'parameter_name':'FX Vol'},
+                  {'kind':'send','index':3}]
+        b.state.assignments={0:targets};b.state.discover()
+        return b,group,first,second,targets
+
+    def test_guarded_named_macros_preserve_all_three_fx_controls(self):
+        b,group,first,second,unused=self.named_macros()
+        macros=(first._parameters[1],first._parameters[4],second._parameters[5])
+        first.parameter_reads=second.parameter_reads=0;self.song.track_reads=0
+        for key,value,macro in zip((2,3,4),(0,63,127),macros):
+            self.assertEqual(b.dispatch(key,value),value)
+            self.assertEqual(macro.writes,[value/127.])
+        self.assertEqual(b.dispatch(5,33),33)
+        self.assertEqual(first.parameter_reads+second.parameter_reads,0)
+        self.assertEqual(self.song.track_reads,0)
+        self.assertEqual(group.mixer_device.sends[3].value,33/127.)
+        self.assertFalse(first._parameters[0].writes)
+
+    def test_wrong_rack_name_disables_its_macro_without_disabling_other_bars(self):
+        b,group,first,second,unused=self.named_macros()
+        first.name='Unrelated rack';b.state.observe(0)
+        self.assertEqual(b.dispatch(2,100),REJECT)
+        self.assertEqual(first._parameters[1].writes,[])
+        self.assertEqual(b.dispatch(4,75),75)
+        self.assertEqual(b.dispatch(0,40),40)
+        self.assertEqual(b.dispatch(1,64),64)
+        self.assertEqual(b.dispatch(5,60),60)
+
+    def test_wrong_initial_rack_guard_does_not_inspect_or_write_its_parameters(self):
+        b,group,first,unused,targets=self.named_macros()
+        for target in targets[:2]:target['expected_device_name']='Another rack'
+        first.parameter_reads=0;b.state.discover()
+        self.assertEqual(first.parameter_reads,0)
+        self.assertEqual(b.dispatch(2,100),REJECT)
+        self.assertTrue(all(not p.writes for p in first._parameters))
+        self.assertEqual(b.dispatch(4,75),75)
+
+    def test_missing_or_ambiguous_named_macro_never_falls_back_to_index(self):
+        for names in (['Other'],['Reverb','Reverb']):
+            with self.subTest(names=names):
+                b,group,first,unused,targets=self.named_macros()
+                first._parameters=[AssignmentParameter(name) for name in names]
+                targets[0]['parameter_index']=0;b.state.discover()
+                self.assertEqual(b.dispatch(2,100),REJECT)
+                self.assertTrue(all((p.reads,p.writes)==(0,[]) for p in first._parameters))
+                self.assertEqual(b.dispatch(5,50),50)
+
+    def test_named_binding_changes_remain_disabled_after_structure_is_restored(self):
+        for change in ('parameter reorder','parameter replacement','rack replacement',
+                       'rack reorder','macro rename','macro ambiguity'):
+            with self.subTest(change=change):
+                b,group,first,second,unused=self.named_macros()
+                self.assertEqual(b.dispatch(2,40),40)
+                first._parameters[1].writes.clear()
+                original=list(first._parameters)
+                if change=='parameter reorder':first._parameters.reverse()
+                elif change=='parameter replacement':
+                    first._parameters[1]=AssignmentParameter('Reverb')
+                elif change=='rack replacement':
+                    group.devices[0]=AssignmentRack(first.name,[p.name for p in original])
+                elif change=='rack reorder':group.devices.reverse()
+                elif change=='macro rename':first._parameters[1].name='Former Reverb'
+                else:first._parameters[2].name='Reverb'
+                b.state.observe(0)
+                self.assertEqual(b.dispatch(2,100),REJECT)
+                first._parameters=original;original[1].name='Reverb'
+                original[2].name='Reverb Variance';group.devices=[first,second]
+                b.state.discover()
+                self.assertEqual(b.dispatch(2,80),REJECT)
+                self.assertTrue(all(not p.writes for p in first._parameters))
+
+    def test_guarded_index_target_checks_expected_parameter_name(self):
+        for parameter_name in ('Reverb','Wrong macro'):
+            with self.subTest(parameter_name=parameter_name):
+                b,group,first,unused,targets=self.named_macros()
+                targets[0]={'kind':'device','device_path':[0],'parameter_index':1,
+                            'expected_device_name':first.name,
+                            'expected_parameter_name':'Reverb'}
+                first._parameters[1].name=parameter_name;b.state.discover()
+                expected=70 if parameter_name=='Reverb' else REJECT
+                self.assertEqual(b.dispatch(2,70),expected)
+                self.assertEqual(len(first._parameters[1].writes),parameter_name=='Reverb')
+
     def begin(self,token=3):
         self.assertEqual(self.backend.dispatch(64,token),0)
         take=self.backend.recording.take
@@ -278,6 +395,18 @@ class BackendChecks(unittest.TestCase):
         self.assertIsNone(b.pending_begin)
         facts=b.drain_facts(200)
         self.assertTrue(any(k==5 and ((a>>3)&127)==31 and ((a>>10)&7)==5 for k,a,v in facts))
+        self.assertFalse(any(c[0]=='create_track' for c in self.song.calls))
+
+    def test_restored_remote_anchor_prepares_without_begin_or_clearing_other_failures(self):
+        b=self.make();anchor=b.state.anchors[0]
+        anchor.name='Unmarked';b.state.topology_dirty=True;self.ticks(16)
+        self.assertEqual(b.failures[0],'rightmost Remote subgroup unavailable')
+        self.assertNotIn(0,b.reserves)
+        b.failures[1]='ambiguous previous preparation'
+        anchor.name='[Remote]';b.state.topology_dirty=True;self.ticks(16)
+        self.assertNotIn(0,b.failures)
+        self.assertIn(0,b.reserves)
+        self.assertEqual(b.failures[1],'ambiguous previous preparation')
         self.assertFalse(any(c[0]=='create_track' for c in self.song.calls))
 
     def test_ambiguous_created_track_never_auto_retries(self):

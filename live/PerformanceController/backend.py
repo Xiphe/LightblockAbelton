@@ -140,10 +140,31 @@ class RetainedState:
                     if offset+1<len(path):
                         c=path[offset+1];chain=device.chains[c]
                         checks.append((lambda device=device,c=c:device.chains[c],chain));owner=chain
-                i=target['parameter_index'];parameter=device.parameters[i]
+                if 'expected_device_name' in target:
+                    name=target['expected_device_name']
+                    if device.name!=name:raise ValueError('configured device name does not match')
+                    checks.append((lambda device=device:device.name,name))
+                if 'parameter_name' in target:
+                    name=target['parameter_name']
+                    if not isinstance(name,str) or not name:
+                        raise ValueError('configured parameter name must be nonempty')
+                    matches=[(i,p) for i,p in enumerate(device.parameters) if p.name==name]
+                    if len(matches)!=1:raise ValueError('configured parameter name is missing or ambiguous')
+                    i,parameter=matches[0]
+                    # Uniqueness and identity checks run in discovery/observation,
+                    # never in the retained parameter-write command path.
+                    checks.append((lambda device=device,name=name:
+                                   tuple(p for p in device.parameters if p.name==name),
+                                   (parameter,)))
+                else:
+                    i=target['parameter_index'];parameter=device.parameters[i]
+                if 'expected_parameter_name' in target:
+                    name=target['expected_parameter_name']
+                    if parameter.name!=name:raise ValueError('configured parameter name does not match')
+                    checks.append((lambda parameter=parameter:parameter.name,name))
                 checks.append((lambda device=device,i=i:device.parameters[i],parameter))
             else:raise ValueError('unknown target')
-        except (KeyError,IndexError,ValueError,AttributeError,TypeError):parameter=None
+        except (KeyError,IndexError,ValueError,AttributeError,TypeError,RuntimeError):parameter=None
         self.retained[identity]=dict(group=group,spec=spec,parameter=parameter,checks=tuple(checks),invalid=parameter is None)
         return parameter
 
@@ -673,6 +694,12 @@ class Backend:
                 self.state.topology_dirty=False
             else:
                 self.state.discover()
+                # Explicit Set setup can supply a formerly missing anchor.
+                # Structural discovery confirms it; uncertain Native mutations
+                # and routing failures remain latched until a separate retry.
+                for group,reason in tuple(self.failures.items()):
+                    if reason=='rightmost Remote subgroup unavailable' and group in self.state.anchors:
+                        del self.failures[group]
             self._known_created_topology=None
             self._shape_at=now
         take=self.recording.take
