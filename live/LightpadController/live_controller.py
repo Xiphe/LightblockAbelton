@@ -147,8 +147,15 @@ class LiveController:
         return p.APPLIED
 
     def dispatch(self, command):
-        self.invalidate_read_batch()
+        mixer = command.op == p.SET_MUTE or command.op in PARAMETER_OPCODES
+        if not mixer:
+            self.invalidate_read_batch()
         try:
+            # Mixer writes change Native parameter values, not track/clip
+            # membership. Keep this callback's already observed graph; snapshot
+            # still reads the actual changed values. Every callback starts fresh.
+            if mixer:
+                return self._mix(command)
             self.recording.reconcile()
             if command.op == p.REFRESH:
                 return p.APPLIED
@@ -156,8 +163,6 @@ class LiveController:
                 return self.recording.acknowledge(command.group, command.arg)
             if command.op in (p.TAP_TEMPO, p.SET_NUMERATOR, p.SET_DENOMINATOR, p.SET_METRONOME):
                 return self.controls.dispatch(command)
-            if command.op == p.SET_MUTE or command.op in PARAMETER_OPCODES:
-                return self._mix(command)
             if command.op == p.BEGIN:
                 outcome = self.recording.begin(command.group)
             elif command.op in (p.ACCEPT, p.ACCEPT_NEXT):
@@ -176,13 +181,21 @@ class LiveController:
             self.recording.issues[command.group] = str(error)
             return p.NOT_READY
         finally:
-            self.invalidate_read_batch()
+            if not mixer:
+                self.invalidate_read_batch()
 
     def tick(self):
         self.invalidate_read_batch()
+        # An idle tick only reconciles observations. Reuse those observations
+        # for the rest of this callback. Active recording retains its stricter
+        # revalidation after native effects and structural changes.
+        idle = self.recording.take is None and not self.recording.needs_tick()
         events, self._events = self._events, []
         events.extend(self.recording.tick())
-        self.invalidate_read_batch()
+        if idle and self.recording.take is None and not self.recording.needs_tick():
+            self._cached = 'state' not in self.recording.issues
+        else:
+            self.invalidate_read_batch()
         return events
 
     def needs_tick(self):

@@ -206,12 +206,14 @@ class LightpadController(ControlSurface):
         if self._closed or self._native_busy or self._engine is None:
             return
         self._native_busy = True
-        self._invalidate_ui()
+        # Engines own graph invalidation around native effects. This layer
+        # only drops rendered fields, which include newly changed parameters.
+        self._invalidate_ui(invalidate_engine=False)
         try:
             completed = self._engine.tick()
         finally:
             self._native_busy = False
-            self._invalidate_ui()
+            self._invalidate_ui(invalidate_engine=False)
         self._ready_completions.extend(completed)
         if notify:
             ready, self._ready_completions = self._ready_completions, []
@@ -222,7 +224,7 @@ class LightpadController(ControlSurface):
         if self._native_busy:
             return p.BUSY
         self._native_busy = True
-        self._invalidate_ui()
+        self._invalidate_ui(invalidate_engine=False)
         try:
             return (p.NOT_READY if self._configuration_failed else
                     self._engine.dispatch(command) if self._engine is not None else
@@ -232,14 +234,15 @@ class LightpadController(ControlSurface):
             return p.NOT_READY
         finally:
             self._native_busy = False
-            self._invalidate_ui()
+            self._invalidate_ui(invalidate_engine=False)
 
-    def _invalidate_ui(self):
+    def _invalidate_ui(self, invalidate_engine=True):
         if self._ui_cache is not None:
             self._ui_cache.clear()
-        invalidate = getattr(self._engine, 'invalidate_read_batch', None)
-        if callable(invalidate):
-            invalidate()
+        if invalidate_engine:
+            invalidate = getattr(self._engine, 'invalidate_read_batch', None)
+            if callable(invalidate):
+                invalidate()
 
     def _ui_send(self, group, opcode, argument, on_result):
         if (self._closed or not self._parser.ready or group in self._ui_pending

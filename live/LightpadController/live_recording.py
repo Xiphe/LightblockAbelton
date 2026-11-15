@@ -337,7 +337,9 @@ class LiveRecording:
             self.take = take = take.following
             self._observe(take)
         if take is None or take.state == 'completed':
-            recording = self._refresh().recording()
+            # Reconcile has performed no Native writes. Its current observation
+            # already includes manual recordings; avoid discovering it twice.
+            recording = self.state.recording()
             if recording is not None:
                 self._adopt(*recording)
         elif take.adopted and take.state == 'recording':
