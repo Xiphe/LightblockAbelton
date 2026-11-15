@@ -8,6 +8,9 @@ INPUT_TYPE = 'Ext. In'
 # Fixed trial source, copied from the prepared Temple of Loops input track.
 INPUT_NAME = 'T-Bone'
 INPUT_COLOR_INDEX = 64
+# False selects a prepared-only trial: no new Audio tracks or phrase scenes,
+# and no background input/output routing configuration. Choose before startup.
+ALLOW_AUDIO_TRACK_CREATION = True
 PREPARATION_TIMEOUT = 8.0
 TRACE_PATH = None
 

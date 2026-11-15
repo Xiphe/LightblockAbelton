@@ -354,6 +354,9 @@ class Backend:
         self.state = RetainedState(song, assignments or {})
         self.state.discover()
         self.reserves, self.tasks, self.failures = {}, {}, {}
+        self.allow_audio_track_creation = getattr(config,'ALLOW_AUDIO_TRACK_CREATION',True) is True
+        # A known lack of a lane/row is readiness, not a latched Native failure.
+        self.pool_unavailable = {}
         self.events = deque(maxlen=256)
         self.recording = PreparedRecording(song, self.state, quantizations, self.reserves, monotonic=self.now,emit=self.events.append)
         self.recording.validate = self._compatible
@@ -543,6 +546,7 @@ class Backend:
                 group=key-104
                 status=self.recording.advance(SimpleNamespace(group=group))
                 if status == p.APPLIED:
+                    self.pool_unavailable.pop(group,None)
                     self.state.observe(group)
                     self._group_facts(group,parameters=False)
                 return 0 if status == p.APPLIED else REJECT
@@ -581,6 +585,8 @@ class Backend:
         take=self.recording.take
         if action == 0:
             if not self.song.is_playing or self.busy:
+                return REJECT
+            if not self.allow_audio_track_creation and group in self.pool_unavailable:
                 return REJECT
             self.failed_take=None
             self.closed_following=None
@@ -661,6 +667,8 @@ class Backend:
         group,token,started=self.pending_begin
         if group in self.failures:
             self.pending_begin=None;self._failed_take(group,token,self.failures[group]);return
+        if not self.allow_audio_track_creation and group in self.pool_unavailable:
+            self.pending_begin=None;self._failed_take(group,token,self.pool_unavailable[group]);return
         if self.now()-started > config.PREPARATION_TIMEOUT:
             self.pending_begin=None;self._failed_take(group,token,'preparation timeout');return
         if self.state.topology_dirty or group not in self.reserves:
@@ -701,6 +709,7 @@ class Backend:
                     if reason=='rightmost Remote subgroup unavailable' and group in self.state.anchors:
                         del self.failures[group]
             self._known_created_topology=None
+            self.pool_unavailable.clear()
             self._shape_at=now
         take=self.recording.take
         if take is not None:
@@ -726,6 +735,7 @@ class Backend:
                 self.pending_begin=None;self.after=None
         if before is not None and (take is not before or before_state!=(before.state,before.clip)):
             self.state.changed_row(before.group,before.row)
+            self.pool_unavailable.pop(before.group,None)
         if self.after and (take is None or take.state=='completed'):
             unused,g,token,old_token=self.after;self.after=None
             self.state.observe(g)
@@ -825,12 +835,35 @@ class Backend:
             self.recording._preferred_rows[group]=row+1
             return
         if row >= len(self.song.scenes):
+            if not self.allow_audio_track_creation:
+                self.reserves.pop(group,None)
+                self.pool_unavailable[group]='prepared phrase row unavailable'
+                return
             self.song.create_scene(-1);return
         reserve=self.reserves.get(group)
         if reserve is not None:
             if reserve.row==row and self._compatible(reserve.track,item.group,row):
+                self.pool_unavailable.pop(group,None)
                 return
             self.reserves.pop(group,None)
+        if not self.allow_audio_track_creation:
+            # This performance path may consume only the existing configured
+            # graph. In particular it never resumes any routing/create task.
+            try:
+                exclude=[active.track] if active is not None and active.state!='completed' else []
+                if active is not None and active.following is not None:
+                    exclude.append(active.following.track)
+                candidate=next((t for t in item.tracks if not any(same(t,x) for x in exclude)
+                                and self._compatible(t,item.group,row)),None)
+                if candidate is None:
+                    self.pool_unavailable[group]='prepared Audio pool unavailable'
+                else:
+                    self._prepare_appearance(candidate)
+                    self.reserves[group]=Reserve(group,item.group,candidate,candidate.clip_slots[row],row)
+                    self.pool_unavailable.pop(group,None)
+            except (RuntimeError,ValueError,AttributeError,IndexError):
+                self.pool_unavailable[group]='prepared Audio pool changed'
+            return
         task=self.tasks.get(group)
         try:
             if task is None:

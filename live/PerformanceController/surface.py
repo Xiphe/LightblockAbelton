@@ -131,6 +131,8 @@ class PerformanceController(ControlSurface):
             payload=dict(
                 sampled_monotonic=now,
                 generation=self._generation,
+                allow_audio_track_creation=backend.allow_audio_track_creation,
+                pool_unavailable=dict(backend.pool_unavailable),
                 groups=sorted(backend.state.groups),
                 reserves=[dict(group=group,row=reserve.row)
                           for group,reserve in sorted(backend.reserves.items())],

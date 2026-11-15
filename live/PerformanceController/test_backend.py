@@ -514,4 +514,165 @@ class BackendChecks(unittest.TestCase):
         self.assertFalse(self.song.is_playing)
         self.assertEqual(self.song.tempo,60.)
 
+class FixedPoolChecks(unittest.TestCase):
+    make=BackendChecks.make
+    ticks=BackendChecks.ticks
+    warm=BackendChecks.warm
+
+    def pool(self,lanes=8):
+        from unittest.mock import patch
+        from PerformanceController import configuration
+        self.patch=patch.object(configuration,'ALLOW_AUDIO_TRACK_CREATION',False,create=True)
+        self.patch.start();self.addCleanup(self.patch.stop)
+        b=self.make(groups=3)
+        item=b.state.groups[2];anchor=b.state.anchors[2]
+        original=item.tracks[0]
+        if lanes==0:self.song._tracks.remove(original)
+        else:
+            original.name='Previous T-Bone lane'
+            for index in range(lanes-1):
+                track=Track(self.song,'Previous SM58 lane %d'%index,item.group)
+                self.song.routes(track,item.group,True)
+                self.song._tracks.insert(self.song._tracks.index(anchor),track)
+        b.state.discover()
+        # Model the destructive/graph-changing operations explicitly. A pool
+        # performance is forbidden to reach any of them, even in maintenance.
+        self.structural_attempts=[]
+        def forbidden(kind):
+            def attempt(*args,**kwargs):
+                self.structural_attempts.append(kind)
+                raise AssertionError('structural Native operation in fixed pool: '+kind)
+            return attempt
+        self.song.create_audio_track=forbidden('Audio creation')
+        self.song.create_scene=forbidden('scene creation')
+        self.song.delete_track=forbidden('track deletion')
+        self.addCleanup(lambda:self.assertEqual(self.structural_attempts,[]))
+        class ConfiguredLane(Track):
+            def __setattr__(self,key,value):
+                if key in ('input_routing_type','input_routing_channel','output_routing_type',
+                           'output_routing_channel','current_monitoring_state'):
+                    raise AssertionError('routing write in fixed pool')
+                super().__setattr__(key,value)
+        for item in b.state.groups.values():
+            for track in item.tracks:track.__class__=ConfiguredLane
+        self.song.calls.clear()
+        return b
+
+    def begin_r3(self,token):
+        self.assertEqual(self.backend.dispatch(74,token),0)
+        take=self.backend.recording.take
+        self.assertIsNotNone(take)
+        self.song.advance(take.target-.5);self.ticks(1)
+        self.song.advance(take.target);self.ticks(1)
+        self.assertEqual(take.state,'recording')
+        self.ticks(8)
+        return take
+
+    def accept_r3(self,take):
+        self.song.advance(take.anchor+2.)
+        self.assertEqual(self.backend.dispatch(75,take.take_id),0)
+        self.ticks(1);self.song.advance(take.finish_target);self.ticks(1)
+        self.assertEqual(take.state,'completed')
+
+    def test_eight_layers_exhaust_without_creation_and_clear_reuses_archived_lanes(self):
+        b=self.pool();self.warm();tracks=tuple(b.state.groups[2].tracks);accepted=[]
+        for token in range(1,9):
+            take=self.begin_r3(token)
+            if token==8:
+                self.assertEqual(b.dispatch(77,8|(9<<7)),REJECT)
+                self.assertEqual(take.state,'recording')
+                self.assertIsNone(take.finish_target)
+            self.accept_r3(take)
+            take.clip.name='Original source %d'%token;take.clip.color=token
+            accepted.append(take.clip)
+        self.ticks(8)
+        self.assertEqual(b.dispatch(74,10),REJECT)
+        self.assertIsNone(b.pending_begin)
+        self.assertFalse(b.busy)
+        self.assertEqual(b.dispatch(106,0),0);self.ticks(12)
+        fresh=self.begin_r3(11)
+        self.assertIn(fresh.track,tracks);self.assertEqual(fresh.row,1)
+        self.assertEqual(b.dispatch(78,11),0);self.ticks(3)
+        self.assertEqual([t.clip_slots[0].clip for t in tracks],accepted)
+        self.assertEqual([(c.name,c.color) for c in accepted],
+                         [('Original source %d'%i,i) for i in range(1,9)])
+        self.assertEqual(tuple(b.state.groups[2].tracks),tracks)
+        self.assertFalse(b.busy)
+
+    def test_retry_at_full_capacity_reuses_its_discarded_lane(self):
+        b=self.pool();self.warm();accepted=[]
+        for token in range(1,8):
+            take=self.begin_r3(token);self.accept_r3(take);accepted.append(take.clip)
+        old=self.begin_r3(8)
+        self.assertEqual(b.dispatch(76,8|(9<<7)),0);self.ticks(4)
+        replacement=b.recording.take
+        self.assertIsNotNone(replacement)
+        self.assertEqual(replacement.take_id,9)
+        self.assertIs(replacement.track,old.track)
+        self.assertEqual(replacement.state,'queued')
+        self.assertTrue(all(clip in [s.clip for t in b.state.groups[2].tracks for s in t.clip_slots]
+                            for clip in accepted))
+        self.assertEqual(b.dispatch(78,9),0);self.ticks(3)
+        self.assertFalse(b.busy)
+
+    def test_same_bar_next_uses_final_pool_lane_then_cancel_keeps_accepted_layers(self):
+        b=self.pool();self.warm();accepted=[]
+        for token in range(1,7):
+            take=self.begin_r3(token);self.accept_r3(take);accepted.append(take.clip)
+        old=self.begin_r3(7)
+        self.song.advance(old.anchor+1.)
+        self.assertEqual(b.dispatch(77,7|(8<<7)),0)
+        following=old.following
+        self.assertEqual(following.target,old.finish_target)
+        self.ticks(1);self.song.advance(old.finish_target);self.ticks(1)
+        self.assertIs(b.recording.take,following)
+        self.assertEqual(following.state,'recording')
+        self.assertEqual(following.anchor,old.finish_target)
+        self.assertEqual(b.dispatch(78,8),0);self.ticks(3)
+        self.assertFalse(b.busy)
+        self.assertTrue(old.slot.has_clip)
+        self.assertFalse(following.slot.has_clip)
+        self.assertTrue(all(clip in [s.clip for t in b.state.groups[2].tracks for s in t.clip_slots]
+                            for clip in accepted))
+
+    def test_unknown_empty_pool_fails_promptly_without_eight_second_preparing(self):
+        b=self.pool(lanes=0)
+        self.assertEqual(b.dispatch(74,42),0)
+        self.ticks(3)
+        self.assertIsNone(b.pending_begin)
+        self.assertFalse(b.busy)
+        self.assertEqual(b.failed_take,(2,42))
+        self.assertLess(self.clock,.5)
+        facts=b.drain_facts(200)
+        self.assertTrue(any(k==5 and (a&7)==2 and ((a>>3)&127)==42 and ((a>>10)&7)==5
+                            for k,a,v in facts))
+
+    def test_missing_preallocated_scene_rejects_without_scene_creation(self):
+        b=self.pool();b.recording._preferred_rows[2]=len(self.song.scenes)
+        self.warm()
+        self.assertEqual(b.dispatch(74,21),REJECT)
+        self.assertIsNone(b.pending_begin)
+        self.assertFalse(b.busy)
+
+    def test_incompatible_pool_never_reconfigures_routing_or_creates(self):
+        b=self.pool()
+        # Bypass the sentinel only to model a user's external routing change.
+        for track in b.state.groups[2].tracks:object.__setattr__(track,'input_routing_channel','2 SM58 (2)')
+        self.warm()
+        self.assertEqual(b.dispatch(74,22),REJECT)
+        self.assertFalse(b.busy)
+
+    def test_cancel_and_retry_reuse_pool_without_discarding_accepted_clip(self):
+        b=self.pool();self.warm();first=self.begin_r3(1);self.accept_r3(first)
+        accepted=first.clip
+        second=self.begin_r3(2)
+        self.assertEqual(b.dispatch(76,2|(3<<7)),0);self.ticks(3)
+        replacement=b.recording.take
+        self.assertIsNotNone(replacement);self.assertEqual(replacement.take_id,3)
+        self.assertEqual(b.dispatch(78,2),0);self.ticks(3)
+        self.assertFalse(b.busy)
+        self.assertIs(first.slot.clip,accepted)
+        self.assertFalse(second.slot.has_clip)
+        self.assertFalse(replacement.slot.has_clip)
+
 if __name__=='__main__':unittest.main()
