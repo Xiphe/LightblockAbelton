@@ -3,6 +3,7 @@
 #include <roli_blocks_basics/roli_blocks_basics.h>
 #include <CoreMIDI/CoreMIDI.h>
 #include "protocol.hpp"
+#include "spike_fader.hpp"
 #include "modal.hpp"
 #include "short_long.hpp"
 #include "health.hpp"
@@ -25,7 +26,7 @@
 namespace bp = roli::BlocksProtocol;
 static volatile sig_atomic_t stopping=0;
 static void signalHandler(int) { stopping=1; }
-struct Options { std::string serial, source, modalSource, statusSource, status, lock; int trialCycles=0; };
+struct Options { std::string serial, source, modalSource, statusSource, status, lock; int trialCycles=0; bool optimisticFaderSpike=false; int spikeAckDelayMs=0; };
 struct Singleton {
     int fd=-1;
     explicit Singleton(const std::string& path) { fd=open(path.c_str(),O_CREAT|O_RDWR|O_NOFOLLOW,0600); if(fd<0 || flock(fd,LOCK_EX|LOCK_NB)) throw std::runtime_error("bridge already running or lock unavailable"); }
@@ -145,6 +146,45 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     modal::Touches touchObserver;
     std::atomic<uint16_t> heldTouches{0};
     std::atomic<uint64_t> inputEpoch{0};
+    // PRIVATE spike: semantic fader reconciliation, no gesture/view ownership.
+    std::mutex spikeMutex;
+    spike_fader::IntentFrame spikeInputFrame;
+    spike_fader::LiveFrame spikeLiveFrame;
+    spike_fader::Reconciler spike;
+    int spikeEpochCounter=0;
+    double spikeHandshakeAt=-10000;
+    void spikePump() {
+        if(!loaded || fault || !block || !block->isConnected()
+            || block->getProgram()!=expected || detector.active.load()!=loadedTransport
+            || detector.activeGeneration.load()!=loadedGeneration.load()) return;
+        auto* transport=detector.active.load(); if(!transport) return;
+        int index=transport->identity.ack.load();
+        if(index<0 || index!=transport->identity.target.load()) return;
+        std::optional<spike_fader::Dispatch> command;
+        std::optional<spike_fader::Feedback> feedback;
+        int request=-1;
+        { std::lock_guard<std::mutex> lock(spikeMutex);
+          if(!spike.liveReady && now()-spikeHandshakeAt>=500) {
+              request=spike.epoch; spikeHandshakeAt=now();
+          }
+          command=spike.takeDispatch(now()); feedback=spike.takeFeedback(now()); }
+        if(request>=0) hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,79,request));
+        if(command) {
+            for(auto data:std::array<std::array<int,2>,4>{{{69,command->generation},{70,command->seq},{71,command->value},{72,command->seq}}})
+                hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(1,data[0],data[1]));
+            forwarded+=4;
+        }
+        if(feedback) {
+            std::array<int32_t,3> words{{feedback->seq,feedback->value,feedback->header()}};
+            bp::HostPacketBuilder<200> packet; packet.writePacketSysexHeaderBytes(uint8_t(index));
+            if(!packet.addProgramEventMessage(words.data())) { fail("spike SDK packet capacity"); return; }
+            packet.writePacketSysexFooter();
+            if(!transport->sendMessageToDevice(packet.getData(),size_t(packet.size()))) {
+                fail("spike SDK feedback rejected"); return;
+            }
+            ++units; ++sent;
+        }
+    }
     std::atomic<double> readyMarkerAt{0};
     button_hold::Recognizer clicks;
     std::vector<roli::ControlButton*> modeButtons;
@@ -186,6 +226,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         if(auto click=clicks.release(now())) handleClick(*click);
     }
     void handleClick(button_hold::Action click) {
+        if(options.optimisticFaderSpike) return;
         if(statusActive()) return; // Status details are requested only by tapping its icon.
         if(click==button_hold::Action::longPress) {
             ++longPresses; event("long_press","input selection reserved; no input changes"); status(); return;
@@ -313,6 +354,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     size_t highWater=0;
     unsigned statusTicks=0;
     explicit Service(Options o):options(std::move(o)),detector(options.serial),topology(detector,true) {
+        if(options.optimisticFaderSpike) { options.modalSource.clear(); options.statusSource.clear(); options.trialCycles=0; }
         juce::File file(options.source); if(!file.existsAsFile() || file.getSize()>1024*1024) throw std::runtime_error("source is missing or too large");
         source=file.loadFileAsString(); if(source.isEmpty()) throw std::runtime_error("source is empty");
         if(!options.modalSource.empty()) {
@@ -333,6 +375,14 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         detector.raw=[this](Transport* sender,const juce::MidiMessage& message) {
             if(detector.active.load()!=sender || !message.isController()) return;
             auto m=message;
+            if(options.optimisticFaderSpike) {
+                if(!loaded.load() || fault.load() || loadedGeneration.load()!=sender->generation) return;
+                std::lock_guard<std::mutex> lock(spikeMutex);
+                if(auto wanted=spikeInputFrame.push(m.getChannel(),m.getControllerNumber(),m.getControllerValue())) {
+                    spike.intent(*wanted,now()); triggerAsyncUpdate();
+                }
+                return;
+            }
             if(m.getChannel()==16 && m.getControllerNumber()==108 && (m.getControllerValue()==34 || m.getControllerValue()==35 || m.getControllerValue()==36)) {
                 // This is model-ready instrumentation, not an optical timestamp.
                 std::lock_guard<std::mutex> touchLock(touchMutex);
@@ -382,6 +432,14 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     void fail(std::string why,uint8_t reason=health::programLoadFailed) { faultReason=reason; fault=true; loaded=false; ++errors; std::lock_guard<std::mutex> lock(mutex); error=std::move(why); queue.clear(); framer.reset(); }
     void recoverStream(std::string why) { awaitingHello=true; ++errors; std::lock_guard<std::mutex> lock(mutex); error=std::move(why); queue.clear(); framer.reset(); }
     void handleIncomingMidiMessage(juce::MidiInput*,const juce::MidiMessage& m) override {
+        if(options.optimisticFaderSpike) {
+            if(!m.isController()) return;
+            std::lock_guard<std::mutex> lock(spikeMutex);
+            if(m.getChannel()==16 && m.getControllerNumber()==79) spike.handshake(m.getControllerValue());
+            else if(auto actual=spikeLiveFrame.push(m.getChannel(),m.getControllerNumber(),m.getControllerValue()))
+                spike.receive(*actual,now(),options.spikeAckDelayMs);
+            triggerAsyncUpdate(); return;
+        }
         if(!m.isController()) {
             std::lock_guard<std::mutex> lock(mutex); healthInbox.message(false,0,0,0,now()); return;
         }
@@ -417,6 +475,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         } triggerAsyncUpdate();
     }
     void handleAsyncUpdate() override {
+        if(options.optimisticFaderSpike) { spikePump(); return; }
         processHealth();
         if(readySignal.exchange(false) && loaded && !readyReported) {
             readyReported=true; readyAt=now(); lastReadyMs=swapAt>0?readyMarkerAt.load()-swapAt:0;
@@ -461,6 +520,11 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         healthMonitor.reset(); lastStatusSeed=-10000; healthChangedAt=now();
         { std::lock_guard<std::mutex> lock(mutex); healthInbox.reset(); }
         readyReported=false; readySignal=false; swapAt=now();
+        if(options.optimisticFaderSpike) {
+            std::lock_guard<std::mutex> lock(spikeMutex);
+            spikeInputFrame.reset(); spikeLiveFrame.reset();
+            spike.reset((++spikeEpochCounter%127)+1,now()); spikeHandshakeAt=-10000;
+        }
         if(!block || fault) { status(); return; }
         block->addProgramLoadedListener(this); attachButtons();
         auto initialSource=statusActive()?statusSource:source;
@@ -473,6 +537,10 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     void handleProgramLoaded(roli::Block& b) override {
         if(block.get()!=&b || b.getProgram()!=expected || detector.active.load()!=loadedTransport || detector.activeGeneration.load()!=loadedGeneration.load()) return;
         loaded=true; lastSwapMs=now()-swapAt; event("sdk_loaded",juce::String(lastSwapMs,3));
+        if(options.optimisticFaderSpike) {
+            awaitingHello=false; pendingHello=false; readyReported=true;
+            readyAt=now(); status(); triggerAsyncUpdate(); return;
+        }
         if(pendingHello.exchange(false)) {
             awaitingHello=false;
             hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,110,18)); ++forwarded;
@@ -483,6 +551,9 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
 
     void timerCallback() override {
         if(stopping) return;
+        if(options.optimisticFaderSpike) {
+            select(); spikePump(); if(++statusTicks%100==0) status(); return;
+        }
         select();
         processHealth();
         processControl();
@@ -500,6 +571,26 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         juce::DynamicObject::Ptr object=new juce::DynamicObject;
         std::string state=overrideState.empty()?(fault?"fault":awaitingHello?"awaiting_hello":loaded?(statusEnabled()?(healthMonitor.usable(now()) && readyReported && !statusActive()?"ready":"waiting_for_live"):"ready"):block?"uploading":"waiting"):overrideState;
         object->setProperty("program",health::programName(programKind.load()));
+        if(options.optimisticFaderSpike) {
+            std::lock_guard<std::mutex> lock(spikeMutex);
+            object->setProperty("optimistic_fader_spike",true);
+            object->setProperty("spike_live_ready",spike.liveReady);
+            object->setProperty("spike_epoch",spike.epoch);
+            object->setProperty("spike_pending",spike.pending());
+            object->setProperty("spike_desired",spike.desiredValue);
+            object->setProperty("spike_confirmed",spike.confirmedValue);
+            object->setProperty("spike_inflight_seq",spike.inflightSeq());
+            object->setProperty("spike_intents",juce::int64(spike.receivedIntents));
+            object->setProperty("spike_dispatches",juce::int64(spike.dispatched));
+            object->setProperty("spike_acks",juce::int64(spike.acknowledged));
+            object->setProperty("spike_ignored_replies",juce::int64(spike.ignoredReplies));
+            object->setProperty("spike_ack_delay_ms",options.spikeAckDelayMs);
+            object->setProperty("spike_last_intent_at_ms",spike.lastIntentAt);
+            object->setProperty("spike_last_dispatch_at_ms",spike.lastDispatchAt);
+            object->setProperty("spike_last_native_ack_at_ms",spike.lastAckAt);
+            object->setProperty("spike_max_intent_to_dispatch_ms",spike.maxIntentToDispatchMs);
+            object->setProperty("spike_max_native_ack_ms",spike.maxNativeAckMs);
+        }
         object->setProperty("program_loaded",loaded.load()); object->setProperty("device_model_ready",readyReported);
         object->setProperty("playable",loaded.load() && readyReported && !statusActive() && (!statusEnabled() || healthMonitor.usable(now())));
         object->setProperty("host_health",health::stateName(healthMonitor.state(now())));
@@ -546,7 +637,15 @@ int main(int argc,char** argv) {
                          <<report.getProperty("explanation", "Check the bridge connection.").toString()<<"\n";
                 return 0;
             }
+            if(arg=="--optimistic-fader-spike") { options.optimisticFaderSpike=true; continue; }
+            if(arg=="--spike-ack-delay-ms") {
+                if(i+1>=argc) throw std::runtime_error("missing spike ACK delay");
+                options.spikeAckDelayMs=std::stoi(argv[++i]);
+                if(options.spikeAckDelayMs<0 || options.spikeAckDelayMs>10000) throw std::runtime_error("invalid spike ACK delay");
+                continue;
+            }
             if(arg=="--help") { std::cout<<"lightpad-bridge --device SERIAL --source FILE [--modal-source FILE] [--status-source FILE] [--trial-cycles N] [--status-file FILE] [--lock-file FILE]\n"; return 0; } if(arg=="--version") { std::cout<<"lightpad-bridge 0.2.0\n"; return 0; } if(i+1>=argc) throw std::runtime_error("missing argument value"); std::string value=argv[++i]; if(arg=="--device") options.serial=value; else if(arg=="--source") options.source=value; else if(arg=="--modal-source") options.modalSource=value; else if(arg=="--status-source") options.statusSource=value; else if(arg=="--trial-cycles") { options.trialCycles=std::stoi(value); if(options.trialCycles<0 || options.trialCycles>6) throw std::runtime_error("invalid trial cycles"); } else if(arg=="--status-file") options.status=value; else if(arg=="--lock-file") options.lock=value; else throw std::runtime_error("unknown argument: "+arg); }
+        if(options.spikeAckDelayMs && !options.optimisticFaderSpike) throw std::runtime_error("spike ACK delay requires spike mode");
         if(options.serial.size()!=16 || options.source.empty()) throw std::runtime_error("--device requires exact 16-character serial and --source is required");
         if(options.lock.empty()) options.lock="/tmp/lightpad-bridge-"+std::to_string(getuid())+".lock";
         if(!juce::File(options.lock).getParentDirectory().createDirectory()) throw std::runtime_error("cannot create bridge support directory");

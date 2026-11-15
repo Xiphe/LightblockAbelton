@@ -1,0 +1,229 @@
+// THROWAWAY physical spike: only R1 Volume, existing held-mixer geometry.
+// All contact, hold, view and optimistic value state lives on this device.
+// No recording, routing, track creation, preset saving or firmware writes.
+#heapsize: 1
+
+int down;
+int roles[16];
+float origins[16];
+int originValues[16];
+int anchor;
+int anchorAt;
+float anchorX;
+float anchorY;
+bool anchorMoved;
+int view;
+int value;
+int confirmed;
+int sequence;
+int sentValue;
+int sentAt;
+bool pending;
+bool unsent;
+int epoch;
+int modelRevision;
+bool modelSeen;
+
+int dim(int colour, float amount)
+{
+    return blendARGB(0xff000000, (int(amount * 255.0) << 24) | (colour & 0xffffff));
+}
+
+bool dragging()
+{
+    for (int n = 0; n < 16; ++n)
+        if (roles[n] == 2 && (down & (1 << n)) != 0) return true;
+    return false;
+}
+
+void sendWanted()
+{
+    sequence = (sequence + 1) & 127;
+    sendCC(0, 70, sequence);
+    sendCC(0, 71, value);
+    sendCC(0, 72, sequence);
+    sentValue = value;
+    sentAt = getMillisecondCounter();
+    unsent = false;
+    pending = true;
+}
+
+void updateHold()
+{
+    if (anchor >= 0 && !anchorMoved && view == 0
+        && getMillisecondCounter() - anchorAt >= 500) view = 1;
+}
+
+void initialise()
+{
+    down = 0;
+    anchor = -1;
+    view = 0;
+    value = 64;
+    confirmed = 64;
+    sequence = 0;
+    sentValue = 64;
+    sentAt = 0;
+    pending = false;
+    unsent = false;
+    epoch = 0;
+    modelRevision = 0;
+    modelSeen = false;
+    for (int n = 0; n < 16; ++n) roles[n] = 0;
+}
+
+void moveFader(int finger, float y)
+{
+    // Same relative seven-LED travel and rounding as the accepted mixer.
+    int wanted = int(clamp(0.0, 127.0,
+                    float(originValues[finger]) + (origins[finger] - y) * 127.0 / 7.0) + 0.5);
+    if (wanted == value) return;
+    value = wanted;
+    unsent = true;
+    if (getMillisecondCounter() - sentAt >= 40) sendWanted();
+}
+
+void touchEvent(int kind, int finger, float x, float y)
+{
+    if (finger < 0 || finger >= 16) return;
+    // Preserve the previous touch-to-LED quantization before relative gain.
+    x = float(int(clamp(0.0, 1919.0, x * 960.0))) / 128.0;
+    y = float(int(clamp(0.0, 1919.0, y * 960.0))) / 128.0;
+    int bit = 1 << finger;
+    bool held = (down & bit) != 0;
+    updateHold();
+    if (kind == 1)
+    {
+        // A new Start replaces only this contact's old lifecycle.
+        if (finger == anchor) { anchor = -1; view = 0; }
+        roles[finger] = 0;
+        down = down | bit;
+        if (view == 0 && anchor < 0 && x < 3.0 && y < 3.0)
+        {
+            anchor = finger;
+            anchorAt = getMillisecondCounter();
+            anchorX = x;
+            anchorY = y;
+            anchorMoved = false;
+            roles[finger] = 1;
+        }
+        else if (view == 1 && x < 3.0 && y >= 8.0)
+        {
+            roles[finger] = 2;
+            origins[finger] = y;
+            originValues[finger] = value;
+        }
+        return;
+    }
+    if (!held) return;
+    if (finger == anchor)
+    {
+        if (abs(x - anchorX) > 1.0 || abs(y - anchorY) > 1.0) anchorMoved = true;
+        if (kind == 3)
+        {
+            // Closing is local even if Live and the bridge are silent.
+            anchor = -1;
+            view = 0;
+            for (int n = 0; n < 16; ++n) roles[n] = 0;
+            if (unsent) sendWanted();
+        }
+    }
+    else if (roles[finger] == 2)
+    {
+        moveFader(finger, y);
+        if (kind == 3 && unsent) sendWanted();
+    }
+    if (kind == 3)
+    {
+        down = down & ~bit;
+        roles[finger] = 0;
+        // A confirmed external change is presented only after local ownership
+        // ends and no local intent remains outstanding.
+        if (!dragging() && !pending && !unsent) value = confirmed;
+    }
+}
+
+void touchStart(int i, float x, float y, float z, float vz) { touchEvent(1, i, x, y); }
+void touchMove(int i, float x, float y, float z, float vz) { touchEvent(2, i, x, y); }
+void touchEnd(int i, float x, float y, float z, float vz) { touchEvent(3, i, x, y); }
+
+void handleMessage(int seq, int actual, int header)
+{
+    // Atomic bridge model, deliberately unrelated to legacy UI assignments.
+    if ((header & 255) != 241 || (header & 0x80000000) != 0
+        || seq < 0 || seq > 127 || actual < 0 || actual > 127) return;
+    int kind = (header >> 8) & 3;
+    int generation = (header >> 10) & 127;
+    int revision = (header >> 17) & 16383;
+    if (kind > 2 || generation == 0) return;
+    bool newerEpoch = epoch != generation;
+    if (kind != 0 && newerEpoch) return;
+    int distance = (revision - modelRevision) & 16383;
+    if (!newerEpoch && modelSeen && (distance == 0 || distance >= 8192)) return;
+    modelRevision = revision;
+    modelSeen = true;
+    if (kind == 0)
+    {
+        epoch = generation;
+        confirmed = actual;
+        if (pending || unsent)
+        {
+            if (newerEpoch) sendWanted();
+        }
+        else if (!dragging()) value = actual;
+        return;
+    }
+    if (generation != epoch) return;
+    confirmed = actual;
+    if (kind == 2 && pending && seq == sequence && !unsent) pending = false;
+    if (!dragging() && !pending && !unsent) value = confirmed;
+}
+
+void drawGroup(int group)
+{
+    int x = (group % 4) * 4;
+    int y = (group / 4) * 4;
+    if (group != 0) return; // The fixture only exposes R1 to this spike.
+    int c = 0xff40c0ff;
+    fillRect(dim(c, 0.01), x, y, 3, 3);
+    fillPixel(0xff000000, x + 1, y + 1);
+    fillPixel(dim(c, 0.06), x + 1, y + 1);
+}
+
+void drawFader(int x, int width, int colour, float level)
+{
+    for (int row = 0; row < 7; ++row)
+        fillRect(dim(colour, 0.08 + 0.42 * clamp(0.0, 1.0, level * 7.0 - float(row))),
+                 x, 14 - row, width, 1);
+}
+
+void repaint()
+{
+    updateHold();
+    if (unsent && getMillisecondCounter() - sentAt >= 40) sendWanted();
+    fillRect(0xff000000, 0, 0, 15, 15);
+    if (view == 0)
+    {
+        for (int group = 0; group < 8; ++group) drawGroup(group);
+        fillRect(0xff080808, 0, 14, 15, 1);
+        fillPixel(0xff202020, 7, 14);
+    }
+    else
+    {
+        for (int group = 0; group < 4; ++group) drawGroup(group);
+        int c = 0xff40c0ff;
+        fillRect(dim(c, 0.08), 0, 4, 15, 3);
+        fillRect(dim(c, 0.18), 0, 5, 15, 1);
+        fillPixel(0xff404040, 7, 5);
+        fillRect(dim(c, 0.65), 7, 4, 1, 3);
+        drawFader(0, 3, c, float(value) / 127.0);
+        for (int fader = 1; fader < 5; ++fader)
+            drawFader(fader * 3 + 1, 2, 0xffffffff, 0.0);
+    }
+}
+
+// Read-only diagnostics for the offline callback harness.
+int currentValue() { return value; }
+int currentView() { return view; }
+int currentSequence() { return sequence; }
+int hasPending() { return pending || unsent ? 1 : 0; }
