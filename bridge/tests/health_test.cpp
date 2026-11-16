@@ -25,6 +25,15 @@ int main() {
     assert(!m.needsStatus(health::Program::status,5100));
     m.reset();assert(!m.busy());assert(m.state(6000)==health::State::liveUnavailable);
     using health::Program;using health::Transition;
+    assert(health::modeTarget(Program::main,false,true)==Program::patch);
+    assert(health::modeTarget(Program::main,true,true)==Program::metronome);
+    assert(health::modeTarget(Program::patch,false,true)==Program::main);
+    assert(health::modeTarget(Program::patch,true,true)==Program::metronome);
+    assert(health::modeTarget(Program::metronome,false,true)==Program::main);
+    assert(health::modeTarget(Program::metronome,true,true)==Program::patch);
+    assert(health::modeTarget(Program::status,true,true)==Program::status);
+    assert(health::modeTarget(Program::main,false,false)==Program::metronome);
+    assert(health::modeTarget(Program::main,true,false)==Program::main);
     m.update(*frame(5,5,0,0),6000);
     assert(health::transition(Program::status,true,true,0,false,m,6000,5900)==Transition::main);
     assert(health::transition(Program::status,true,true,1,false,m,6000,5900)==Transition::none);

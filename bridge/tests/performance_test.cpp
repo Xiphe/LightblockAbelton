@@ -297,8 +297,47 @@ static void failed_sdk_feedback_is_retained_without_native_replay() {
     assert(rejectedAgain&&rejectedAgain->a==rejectedResult->a&&rejectedAgain->b==16383);
     assert(rejection.queuedDiscrete()==16);assert(rejection.dispatched==0);
 }
+static void patch_intents_keep_latest_and_precede_recording() {
+    Reconciler r;ready(r);
+    assert(valid(intent(0,48,3)));assert(!valid(intent(0,48,4)));
+    assert(valid(intent(0,57,7)));assert(!valid(intent(0,57,8)));
+    assert(r.intent(intent(0,48,1),2));auto initial=r.takeDispatch(3);assert(initial&&initial->key==48);
+    assert(r.intent(intent(1,48,3),4));assert(r.intent(intent(2,48,2),5));
+    assert(r.intent(intent(3,64,10),6));
+    r.receiveAck(ack(*initial,1),7);
+    for(auto f:drain(r,7)) assert(f.kind!=2);
+    auto selected=r.takeDispatch(8);assert(selected&&selected->key==48&&selected->value==2);
+    r.receiveAck(ack(*selected,2),9);
+    auto begin=r.takeDispatch(10);assert(begin&&begin->key==64);
+    r.receiveAck(ack(*begin,0),11);
+    assert(!r.pending());assert(r.desired(48)==2);assert(r.confirmed(48)==2);
+
+    // Appended patch/readiness/source facts must not collide with the existing
+    // meter parameter, group or clock slots. Routing readiness is not an ACK.
+    Reconciler facts;ready(facts);
+    facts.receiveObservation({1,0,1,48,3},2);
+    facts.receiveObservation({1,1,1,114,7},2);
+    facts.receiveObservation({1,2,6,8,19},2);
+    facts.receiveObservation({1,3,6,24,0x200123},2);
+    facts.receiveObservation({1,4,6,1,516u|(255u<<16)},2);
+    facts.receiveObservation({1,5,1,57,8},2); // observation-only: no monitor owner
+    auto all=drain(facts,3);
+    assert(all.size()==6);assert(facts.confirmed(57)==8);
+    bool patch=false,meter=false,pending=false,source=false;
+    for(auto f:all) {
+        patch|=f.kind==1&&f.a==48&&f.b==3;
+        meter|=f.kind==1&&f.a==114&&f.b==7;
+        pending|=f.kind==6&&f.a==8&&f.b==19;
+        source|=f.kind==6&&f.a==24&&f.b==0x200123;
+    }
+    assert(patch&&meter&&pending&&source);
+    facts.intent(intent(0,57,6),4);auto monitor=facts.takeDispatch(5);assert(monitor&&monitor->key==57);
+    facts.receiveAck(ack(*monitor,6),6);
+    bool owner=false;for(auto f:drain(facts,7)) owner|=f.kind==6&&f.a==1&&(f.b>>24)==7;
+    assert(owner);
+}
 int main() {
-    parsers();superseding_parameters();discrete_order_and_deduplication();bounded_overflow();
+    parsers();superseding_parameters();discrete_order_and_deduplication();bounded_overflow();patch_intents_keep_latest_and_precede_recording();
     timeout_no_replay_and_quarantine();reset_and_reseed();observations_and_priorities();acknowledged_state_updates_already_dirty_snapshots();prehandshake_facts_cannot_poison_a_new_session();group_availability_waits_for_field_delivery();failed_sdk_feedback_is_retained_without_native_replay();
     std::cout<<"performance: parser, coalescing, ordering, timeout, reconnect and bounded-model checks passed\n";
 }

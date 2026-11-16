@@ -149,7 +149,7 @@ void handleMessage(int a, int b, int header)
     if (kind == 2)
     {
         int key = a & 127, n = key == 113 ? 2 : key - 114;
-        if (key < 113 || key > 115 || n < 0 || n > 2 || a >> 7 != getHeapByte(6 + n) || getHeapByte(9 + n) != 1) return;
+        if (key < 113 || key > 115 || n < 0 || n > 2 || (a >> 7) != getHeapByte(6 + n) || getHeapByte(9 + n) != 1) return;
         setHeapByte(9 + n, 0);
         if (b != 16383 && b < 128) setHeapByte(3 + n, b);
         if (n == 2 || owner[n] < 0) setHeapByte(n, getHeapByte(3 + n));

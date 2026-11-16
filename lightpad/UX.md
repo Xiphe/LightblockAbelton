@@ -4,9 +4,9 @@ Current controls and display behavior for the 15 by 15 Lightpad. See [setup](../
 
 ## Screens and timing
 
-The device has a 15 by 15 LED grid. Main overview, recording controls and the held group mixer share the main program. The full-screen metronome and global connection status are separate programs. The helper keeps the connection and Live's MIDI ports while switching programs.
+The device has a 15 by 15 LED grid. Main overview, recording controls and the held group mixer share the main program. The Audio patch selector, full-screen metronome and global connection status are separate programs. The helper keeps the connection and Live's MIDI ports while switching programs.
 
-Short release of the physical Mode button toggles main/metronome after pad contacts lift. A hold of at least 400 ms requests input selection once; releasing that hold does not also trigger a short click. The hold is reserved; it currently opens no input-selection screen. Mode is inactive on global status. No on-screen Close button is needed in the metronome.
+Short release of the physical Mode button opens the patch selector from main and returns to main from either settings screen. A hold of at least400ms opens the metronome from main or patch, and opens patch from the metronome. Releasing a recognized hold does not trigger another short action. Switching waits for contacts to lift and is unavailable during recording. Mode is inactive on global status. Neither settings screen needs an on-screen Close button.
 
 Ableton is authoritative. The device follows actual playing clips, mute, parameters and recording, including manually launched older layers and mixed rows. The timing reference is the leftmost eligible currently playing loop in the group, including muted loops. A new take captures its length and phase for that take only; another take chooses again. With no playing reference, recording uses the next safe bar.
 
@@ -36,6 +36,10 @@ Hold one group to open its mixer while held. Releasing that finger closes the mi
 Touch multiple groups before the mixer opens to form a mute batch. The mixer stays closed even after only one finger remains. All selected groups toggle together on the last release. Released selections remain pending, and re-tapping one removes or re-adds it. Sideways movement does not cancel. Every selected group, touched or released, shows a white dot below it and previews its future state while progress continues.
 
 Drag down on any group, including an empty one, to arm recording. Before release, its center and progressing ring become bright pure red. A compact white vertical guide appears above the tiles. Turn left or right into a downward L to arm fresh-phrase advance instead: the tile blacks out and the guide becomes an L. Move back to a straight I to re-arm recording; move onto the original group to cancel without toggling mute. A new down-drag can re-arm before release.
+
+A down-drag on a group with no assigned Audio source shows a bright yellow X instead of red arming, with no straight white guide. Release stays in overview. Turning into an L still offers fresh-phrase advance and draws its guide; returning to I restores the blocked-recording X.
+
+A horizontal swipe out of a single group activates that group's live-input monitoring. It previews locally with a blue dot below the group, then remains optimistic until confirmation. Multi-mute's white pending dot takes priority at the same position. Monitoring still passes through the group's volume, mute and effects.
 
 The white guide is a compact indicator, not a full finger history. It draws above group tiles and never on the bottom metronome row. Release, cancellation, contact loss or a view change clears it. Multi-group muting has no gesture guide.
 
@@ -104,6 +108,16 @@ An unfilled fader means its Live parameter is exactly at minimum. Any positive v
 
 The four white controls may target sends or group-device parameters. Defaults follow the first four sends. Explicit configured assignments retain target identity and disable only the affected control if its target moves or disappears. Assignments are configured in the [Live script](../live/README.md#configuration); there is no assignment screen.
 
+## Audio patch selector
+
+The current Audio step offers the prepared T-Bone and SM-58 source tracks. Their physical inputs follow each source track’s Live configuration. The upper four rows show eight compact three-by-two group tiles in two rows, with column gaps. Row4 is the separator. Inputs use three-by-two tiles below it, in the established five-column layout. Only these two sources are active in this step; the remaining input area stays empty.
+
+Hold a group and touch its input tiles to toggle assignments. There is no persistent group selection after release. The inverse order also works: hold one or both sources, then touch a group to toggle them together. Moving a contact does not repeatedly toggle assignments. With no group held, holding a source scrolls its name locally across the dimmed group area; group hit targets remain available beneath the name. Multiple different held groups provide no assignment context.
+
+Both Audio sources may be assigned to the same group and recorded in one take. Assignments apply to subsequent takes; accepted clips and their source identity remain unchanged. Audio sources can be assigned to multiple groups. The latest assignment selects the monitoring group, and the overview's horizontal gesture can change it later.
+
+An assignment reacts locally immediately. Its input tile's upper row shows the desired state; the lower row pulses between prepared and desired states until routing preparation completes. The group also pulses while work remains. Contacts ending do not cancel already admitted changes. Retapping changes the latest desired state rather than growing a queue of toggles. Failure restores actual assignment and flashes briefly. A missing source cannot be added, but can still be removed from a group that already selected it.
+
 ## Full-screen metronome
 
 | Area | Use |
@@ -127,6 +141,6 @@ Click has a green/red background and a stylized switch: a five-by-three track at
 
 The status program uses the touchable idle tunnel and hidden-message interaction while connecting, disconnected or handing off to main. Idle gestures never request diagnostics. Waiting for Live shows a white Ableton logo, no remote groups shows orange `[R]`, and unexpected failure shows red `!`. A fault-icon tap requests a Mac explanation; notifications are never automatic. Mode is inactive on global status. Fresh usable host state returns to main after contacts lift. A missing heartbeat does not replace a last-known active recording screen. Focus can suppress a notification banner without changing controller behavior.
 
-The installed Live template uses one empty child Audio Track per group because Live rejects childless saved groups. This adds no device interaction; recordings still create new default tracks.
+The current Audio setup prepares at leastfour compatible child Audio tracks per group and reuses empty slots. More tracks may be prepared in the background when needed, before the rightmost technical subgroup. The user accepts the known audible insertion cost for overflow; the starting count is editable in Live.
 
-Input selection, assignment UI, device-side phrase selection, accepted-layer undo/recovery, global transport buttons, mute-all and an audio level meter are not available. Live supplies input routing and audio defaults. The Lightpad supplies no musical notes. Recording quantization stays one bar, with no setting UI.
+MIDI instrument patching, the complete source catalog, device-side phrase selection, accepted-layer undo/recovery, global transport buttons, mute-all and an audio level meter remain outside the current Audio step. Live supplies source routing and audio defaults. The Lightpad supplies no musical notes. Recording quantization stays one bar, with no setting UI.

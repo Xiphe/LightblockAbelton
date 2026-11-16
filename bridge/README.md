@@ -43,11 +43,41 @@ python3 bridge/build.py \
   --output '/tmp/Lightpad Bridge.app'
 ```
 
-The build verifies all 685 vendor files and the inline connection hash, runs five native CTests, compiles all three pad programs, enforces their individual 7,200-byte budgets and packages supplier notices. `--status-program SOURCE` selects another reviewed status entry point; the default is `lightpad/status.littlefoot`.
+The build verifies all 685 vendor files and the inline connection hash, runs the native CTests, compiles all three pad programs, enforces their individual 7,200-byte budgets and packages supplier notices. `--status-program SOURCE` selects another reviewed status entry point; the default is `lightpad/status.littlefoot`.
 
 Packaging resolves quoted relative Littlefoot includes, copies them into the bundle and records their hashes. Includes must stay within their source directory; absolute paths, parent traversal, symlinks, cycles and conflicting destinations are rejected. Status needs both `idle-animation.littlefoot` and `idle-statements-prototype.littlefoot`.
 
 The completed app receives a local ad-hoc signature and strict seal verification. Do not edit bundled files afterward. `Contents/Resources/build-info.json` records source, include, SDK/compiler and native input hashes; packaging reports the post-signing executable hash separately. Build/staging starts no app, opens no MIDI and writes no firmware or saved startup program.
+
+## Matched Audio input mode
+
+The build/install commands in this guide package the normal three-program controller. The local Audio implementation uses the same native executable with explicit source options and the matched [PerformanceController setup](../live/PerformanceController/README.md). Start a built executable from the checkout root after closing any other helper that owns the device or the virtual ports:
+
+```sh
+/absolute/build/lightpad-bridge --audio-performance \
+  --device YOUR_16_CHARACTER_SERIAL \
+  --source "$PWD/lightpad/performance-main.littlefoot" \
+  --modal-source "$PWD/lightpad/performance-metronome.littlefoot" \
+  --patch-source "$PWD/lightpad/performance-patch.littlefoot" \
+  --status-source "$PWD/lightpad/status.littlefoot"
+```
+
+`--patch-source` requires `--audio-performance`. It is not automatically added to the normal app bundle by `build.py`. Configure and install the matching Live adapter before using this mode; mixing it with the normal script or older pad programs is unsupported. This command changes neither the saved pad startup nor firmware. The helper keeps USB/Bluetooth discovery and the same virtual MIDI ports while switching programs.
+
+With patch enabled, short Mode opens patch from main and returns to main from either settings screen. Holding Mode for at least400ms opens the metronome from main/patch and opens patch from the metronome. Releasing a recognized hold does not also short-click. Contacts and recording protect mode switches; background patch preparation does not prevent returning to main.
+
+Patch owns group/source contact context and optimistic feedback locally. T-Bone and SM-58 can be selected together; one logical take then controls two independently stored Audio clips. The upper input row shows the desired assignment and the lower row pulses while preparation completes. Routing and monitoring use prepared helpers inside each rightmost `[Remote]` subgroup, retaining source effects and accepted recordings. See the [semantic wire contract](native/performance_protocol.md) for command admission, readiness, source metadata and failure handling.
+
+Main currently uses7192of7200bytes. The separate patch program uses2776 and metronome3459; main's eight-byte margin is not spare capacity for further features. Run the [compiled-device checks](../lightpad/PERFORMANCE.md) and joined paths with `PERFORMANCE_REPLAY` pointing at the matching `performance_replay` executable:
+
+```sh
+PERFORMANCE_REPLAY=/absolute/build/performance_replay \
+  python3 bridge/tests/test_audio_performance_path.py -v
+PERFORMANCE_REPLAY=/absolute/build/performance_replay \
+  python3 bridge/tests/test_audio_input_path.py -v
+```
+
+These exercise the compiled clients, actual C++ reconciler and Python backend with fake Native IO. They do not measure hardware latency or audible routing changes.
 
 ## Install
 
@@ -136,4 +166,4 @@ Rollback refuses modified installed files, preserves the newer files and reports
 python3 -m unittest discover -s bridge/tests -p 'test_*.py' -v
 ```
 
-`build.py` runs the five native CTests. [Device checks](../lightpad/README.md#tests) exercise compiled programs without MIDI or hardware. The [validation summary](../VALIDATION.md) distinguishes offline coverage from bounded physical trials.
+`build.py` runs the native CTests. [Device checks](../lightpad/README.md#tests) exercise compiled programs without MIDI or hardware. The [validation summary](../VALIDATION.md) distinguishes offline coverage from bounded physical trials.

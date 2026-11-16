@@ -100,7 +100,7 @@ class LiveRecording:
         group = self._group(take.group, take.parent)
         if not any(same(t, take.track) for t in group.tracks):
             raise ValueError('recording track moved or disappeared')
-        slots = tuple(take.track.clip_slots)
+        slots = take.track.clip_slots
         if take.row >= len(slots) or not same(slots[take.row], take.slot):
             raise ValueError('recording destination moved')
         if take.clip is not None and (not take.slot.has_clip or not same(take.slot.clip, take.clip)):
@@ -137,10 +137,12 @@ class LiveRecording:
         period, quantum = max(options, key=lambda pair: pair[0])
         return target-period, quantum
 
-    def _plan(self, reference, at=None, inclusive=False):
+    def _plan(self, reference, at=None, inclusive=False, observation=None):
         admission = LaunchAdmission(self.song, clock=self.monotonic)
         grid = read_grid(self.song)
         position = admission.position(LEAD)
+        if observation is not None:
+            observation.update(request_beat=grid.position, admission_beat=position)
         if at is not None:
             position = max(position, at)
         target = self._target(reference, grid, position, inclusive)
@@ -178,7 +180,8 @@ class LiveRecording:
         self._identity(take)
         if not take.clip.is_recording or not bool(self.song.is_playing):
             return p.NOT_READY
-        finish = self._plan(None)
+        observation = {}
+        finish = self._plan(None, observation=observation)
         following = None
         if next_take:
             # Each new recording obtains a fresh Live reference. An unfinished
@@ -194,7 +197,36 @@ class LiveRecording:
                              queued_at=finish, target=target, handoff_target=target)
         take.finish_target, take.state = finish, 'finish_queued'
         take.following = following
+        self._event('finish_planned', take, **observation)
         return p.OUTCOME_QUEUED
+
+    def enqueue_ready(self):
+        """Issue an admitted prepared command without waiting for display tick.
+
+        This is not a maintenance callback: it cannot reconcile the graph,
+        allocate destinations or configure routes. Existing execution guards
+        retain the same Native launch windows, safety lead and issued flags.
+        The caller finishes command/token bookkeeping before entering here.
+        """
+        take = self.take
+        if take is None:
+            return
+        try:
+            if take.state == 'finish_queued':
+                if take.following is not None and take.following.state != 'canceling':
+                    self._execute_pair(take)
+                else:
+                    self._execute(take, finish=True)
+            elif take.state == 'queued':
+                self._execute(take)
+        except Exception as error:
+            # Admission already succeeded. A Native exception may have taken
+            # effect, so keep the issued facts and let observation resolve it.
+            # In particular, never turn a partially issued command into a
+            # rejected ACK that encourages a second recording mutation.
+            take.failure = str(error)
+            self.issues[take.group] = str(error)
+            self._event('recording_operation_unavailable', take, reason=str(error))
 
     def cancel(self, command, retry=False):
         self.reconcile()
@@ -242,9 +274,7 @@ class LiveRecording:
         actual = self.state.recording()
         if (actual is not None and take is not None
                 and take.state in ('queued', 'recording')
-                and not same(actual[1].clip, take.clip)
-                and not (take.start_issued and take.clip is None and same(actual[1].slot, take.slot))
-                and not (take.following is not None and same(actual[1].slot, take.following.slot))):
+                and not self._owns_actual(take, actual[1])):
             # A real take started/selected in Live outranks an unissued UI
             # intention. Dropping that intention does not stop native audio.
             self._adopt(*actual)
@@ -293,6 +323,16 @@ class LiveRecording:
             recording = self.state.recording()
             if recording is not None and not same(recording[1].clip, take.clip):
                 self._adopt(*recording)
+
+    @staticmethod
+    def _owns_actual(take, actual):
+        for logical in (take, take.following):
+            if logical is None:
+                continue
+            for member in (logical,)+tuple(getattr(logical, 'members', ())):
+                if same(actual.clip,member.clip) or (member.start_issued and same(actual.slot,member.slot)):
+                    return True
+        return False
 
     def _observe(self, take, effects=False):
         self._identity(take)

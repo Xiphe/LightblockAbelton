@@ -295,11 +295,18 @@ class BackendChecks(unittest.TestCase):
     def test_late_pair_admission_defers_both_without_base_loop_alignment(self):
         b,old=self.base_and_overdub()
         self.song.advance(old.anchor+1.)
+        original=old.anchor+4.
+        class SlowArmTrack(Track):
+            def __setattr__(self,name,value):
+                super().__setattr__(name,value)
+                if name=='arm' and value and self.__dict__.pop('advance_on_arm',False):
+                    self.song.current_song_time=original-.01
+        spare=b.reserves[0].track;spare.__class__=SlowArmTrack;spare.advance_on_arm=True
         self.assertEqual(b.dispatch(67,10|(11<<7)),0)
-        original=old.finish_target
-        self.song.advance(original+.01);self.ticks(1)
         self.assertEqual(old.finish_target,original+4.)
         self.assertEqual(old.following.target,old.finish_target)
+        self.assertFalse(old.finish_issued)
+        self.song.advance(old.finish_target-.5);self.ticks(1)
         self.assertEqual(old.slot.pending[1],old.following.slot.pending[1])
 
     def test_next_without_reserve_keeps_old_take_and_clears_requested_token(self):
@@ -529,8 +536,8 @@ class BackendChecks(unittest.TestCase):
 
     def test_failed_start_has_bounded_terminal_state_without_replay(self):
         b=self.make();self.warm()
+        b.reserves[0].slot.fire_error='before'
         self.assertEqual(b.dispatch(64,9),0);take=b.recording.take
-        take.slot.fire_error='before'
         self.song.advance(take.target-.5);self.ticks(1)
         self.assertTrue(take.start_issued)
         self.song.advance(take.target+8.);self.ticks(1)
@@ -540,8 +547,8 @@ class BackendChecks(unittest.TestCase):
 
     def test_ambiguous_start_is_observed_without_second_fire(self):
         b=self.make();self.warm()
+        b.reserves[0].slot.fire_error='after'
         self.assertEqual(b.dispatch(64,9),0);take=b.recording.take
-        take.slot.fire_error='after'
         self.song.advance(take.target-.5);self.ticks(1)
         self.song.advance(take.target);self.ticks(1)
         self.assertEqual(take.state,'recording')

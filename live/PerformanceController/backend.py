@@ -14,6 +14,8 @@ from . import configuration as config, protocol as p
 from .model import ClipState, GroupState, LoopReference, read_grid, same
 from .recording_core import LiveRecording
 from .selection_restore import SelectionRestoration
+from .audio_inputs import AudioInputs
+from .bundle_recording import BundleRecording
 
 MARKER = re.compile(r'^\[R([1-8])\]')
 DENOMINATORS = (1, 2, 4, 8, 16)
@@ -348,6 +350,10 @@ class PreparedRecording(LiveRecording):
         return p.APPLIED
 
 
+class AudioPreparedRecording(BundleRecording, PreparedRecording):
+    pass
+
+
 class Backend:
     def __init__(self, song, quantizations, assignments=None, now=None):
         self.song, self.now = song, now or time.monotonic
@@ -358,8 +364,12 @@ class Backend:
         # A known lack of a lane/row is readiness, not a latched Native failure.
         self.pool_unavailable = {}
         self.events = deque(maxlen=256)
-        self.recording = PreparedRecording(song, self.state, quantizations, self.reserves, monotonic=self.now,emit=self.events.append)
+        specs=getattr(config,'AUDIO_SOURCES',())
+        recording_class=AudioPreparedRecording if specs else PreparedRecording
+        self.recording = recording_class(song, self.state, quantizations, self.reserves, monotonic=self.now,emit=self.events.append)
         self.recording.validate = self._compatible
+        self.audio_inputs=AudioInputs(self,specs) if specs else None
+        if self.audio_inputs:self.recording.inputs=self.audio_inputs
         self.pending_begin = None
         self.after = None
         self.last_take = None
@@ -409,7 +419,8 @@ class Backend:
         value = (kind, int(a), int(b))
         if force or self._published.get(key) != value:
             self._facts[key] = value
-            if kind==5:self._facts.move_to_end(key,last=False)
+            if kind==5 or (kind==4 and (a&15)==8):
+                self._facts.move_to_end(key,last=False)
             self._published[key] = value
 
     def drain_facts(self, budget=6):
@@ -451,8 +462,21 @@ class Backend:
 
     def _global_facts(self):
         self._fact(6,0,int(round(float(self.song.tempo)*128)))
+        available=self.audio_inputs.group_mask if self.audio_inputs else 255
+        owner=self.audio_inputs.monitor_owner if self.audio_inputs else None
         self._fact(6,1,int(self.song.signature_numerator) | (int(self.song.signature_denominator)<<7)
-                   | (bool(self.song.is_playing)<<14) | (bool(self.song.metronome)<<15))
+                   | (bool(self.song.is_playing)<<14) | (bool(self.song.metronome)<<15)
+                   | (available<<16) | ((owner+1 if owner is not None else 0)<<24))
+        if self.audio_inputs:
+            for group in self.state.groups:
+                self._fact(1,48+group,self.audio_inputs.desired.get(group,0))
+                self._fact(6,8+group,self.audio_inputs.routing_fact(group))
+            for index in range(2):
+                source=self.audio_inputs.sources.get(index)
+                color=source.color if source else 0
+                rgb=((color>>17)&127)|(((color>>9)&127)<<7)|(((color>>1)&127)<<14)
+                self._fact(6,24+index,rgb | (bool(self.audio_inputs.available&(1<<index))<<21))
+            self._fact(1,57,owner if owner is not None else 8)
 
     def _clock(self, group, grid):
         reference = self.state.reference(group) if group < 8 else None
@@ -525,6 +549,15 @@ class Backend:
                 return REJECT
             if key < 48:
                 return self._parameter(key,value)
+            if 48<=key<=55 and self.audio_inputs:
+                if value&~3:return REJECT
+                group=key-48
+                result=self.audio_inputs.set_patch(group,value)
+                self.failures.pop(group,None)
+                self._global_facts()
+                return result
+            if key==57 and self.audio_inputs and 0<=value<8:
+                result=self.audio_inputs.set_monitor(value);self._global_facts();return result
             if key == 56:
                 if value & ~255:
                     return REJECT
@@ -588,6 +621,9 @@ class Backend:
                 return REJECT
             if not self.allow_audio_track_creation and group in self.pool_unavailable:
                 return REJECT
+            if self.audio_inputs:
+                mask=self.audio_inputs.desired.get(group,0)
+                if not mask or mask&~self.audio_inputs.available:return REJECT
             self.failed_take=None
             self.closed_following=None
             self.pending_begin=(group,token,self.now())
@@ -651,6 +687,7 @@ class Backend:
                 return REJECT
             if action==3:
                 self.handoff_alias=(group,token,new_token,take.following)
+            self.recording.enqueue_ready()
         elif action in (2,4):
             command=SimpleNamespace(group=group)
             self.recording.cancel(command,retry=False)
@@ -673,6 +710,7 @@ class Backend:
             self.pending_begin=None;self._failed_take(group,token,'preparation timeout');return
         if self.state.topology_dirty or group not in self.reserves:
             return
+        admitted=False
         self.recording.request_token=token
         try:
             status=self.recording.begin(group)
@@ -682,14 +720,16 @@ class Backend:
             alias=self.handoff_alias
             if alias is not None and alias[0]==group and alias[2]==token and alias[3] is None:
                 self.handoff_alias=(group,alias[1],token,self.recording.take)
+            admitted=True
         except (RuntimeError,ValueError,AttributeError,IndexError) as exc:
             # Invalidate the stale prepared target once; maintenance can repair.
             self.reserves.pop(group,None)
             self.events.append(dict(event='begin_waiting',group=group,reason=str(exc)))
         finally:
             self.recording.request_token=None
+        if admitted:self.recording.enqueue_ready()
 
-    def tick(self):
+    def tick(self,before_maintenance=None):
         if self._closed:
             return
         now=self.now()
@@ -702,6 +742,7 @@ class Backend:
                 self.state.topology_dirty=False
             else:
                 self.state.discover()
+                if self.audio_inputs:self.audio_inputs.discover()
                 # Explicit Set setup can supply a formerly missing anchor.
                 # Structural discovery confirms it; uncertain Native mutations
                 # and routing failures remain latched until a separate retry.
@@ -717,6 +758,11 @@ class Backend:
         before=self.recording.take
         before_state=(before.state, before.clip) if before is not None else None
         self.recording.tick()
+        bundle_failure=getattr(self.recording,'failed_bundle',None)
+        if bundle_failure is not None:
+            self.recording.failed_bundle=None
+            self.pending_begin=None;self.after=None
+            self._failed_take(*bundle_failure)
         take=self.recording.take
         if self.handoff_alias is not None:
             group,old_token,new_token,following=self.handoff_alias
@@ -727,7 +773,8 @@ class Backend:
             elif (following.state=='completed' or
                     (take is not following and (take is None or take.following is not following))):
                 self.handoff_alias=None
-        if take is not None and take.clip is not None and take.clip.is_recording:
+        if (take is not None and take.state in ('recording','finish_queued')
+                and take.clip is not None and take.clip.is_recording):
             if self.closed_following is not None and take is not self.closed_following[0]:
                 self.closed_following=None
             self.failed_take=None
@@ -741,21 +788,6 @@ class Backend:
             self.state.observe(g)
             self.pending_begin=(g,token,now);self.last_take=(g,token)
         self._admit_begin()
-        if self.restoration:
-            self.restoration.tick()
-            if self.restoration.done:self.restoration=None
-        if now-self._slow_at>=.1:
-            self._slow_at=now
-            group=self._cursor;self._cursor=(self._cursor+1)%8
-            if group in self.state.groups:
-                self.state.observe(group)
-                self._group_facts(group)
-            self._global_facts()
-            priority=self.pending_begin[0] if self.pending_begin else (take.group if take is not None and take.state!='completed' else None)
-            if priority is not None and priority not in self.reserves and priority not in self.failures:
-                group=priority
-            self.state.scan_occupancy(group,64)
-            self._maintenance(group)
         if now-self._clock_at>=.2:
             self._clock_at=now
             try:
@@ -767,6 +799,37 @@ class Backend:
             except (RuntimeError,ValueError,AttributeError):pass
         if now-self._take_at>=.1:
             self._take_at=now;self._take_fact(True)
+        if before_maintenance is not None:
+            # Publish known musical transitions before a synchronous Native
+            # preparation call can block the display callback. The caller owns
+            # one shared output budget across this hook and the final flush.
+            self._take_fact()
+            before_maintenance()
+        if self.audio_inputs and self.audio_inputs.monitor_dirty:
+            try:self.audio_inputs.reconcile_helpers()
+            except (RuntimeError,ValueError,AttributeError) as exc:
+                self.events.append(dict(event='monitor_preparation_failed',reason=str(exc)))
+                self.audio_inputs.monitor_dirty=False
+        if self.restoration:
+            self.restoration.tick()
+            if self.restoration.done:self.restoration=None
+        if now-self._slow_at>=.1:
+            self._slow_at=now
+            if self.audio_inputs:self.audio_inputs.observe_sources()
+            group=self._cursor;self._cursor=(self._cursor+1)%8
+            if group in self.state.groups:
+                self.state.observe(group)
+                self._group_facts(group)
+            self._global_facts()
+            priority=self.pending_begin[0] if self.pending_begin else (take.group if take is not None and take.state!='completed' else None)
+            if priority is None and self.audio_inputs:
+                priority=next(iter(sorted(self.audio_inputs.busy)),None)
+            if priority is not None and priority not in self.reserves and priority not in self.failures:
+                group=priority
+            self.state.scan_occupancy(group,64)
+            if self.audio_inputs and group in self.failures:
+                self.audio_inputs.observe_helpers(group)
+            self._maintenance(group)
 
     def _row(self, group):
         item=self.state.groups[group]
@@ -840,6 +903,9 @@ class Backend:
                 self.pool_unavailable[group]='prepared phrase row unavailable'
                 return
             self.song.create_scene(-1);return
+        if self.audio_inputs:
+            self.audio_inputs.maintenance(group,row,active)
+            return
         reserve=self.reserves.get(group)
         if reserve is not None:
             if reserve.row==row and self._compatible(reserve.track,item.group,row):
@@ -935,3 +1001,27 @@ class Backend:
             self.failures[group]=str(exc)
             self.events.append(dict(event='maintenance_failed',group=group,reason=str(exc)))
             if self.restoration and self.restoration.state=='captured':self.restoration.close();self.restoration=None
+
+    def _create_audio_lane(self,group,row):
+        if self.restoration is not None and not self.restoration.done:return None
+        item=self.state.groups[group];anchor=self.state.anchors[group]
+        before=tuple(self.song.tracks)
+        index=next(i for i,t in enumerate(before) if same(t,anchor))
+        restore=SelectionRestoration(self.song,now=self.now)
+        started=time.monotonic_ns();error=None
+        try:self.song.create_audio_track(index)
+        except Exception as exc:error=exc
+        finally:self.events.append(dict(event='create_audio_track_native',group=group,elapsed_ns=time.monotonic_ns()-started))
+        after=tuple(self.song.tracks)
+        created=[t for t in after if not any(same(t,old) for old in before)]
+        if len(created)==1:
+            restore.capture_created(created);self.restoration=restore
+        else:restore.close()
+        if len(created)!=1:raise ValueError('created Audio identity unavailable; not replayed')
+        track=created[0]
+        if not same(track.group_track,item.group):raise ValueError('created Audio outside remote group')
+        self.state.tracks=after
+        self.state.groups[group]=GroupState(group,item.group,item.tracks+(track,),item.playing,item.recording)
+        self._known_created_topology=after;self.state.topology_dirty=True
+        if error is not None:raise error
+        return track

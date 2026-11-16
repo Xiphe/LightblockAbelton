@@ -21,20 +21,37 @@ class PerformanceController(ControlSurface):
         self._trace_at=0.
         self._status_at=None
         self._status_error_reported=False
+        self._display_error=None
         self.backend=None
+        self._bound_path=None
         super().__init__(c_instance)
         self.health=HealthPublisher(self._send_many,time.monotonic)
         self._bind()
 
     def _target(self):
-        return bool(config.TARGET_SET) and str(self.song().file_path)==config.TARGET_SET
+        path=str(self.song().file_path)
+        targets=getattr(config,'TARGET_SETS',())
+        if targets:
+            return (isinstance(targets,tuple) and bool(path)
+                    and all(isinstance(p,str) and bool(p) for p in targets) and path in targets)
+        return bool(path) and bool(config.TARGET_SET) and path==config.TARGET_SET
 
     def _bind(self):
         if not self._target():return False
+        path=str(self.song().file_path)
+        disposal_error=None
+        if self.backend is not None and self._bound_path!=path:
+            previous=self.backend
+            self.backend=None;self._bound_path=None
+            self._generation=None;self._frame=None;self._last=None
+            try:previous.close()
+            except Exception as exc:disposal_error=str(exc)
         if self.backend is None:
             q=Live.Song.Quantization
             quantizations={name:getattr(q,name) for name in ('q_bar','q_half','q_quarter','q_eight','q_sixtenth') if hasattr(q,name)}
             self.backend=Backend(self.song(),quantizations,config.PARAMETER_BINDINGS)
+            self._bound_path=path
+            if disposal_error:self.backend.events.append(dict(event='previous_backend_close_failed',reason=disposal_error))
         return bool(self.backend.state.groups)
 
     def build_midi_map(self,handle):
@@ -66,7 +83,8 @@ class PerformanceController(ControlSurface):
         if self._closed or len(message)!=3:return
         status,cc,value=message
         if status==0xBF and cc==109:
-            allowed=self.backend is not None and self._target() and not self.backend.busy
+            allowed=(self.backend is not None and self._target()
+                     and self._bound_path==str(self.song().file_path) and not self.backend.busy)
             self._cc(15,109 if allowed else 108,value)
             return
         if status==0xBF and cc in (78,79):
@@ -91,7 +109,7 @@ class PerformanceController(ControlSurface):
         generation,seq,key,lo,hi,end=frame
         if seq!=end:return
         command=(generation,seq,key,lo|(hi<<7))
-        if not self._target() or self.backend is None:
+        if not self._target() or self.backend is None or self._bound_path!=str(self.song().file_path):
             self._ack(seq,key,REJECT);return
         if self._last is not None and self._last[0]==command:
             self._ack(seq,key,self._last[1]);return
@@ -113,7 +131,7 @@ class PerformanceController(ControlSurface):
         try:
             with Path(config.TRACE_PATH).open('a') as target:
                 for event in events:target.write(json.dumps(event,sort_keys=True)+'\n')
-        except OSError:pass
+        except (OSError,TypeError,ValueError):pass
 
     def _status(self):
         """Private telemetry from retained Python bookkeeping, never Native reads."""
@@ -132,6 +150,7 @@ class PerformanceController(ControlSurface):
                 sampled_monotonic=now,
                 generation=self._generation,
                 allow_audio_track_creation=backend.allow_audio_track_creation,
+                display_error=self._display_error,
                 pool_unavailable=dict(backend.pool_unavailable),
                 groups=sorted(backend.state.groups),
                 reserves=[dict(group=group,row=reserve.row)
@@ -145,6 +164,18 @@ class PerformanceController(ControlSurface):
                 take=(dict(group=take.group,token=take.token&127,state=take.state,
                            row=take.row,target=take.target,anchor=take.anchor)
                       if take is not None else None))
+            inputs=backend.audio_inputs
+            if inputs is not None:
+                payload['audio_inputs']=dict(
+                    desired=dict(inputs.desired),prepared=dict(inputs.prepared_masks),
+                    available=inputs.available,monitor_owner=inputs.monitor_owner,
+                    busy=sorted(inputs.busy),failed=sorted(inputs.failed),
+                    helper_updates=len(inputs._helper_plan),
+                    tasks=[dict(group=g,stage=job.get('stage'),row=job.get('row'),
+                                revision=job.get('revision')) for g,job in sorted(inputs.jobs.items())])
+                if take is not None:
+                    payload['take']['sources']=[m.source.index for m in (take,)+tuple(getattr(take,'members',()))
+                                                if getattr(m,'source',None) is not None]
             target=Path(config.STATUS_PATH)
             temporary=target.with_name('.'+target.name+'.tmp')
             temporary.write_text(json.dumps(payload,sort_keys=True)+'\n')
@@ -162,19 +193,33 @@ class PerformanceController(ControlSurface):
         super().update_display()
         if self._closed:return
         try:
-            if self.backend is not None and self._target():
-                self.backend.tick()
-                if self._generation is not None:
-                    for fact in self.backend.drain_facts(6):self._fact(*fact)
+            if self._target():
+                self._bind()
+                remaining=[6]
+                def flush_facts():
+                    if self._generation is not None and remaining[0]>0:
+                        facts=self.backend.drain_facts(remaining[0])
+                        remaining[0]-=len(facts)
+                        for fact in facts:self._fact(*fact)
+                self.backend.tick(before_maintenance=flush_facts)
+                flush_facts()
                 state=READY if self.backend.state.groups else NO_GROUPS
                 reason=0 if state==READY else NO_REMOTE_GROUPS
                 flags=RECORDING_BUSY if self.backend.busy else SAFE_MODAL
                 self.health.publish(state,reason,flags)
+                self._display_error=None
                 self._trace()
                 self._status()
             else:self.health.publish(NO_GROUPS,NO_REMOTE_GROUPS,0)
         except Exception as exc:
-            if self.backend is not None:self.backend.events.append(dict(event='display_failed',reason=str(exc)))
+            error=type(exc).__name__+': '+str(exc)
+            if self.backend is not None:
+                if error!=self._display_error:
+                    self.backend.events.append(dict(event='display_failed',reason=str(exc),error_type=type(exc).__name__))
+                self._display_error=error
+                # Preserve diagnostic evidence even when the successful-display
+                # branch is never reached. Existing trace/status cadence applies.
+                self._trace();self._status()
             self.health.publish(FAILURE,HOST_FAILURE,RECORDING_BUSY if self.backend and self.backend.busy else 0)
 
     def disconnect(self):

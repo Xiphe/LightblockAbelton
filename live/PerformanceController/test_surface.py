@@ -50,6 +50,36 @@ class SurfaceChecks(unittest.TestCase):
         self.handshake();self.command()
         self.assertIsNone(surface.backend)
         self.assertEqual(self.instance.sent,[])
+    def test_explicit_target_tuple_allows_only_named_nonempty_paths(self):
+        with patch.object(adapter.config,'TARGET_SETS',('test.als','other.als'),create=True):
+            surface=self.make();self.assertTrue(surface._target())
+            for path,wanted in (('other.als',True),('third.als',False),('',False),('test.als.copy',False)):
+                self.song.file_path=path;self.assertEqual(surface._target(),wanted)
+        with patch.object(adapter.config,'TARGET_SETS','test.als',create=True):
+            surface=self.make();self.assertFalse(surface._target())
+    def test_switch_between_allowed_paths_rebinds_before_accepting_commands(self):
+        with patch.object(adapter.config,'TARGET_SETS',('test.als','other.als'),create=True):
+            surface=self.make();self.handshake();previous=surface.backend
+            parameter=previous.state.parameters[0][0];old=parameter.value
+            self.song.file_path='other.als';self.command(value=99)
+            self.assertEqual(parameter.value,old)
+            surface.update_display();self.assertIsNot(surface.backend,previous)
+            self.assertTrue(previous._closed);self.assertIsNone(surface._generation)
+            self.handshake();self.command(value=80)
+            self.assertAlmostEqual(surface.backend.state.parameters[0][0].value,80/127.)
+    def test_allowed_path_switch_detaches_even_if_previous_native_close_fails(self):
+        with patch.object(adapter.config,'TARGET_SETS',('test.als','other.als'),create=True):
+            surface=self.make();self.handshake();previous=surface.backend
+            self.song.file_path='other.als'
+            surface.receive_midi((0xBF,109,7))
+            self.assertEqual(self.instance.sent[-1],(0xBF,108,7))
+            with patch.object(previous,'close',side_effect=RuntimeError('old Native handles invalid')):
+                surface.update_display()
+            self.assertIsNot(surface.backend,previous)
+            self.assertEqual(surface._bound_path,'other.als')
+            self.assertIsNone(surface._generation)
+            self.handshake();self.command(value=70)
+            self.assertAlmostEqual(surface.backend.state.parameters[0][0].value,70/127.)
     def test_duplicate_complete_command_acks_without_second_toggle(self):
         surface=self.make();self.handshake()
         self.command(key=56,value=3)
@@ -126,6 +156,28 @@ class SurfaceChecks(unittest.TestCase):
         clock[0]+=.101;backend.tick()
         self.assertTrue(any(kind==5 and ((a>>3)&127)==11 and ((a>>10)&7)==3
                             for kind,a,b in backend.drain_facts(200)))
+
+    def test_display_failure_flushes_bounded_diagnostics_and_recovers(self):
+        from tempfile import TemporaryDirectory
+        import json
+        surface=self.make();self.handshake();backend=surface.backend
+        with TemporaryDirectory() as temporary:
+            trace=Path(temporary)/'events.jsonl';status=Path(temporary)/'status.json'
+            with patch.object(adapter.config,'TRACE_PATH',str(trace)), patch.object(adapter.config,'STATUS_PATH',str(status)):
+                with patch.object(backend,'tick',side_effect=RuntimeError('Native probe failure')):
+                    with patch.object(adapter.time,'monotonic',return_value=100.):
+                        for unused in range(3):surface.update_display()
+                    rows=[json.loads(line) for line in trace.read_text().splitlines()]
+                    errors=[r for r in rows if r['event']=='display_failed']
+                    self.assertEqual(len(errors),1)
+                    self.assertEqual(errors[0]['reason'],'Native probe failure')
+                    self.assertEqual(json.loads(status.read_text())['display_error'],
+                                     'RuntimeError: Native probe failure')
+                    self.assertFalse(backend.events)
+                    with patch.object(adapter.time,'monotonic',return_value=100.6):surface.update_display()
+                    self.assertEqual(len(trace.read_text().splitlines()),len(rows))
+                with patch.object(adapter.time,'monotonic',return_value=101.2):surface.update_display()
+                self.assertIsNone(json.loads(status.read_text())['display_error'])
 
     def test_private_status_reads_retained_fields_without_native_graph_reads(self):
         from tempfile import TemporaryDirectory

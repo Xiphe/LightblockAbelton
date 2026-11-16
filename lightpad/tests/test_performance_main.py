@@ -19,7 +19,7 @@ def read_state(vm,name,source=SOURCE):
     if len(names)!=vm.num_globals:raise AssertionError('Compiler/source global layout changed')
     aliases={'currentView':'view','currentMute':'muted','currentBatch':'batch','currentGuide':'guide','currentToken':'token'}
     selected=struct.unpack_from('<i',vm.memory,vm.stack_end+names.index('selected')*4)[0]
-    if name=='currentValue':return vm.memory[vm.heap_start+selected*6]
+    if name=='currentValue':return vm.memory[vm.heap_start+selected*6]&127
     return struct.unpack_from('<i',vm.memory,vm.stack_end+names.index(aliases.get(name,name))*4)[0]
 
 class PerformanceMainTests(unittest.TestCase):
@@ -34,7 +34,7 @@ class PerformanceMainTests(unittest.TestCase):
         self.model(0,127,0)
         for key in range(48):self.model(1,key,64 if key%6<2 else 0)
         for group in range(8):self.model(3,group,100|70<<7|50<<14|1<<21|1<<22)
-        self.model(6,0,120*128);self.model(6,1,4|4<<7|1<<14)
+        self.model(6,0,120*128);self.model(6,1,4|4<<7|1<<14|255<<16)
         self.model(4,8|1024<<4,0)
     def model(self,kind,a,b,epoch=1,revision=None):
         self.revision=(self.revision+1)&8191 if revision is None else revision
@@ -283,6 +283,54 @@ class PerformanceMainTests(unittest.TestCase):
         self.model(0,self.frames()[-1][1],0);self.model(1,1,100);self.model(1,0,20)
         self.assertEqual(self.vm.memory[self.vm.heap_start+1],100)
         self.assertEqual(self.state('currentView'),1);self.assertEqual(self.state('currentValue'),wanted)
+    def replacement_failure(self, x, y):
+        token=self.begin();self.take(token,3,1)
+        self.touch('Start',1,x,y);self.touch('End',1,x,y)
+        command=self.frames()[-1];following=command[3]>>7
+        self.model(2,command[2]|command[1]<<7,0)
+        # A different token's failure must not complete this promise.
+        self.take((following+1)&127,5,0)
+        self.assertEqual(self.state('currentView'),2)
+        # No intermediate preparing/countdown/recording fact was received.
+        self.take(following,5,0)
+        self.assertEqual(self.state('currentView'),0)
+        self.assertEqual(self.state('currentToken'),following)
+        self.assertIn([191,107,0],self.vm.midi)
+    def test_failed_promised_next_returns_without_intermediate_following_fact(self):
+        self.replacement_failure(10,10)
+    def test_failed_promised_retry_returns_without_intermediate_replacement_fact(self):
+        self.replacement_failure(3,10)
+    def test_no_source_down_is_local_yellow_X_but_L_still_clears(self):
+        self.model(6,1,4|4<<7|1<<14|254<<16)
+        self.touch('Start',0,1,1);self.touch('Move',0,1,5);self.repaint()
+        self.assertEqual(self.vm.leds[0][0],0xff9118)
+        self.assertEqual(self.vm.leds[1][1],0xff9118)
+        self.assertNotIn(0xffffff,[pixel for row in self.vm.leds for pixel in row])
+        self.touch('End',0,1,5)
+        self.assertEqual(self.frames(),[]);self.assertEqual(self.state('currentView'),0)
+        self.clear()
+        self.assertEqual(self.frames()[-1][2:],(104,0))
+    def test_horizontal_monitor_preview_and_pending_survive_stale_ack(self):
+        def swipe(group):
+            x=group%4*4+1;y=group//4*4+1
+            self.touch('Start',0,x,y);self.touch('Move',0,x+4,y);self.repaint()
+            self.assertEqual(self.vm.leds[int(y+2)][int(x)],0x2080ff)
+            self.touch('End',0,x+4,y)
+            return self.frames()[-1]
+        first=swipe(0);latest=swipe(1)
+        self.assertEqual(first[2:],(57,0));self.assertEqual(latest[2:],(57,1))
+        self.model(6,1,4|4<<7|1<<14|255<<16|1<<24)
+        self.model(2,57|first[1]<<7,0);self.repaint()
+        self.assertEqual(self.vm.leds[3][5],0x2080ff)
+        self.model(2,57|latest[1]<<7,1);self.repaint()
+        self.assertEqual(self.vm.leds[3][5],0x2080ff)
+        self.model(6,1,4|4<<7|1<<14|255<<16|3<<24);self.repaint()
+        self.assertEqual(self.vm.leds[3][9],0x2080ff)
+    def test_mute_pending_dot_has_priority_over_monitor_dot(self):
+        self.model(6,1,4|4<<7|1<<14|255<<16|1<<24)
+        self.touch('Start',0,1,1);self.touch('Start',1,5,1);self.repaint()
+        self.assertEqual(self.vm.leds[3][1],0xb0b0b0)
+        self.assertEqual(self.vm.leds[3][5],0xb0b0b0)
     @classmethod
     def tearDownClass(cls):
         print('performance-main code/heap/globals:',struct.unpack_from('<5H',cls.program)[1:])

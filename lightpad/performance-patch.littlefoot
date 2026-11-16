@@ -1,0 +1,220 @@
+// Local Audio patch selector. Same semantic F2 transport as performance-main.
+// Group context, contacts, names and desired-state feedback belong to this program.
+#heapsize: 96
+int down;
+int epoch;
+int revision;
+int seen;
+int sequence;
+int resync;
+int resyncAt;
+int groupSeen;
+int assignmentSeen;
+int sourceSeen;
+int routeSeen;
+int announced;
+int named;
+int nameAt;
+int flashMask;
+int flashGroup;
+int flashAt;
+
+int dim(int c, float amount) { return blendARGB(0xff000000, (int(amount * 255.0) << 24) | (c & 0xffffff)); }
+int countBits(int bits) { int n = 0; while (bits != 0) { bits = bits & (bits - 1); ++n; } return n; }
+int desired(int g) { return getHeapByte(32 + g); }
+int route(int g) { return getHeapByte(64 + g); }
+int tile(int f) { return getHeapByte(80 + f); }
+int rgb(int word) { return makeARGB(255, (word & 127) * 2, ((word >> 7) & 127) * 2, ((word >> 14) & 127) * 2); }
+bool sourceAvailable(int s) { return (getHeapInt(72 + s * 4) & 2097152) != 0; }
+bool held(int which)
+{
+    for (int f = 0; f < 16; ++f) if ((down & (1 << f)) != 0 && tile(f) == which) return true;
+    return false;
+}
+int heldGroup()
+{
+    int group = 127;
+    for (int f = 0; f < 16; ++f)
+        if ((down & (1 << f)) != 0 && tile(f) < 8)
+        { if (group != 127 && group != tile(f)) return 126; group = tile(f); }
+    return group;
+}
+int tileAt(int x, int y)
+{
+    if (y < 4) return x % 4 < 3 ? (y / 2) * 4 + x / 4 : 127;
+    if (y < 5) return 127;
+    int input = (y - 5) / 2 * 5 + x / 3;
+    return input < 2 ? 8 + input : 127;
+}
+bool pending(int g)
+{ return getHeapByte(56 + g) != 0 || (route(g) & 3) != desired(g) || ((route(g) >> 2) & 3) != desired(g) || (route(g) & 16) != 0; }
+void flash(int g, int mask)
+{ flashGroup = g; flashMask = mask; flashAt = getMillisecondCounter(); }
+void sendMask(int g)
+{
+    sequence = (sequence + 1) & 127;
+    setHeapByte(48 + g, sequence); setHeapByte(56 + g, 1);
+    sendCC(0, 69, epoch); sendCC(0, 70, sequence); sendCC(0, 71, 48 + g);
+    sendCC(0, 72, desired(g)); sendCC(0, 73, 0); sendCC(0, 74, sequence);
+}
+void toggle(int g, int mask)
+{
+    int allowed = desired(g) | (sourceAvailable(0) ? 1 : 0) | (sourceAvailable(1) ? 2 : 0);
+    if ((mask & ~allowed) != 0) flash(g, mask & ~allowed);
+    mask = mask & allowed;
+    if (mask != 0) { setHeapByte(32 + g, desired(g) ^ mask); sendMask(g); }
+}
+void ready()
+{
+    if (!announced && groupSeen == 255 && assignmentSeen == 255 && routeSeen == 255 && sourceSeen == 3)
+    { announced = 1; sendCC(15, 108, 37); sendCC(15, 106, countBits(down)); sendCC(15, 107, 0); }
+}
+void initialise()
+{
+    for (int i = 0; i < 96; ++i) setHeapByte(i, 0);
+    for (int f = 0; f < 16; ++f) setHeapByte(80 + f, 127);
+    named = -1; flashGroup = -1; flashAt = -1000;
+    sendCC(15, 110, 19);
+}
+void touchEvent(int kind, int f, float x, float y)
+{
+    if (f < 0 || f >= 16) return;
+    int bit = 1 << f;
+    if (kind == 1)
+    {
+        setHeapByte(80 + f, 127);
+        down = down | bit;
+        if (announced)
+        {
+            int t = tileAt(int(clamp(0.0, 14.0, x * 7.5)), int(clamp(0.0, 14.0, y * 7.5)));
+            if (t < 8 && (getHeapInt(t * 4) & 2097152) == 0) t = 127;
+            setHeapByte(80 + f, t);
+            int group = heldGroup();
+            if (t >= 8 && t < 10) { named = t - 8; nameAt = getMillisecondCounter(); }
+            if (group < 8)
+            {
+                if (t >= 8 && t < 10) toggle(group, 1 << (t - 8));
+                else if (t < 8)
+                    toggle(group, (held(8) ? 1 : 0) | (held(9) ? 2 : 0));
+            }
+        }
+    }
+    else if (kind == 3 && (down & bit) != 0)
+    { down = down & ~bit; setHeapByte(80 + f, 127); nameAt = getMillisecondCounter(); }
+    else return;
+    sendCC(15, 106, countBits(down));
+}
+void touchStart(int i, float x, float y, float z, float vz) { touchEvent(1, i, x, y); }
+void touchMove(int i, float x, float y, float z, float vz) {}
+void touchEnd(int i, float x, float y, float z, float vz) { touchEvent(3, i, x, y); }
+void handleMessage(int a, int b, int header)
+{
+    if ((header & 255) != 242 || header < 0 || ((a | b) & 0xf0000000) != 0) return;
+    int kind = (header >> 8) & 7, gen = (header >> 11) & 127, rev = (header >> 18) & 8191;
+    if (gen == 0 || (kind != 0 && gen != epoch)) return;
+    int distance = (rev - revision) & 8191;
+    if (gen == epoch && seen && (distance == 0 || distance >= 4096)) return;
+    if (kind != 0 && distance > 1) resync = 1;
+    revision = rev; seen = 1;
+    if (kind == 0)
+    {
+        if (gen != epoch) sequence = a & 127;
+        epoch = gen; resync = 0;
+        for (int g = 0; g < 8; ++g) if (getHeapByte(56 + g) != 0) sendMask(g);
+        if (announced) { sendCC(15, 108, 37); sendCC(15, 106, countBits(down)); sendCC(15, 107, 0); }
+        return;
+    }
+    if (kind == 1 && a >= 48 && a < 56 && b < 4)
+    {
+        int g = a - 48;
+        setHeapByte(40 + g, b);
+        if (getHeapByte(56 + g) == 0) setHeapByte(32 + g, b);
+        assignmentSeen = assignmentSeen | (1 << g);
+    }
+    if (kind == 7) { kind = 2; b = 16383; }
+    if (kind == 2)
+    {
+        int g = (a & 127) - 48;
+        if (g >= 0 && g < 8 && getHeapByte(56 + g) != 0 && (a >> 7) == getHeapByte(48 + g))
+        {
+            setHeapByte(56 + g, 0);
+            if (b < 4) setHeapByte(40 + g, b);
+            else flash(g, desired(g) ^ getHeapByte(40 + g));
+            setHeapByte(32 + g, getHeapByte(40 + g));
+        }
+    }
+    if (kind == 3 && a < 8 && b < 16777216)
+    { setHeapInt(a * 4, b); groupSeen = groupSeen | (1 << a); }
+    if (kind == 6)
+    {
+        if (a >= 8 && a < 16 && b < 64)
+        {
+            int g = a - 8;
+            if ((b & 32) != 0 && (route(g) & 32) == 0) flash(g, desired(g) ^ ((b >> 2) & 3));
+            setHeapByte(64 + g, b); routeSeen = routeSeen | (1 << g);
+        }
+        if (a >= 24 && a < 26 && b < 4194304)
+        { setHeapInt(72 + (a - 24) * 4, b); sourceSeen = sourceSeen | (1 << (a - 24)); }
+    }
+    ready();
+}
+int nameColumn(int source, int column)
+{
+    int word = column / 7;
+    if (source == 0) word = word == 0 ? 0x22201f1 : word == 1 ? 0x9f0adf0 : word == 2 ? 0xf0f6f0f : 0x9b;
+    else word = word == 0 ? 0xf2f0ddb : word == 1 ? 0xbb02220 : 0xfdf0d;
+    return (word >> ((column % 7) * 4)) & 15;
+}
+void drawName()
+{
+    if (named < 0 || !held(8 + named))
+    { named = held(8) ? 0 : held(9) ? 1 : -1; nameAt = getMillisecondCounter(); }
+    if (named < 0) return;
+    int length = named == 0 ? 23 : 19;
+    int start = ((getMillisecondCounter() - nameAt) / 160) % (length + 8);
+    for (int x = 0; x < 15; ++x)
+    {
+        int column = (start + x) % (length + 8);
+        if (column < length)
+            for (int y = 0; y < 4; ++y)
+                if ((nameColumn(named, column) & (1 << y)) != 0) fillPixel(0xffb0b0b0, x, y);
+    }
+}
+void repaint()
+{
+    if (resync && getMillisecondCounter() - resyncAt >= 1000)
+    { resync = 0; resyncAt = getMillisecondCounter(); sendCC(15, 110, 19); }
+    fillRect(0xff000000, 0, 0, 15, 15);
+    if (!announced) return;
+    int group = heldGroup();
+    bool label = group == 127 && (held(8) || held(9));
+    float pulse = 1.0 - abs(float(getMillisecondCounter() % 1000) / 500.0 - 1.0);
+    bool flashing = getMillisecondCounter() - flashAt < 250;
+    for (int g = 0; g < 8; ++g)
+    {
+        int facts = getHeapInt(g * 4);
+        if ((facts & 2097152) == 0) continue;
+        float amount = label ? .03 : group == g ? .65 : .12;
+        if (pending(g)) amount = group == g ? .45 + .2 * pulse : .12 + .35 * pulse;
+        int c = flashing && flashGroup == g ? 0xffff2020 : rgb(facts);
+        fillRect(dim(c, amount), g % 4 * 4, g / 4 * 2, 3, 2);
+    }
+    for (int s = 0; s < 2; ++s)
+    {
+        int c = rgb(getHeapInt(72 + s * 4));
+        float empty = sourceAvailable(s) ? .12 : .025;
+        bool wanted = group < 8 && (desired(group) & (1 << s)) != 0;
+        float upper = wanted ? .65 : empty;
+        float lower = upper;
+        if (group < 8 && pending(group))
+        {
+            float previous = ((route(group) >> 2) & (1 << s)) != 0 ? .65 : empty;
+            lower = previous + (upper - previous) * pulse;
+        }
+        if (held(8 + s) && group >= 8) { upper = .8; lower = .8; }
+        if (flashing && (flashMask & (1 << s)) != 0 && (group == flashGroup || group == 127)) c = 0xffff2020;
+        fillRect(dim(c, upper), s * 3, 5, 3, 1);
+        fillRect(dim(c, lower), s * 3, 6, 3, 1);
+    }
+    if (label) drawName();
+}

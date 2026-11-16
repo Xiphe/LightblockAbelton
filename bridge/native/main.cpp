@@ -27,7 +27,7 @@
 namespace bp = roli::BlocksProtocol;
 static volatile sig_atomic_t stopping=0;
 static void signalHandler(int) { stopping=1; }
-struct Options { std::string serial, source, modalSource, statusSource, status, lock; int trialCycles=0; bool optimisticFaderSpike=false, audioPerformance=false; int spikeAckDelayMs=0; };
+struct Options { std::string serial, source, modalSource, patchSource, statusSource, status, lock; int trialCycles=0; bool optimisticFaderSpike=false, audioPerformance=false; int spikeAckDelayMs=0; };
 struct Singleton {
     int fd=-1;
     explicit Singleton(const std::string& path) { fd=open(path.c_str(),O_CREAT|O_RDWR|O_NOFOLLOW,0600); if(fd<0 || flock(fd,LOCK_EX|LOCK_NB)) throw std::runtime_error("bridge already running or lock unavailable"); }
@@ -130,7 +130,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     roli::Block::Ptr block;
     roli::Block::Program* expected=nullptr;
     Transport* loadedTransport=nullptr;
-    juce::String source, modalSource, statusSource;
+    juce::String source, modalSource, patchSource, statusSource;
     std::atomic<health::Program> programKind{health::Program::main};
     std::atomic<bool> closeRequested{false}, readySignal{false}, streamResetRequested{false};
     health::Inbox healthInbox;
@@ -141,6 +141,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     std::string notificationResult;
     double lastStatusSeed=-10000, healthChangedAt=0;
     bool metronomeActive() const { return programKind.load()==health::Program::metronome; }
+    bool patchActive() const { return programKind.load()==health::Program::patch; }
     bool statusActive() const { return programKind.load()==health::Program::status; }
     bool statusEnabled() const { return !statusSource.isEmpty(); }
     std::mutex touchMutex;
@@ -239,6 +240,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     std::vector<roli::ControlButton*> modeButtons;
     std::atomic<int> permissionReply{-1};
     int permissionNonce=0, pendingNonce=-1;
+    health::Program requestedModal=health::Program::metronome;
     uint64_t permissionEpoch=0;
     double permissionAt=0, swapAt=0, lastSwapMs=0, lastReadyMs=0, readyAt=0;
     bool readyReported=false;
@@ -277,29 +279,36 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     void handleClick(button_hold::Action click) {
         if(options.optimisticFaderSpike) return;
         if(statusActive()) return; // Status details are requested only by tapping its icon.
-        if(click==button_hold::Action::longPress) {
+        const bool held=click==button_hold::Action::longPress;
+        if(held && patchSource.isEmpty()) {
             ++longPresses; event("long_press","input selection reserved; no input changes"); status(); return;
         }
-        ++singleClicks; event("single_click");
+        if(held) { ++longPresses; event("long_press"); }
+        else { ++singleClicks; event("single_click"); }
         if(!loaded || fault || heldTouches.load()!=0 || pendingNonce>=0
             || (options.audioPerformance && (performanceDeviceBusy.load() || healthMonitor.busy()))) {
             event("switch_ignored","not idle, not loaded, or permission pending"); return;
         }
-        if(metronomeActive()) { switchProgram(health::Program::main); return; }
-        requestMetronome();
+        auto target=health::modeTarget(programKind.load(),held,!patchSource.isEmpty());
+        if(target==health::Program::main) { switchProgram(target); return; }
+        requestModal(target);
     }
-    void requestMetronome() {
-        if(statusActive() || modalSource.isEmpty() || !loaded || heldTouches.load()!=0 || pendingNonce>=0) return;
+    void requestMetronome() { requestModal(health::Program::metronome); }
+    void requestModal(health::Program target) {
+        if(statusActive() || (target==health::Program::metronome && modalSource.isEmpty())
+            || (target==health::Program::patch && patchSource.isEmpty())
+            || !loaded || heldTouches.load()!=0 || pendingNonce>=0) return;
+        requestedModal=target;
         pendingNonce=(++permissionNonce)&127;
         permissionEpoch=inputEpoch.load(); permissionAt=now(); permissionReply=-1;
         event("permission_request",juce::String(pendingNonce));
         hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,109,pendingNonce));
     }
     void switchProgram(health::Program target,bool closeCancelsHeld=false) {
-        if(!block || !block->isConnected() || !loaded || (target==health::Program::metronome && modalSource.isEmpty()) || (target==health::Program::status && !statusEnabled())) return;
+        if(!block || !block->isConnected() || !loaded || (target==health::Program::metronome && modalSource.isEmpty()) || (target==health::Program::patch && patchSource.isEmpty()) || (target==health::Program::status && !statusEnabled())) return;
         {
             std::lock_guard<std::mutex> touchLock(touchMutex);
-            if((!closeCancelsHeld && heldTouches.load()!=0) || (target==health::Program::metronome && inputEpoch.load()!=permissionEpoch)) {
+            if((!closeCancelsHeld && heldTouches.load()!=0) || ((target==health::Program::metronome || target==health::Program::patch) && inputEpoch.load()!=permissionEpoch)) {
                 event("switch_ignored","new pad input after permission query"); return;
             }
             loaded=false; readySignal=false;
@@ -310,8 +319,8 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         { std::lock_guard<std::mutex> lock(mutex); queue.clear(); framer.reset(); }
         programKind=target; lastStatusSeed=-10000; readyReported=false; swapAt=now(); ++swapCount;
         event("swap_begin");
-        auto text=target==health::Program::status?statusSource:target==health::Program::metronome?modalSource:source;
-        auto path=target==health::Program::status?options.statusSource:target==health::Program::metronome?options.modalSource:options.source;
+        auto text=target==health::Program::status?statusSource:target==health::Program::metronome?modalSource:target==health::Program::patch?patchSource:source;
+        auto path=target==health::Program::status?options.statusSource:target==health::Program::metronome?options.modalSource:target==health::Program::patch?options.patchSource:options.source;
         auto program=std::make_unique<SourceProgram>(*block,text,juce::File(path).getParentDirectory());
         expected=program.get();
         auto result=block->setProgram(std::move(program),roli::Block::ProgramPersistency::setAsTemp);
@@ -389,7 +398,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
                 bool fresh=now()-permissionAt<=1000;
                 event(allowed?"permission_allowed":"permission_denied",juce::String(token));
                 pendingNonce=-1;
-                if(allowed && fresh) switchProgram(health::Program::metronome);
+                if(allowed && fresh) switchProgram(requestedModal);
             }
         }
         if(pendingNonce>=0 && now()-permissionAt>1000) {
@@ -407,13 +416,20 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     size_t highWater=0;
     unsigned statusTicks=0;
     explicit Service(Options o):options(std::move(o)),detector(options.serial),topology(detector,true) {
-        if(options.optimisticFaderSpike) { options.modalSource.clear(); options.statusSource.clear(); options.trialCycles=0; }
+        if(options.optimisticFaderSpike) { options.modalSource.clear(); options.patchSource.clear(); options.statusSource.clear(); options.trialCycles=0; }
         juce::File file(options.source); if(!file.existsAsFile() || file.getSize()>1024*1024) throw std::runtime_error("source is missing or too large");
         source=file.loadFileAsString(); if(source.isEmpty()) throw std::runtime_error("source is empty");
         if(!options.modalSource.empty()) {
             juce::File modalFile(options.modalSource);
             if(!modalFile.existsAsFile() || modalFile.getSize()>1024*1024) throw std::runtime_error("modal source is missing or too large");
             modalSource=modalFile.loadFileAsString();
+        }
+        if(!options.patchSource.empty()) {
+            if(!options.audioPerformance) throw std::runtime_error("patch source requires Audio performance mode");
+            juce::File patchFile(options.patchSource);
+            if(!patchFile.existsAsFile() || patchFile.getSize()>1024*1024) throw std::runtime_error("patch source is missing or too large");
+            patchSource=patchFile.loadFileAsString();
+            if(patchSource.isEmpty()) throw std::runtime_error("patch source is empty");
         }
         if(!options.statusSource.empty()) {
             juce::File statusFile(options.statusSource);
@@ -436,11 +452,11 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
                 }
                 return;
             }
-            if(m.getChannel()==16 && m.getControllerNumber()==108 && (m.getControllerValue()==34 || m.getControllerValue()==35 || m.getControllerValue()==36)) {
+            if(m.getChannel()==16 && m.getControllerNumber()==108 && (m.getControllerValue()>=34 && m.getControllerValue()<=37)) {
                 // This is model-ready instrumentation, not an optical timestamp.
                 std::lock_guard<std::mutex> touchLock(touchMutex);
                 if(loaded && !fault && loadedGeneration.load()==sender->generation
-                    && m.getControllerValue()==(statusActive()?36:metronomeActive()?35:34)) {
+                    && m.getControllerValue()==(statusActive()?36:metronomeActive()?35:patchActive()?37:34)) {
                     readyMarkerAt=now(); readySignal=true; triggerAsyncUpdate();
                 }
                 return;
@@ -761,7 +777,7 @@ int main(int argc,char** argv) {
                 if(options.spikeAckDelayMs<0 || options.spikeAckDelayMs>10000) throw std::runtime_error("invalid spike ACK delay");
                 continue;
             }
-            if(arg=="--help") { std::cout<<"lightpad-bridge --device SERIAL --source FILE [--modal-source FILE] [--status-source FILE] [--trial-cycles N] [--status-file FILE] [--lock-file FILE]\n"; return 0; } if(arg=="--version") { std::cout<<"lightpad-bridge 0.2.0\n"; return 0; } if(i+1>=argc) throw std::runtime_error("missing argument value"); std::string value=argv[++i]; if(arg=="--device") options.serial=value; else if(arg=="--source") options.source=value; else if(arg=="--modal-source") options.modalSource=value; else if(arg=="--status-source") options.statusSource=value; else if(arg=="--trial-cycles") { options.trialCycles=std::stoi(value); if(options.trialCycles<0 || options.trialCycles>6) throw std::runtime_error("invalid trial cycles"); } else if(arg=="--status-file") options.status=value; else if(arg=="--lock-file") options.lock=value; else throw std::runtime_error("unknown argument: "+arg); }
+            if(arg=="--help") { std::cout<<"lightpad-bridge --device SERIAL --source FILE [--modal-source FILE] [--patch-source FILE] [--status-source FILE] [--trial-cycles N] [--status-file FILE] [--lock-file FILE]\n"; return 0; } if(arg=="--version") { std::cout<<"lightpad-bridge 0.2.0\n"; return 0; } if(i+1>=argc) throw std::runtime_error("missing argument value"); std::string value=argv[++i]; if(arg=="--device") options.serial=value; else if(arg=="--source") options.source=value; else if(arg=="--modal-source") options.modalSource=value; else if(arg=="--patch-source") options.patchSource=value; else if(arg=="--status-source") options.statusSource=value; else if(arg=="--trial-cycles") { options.trialCycles=std::stoi(value); if(options.trialCycles<0 || options.trialCycles>6) throw std::runtime_error("invalid trial cycles"); } else if(arg=="--status-file") options.status=value; else if(arg=="--lock-file") options.lock=value; else throw std::runtime_error("unknown argument: "+arg); }
         if(options.audioPerformance && options.optimisticFaderSpike) throw std::runtime_error("performance and fader-spike modes are exclusive");
         if(options.spikeAckDelayMs && !options.optimisticFaderSpike) throw std::runtime_error("spike ACK delay requires spike mode");
         if(options.serial.size()!=16 || options.source.empty()) throw std::runtime_error("--device requires exact 16-character serial and --source is required");

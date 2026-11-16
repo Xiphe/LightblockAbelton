@@ -17,11 +17,13 @@ struct Feedback {
     int header() const { return 0xf2 | (kind<<8) | (epoch<<11) | (revision<<18); }
 };
 inline bool byte(int n) { return n>=0 && n<128; }
-inline bool parameter(int key) { return (key>=0 && key<48) || key==114 || key==115; }
+inline bool parameter(int key) { return (key>=0 && key<56) || key==57 || key==114 || key==115; }
 inline bool valid(Intent v) {
     if(!byte(v.seq)||!byte(v.key)||v.value<0||v.value>16383) return false;
     if(v.key<48) return v.value<=127;
+    if(v.key<56) return v.value<=3;
     if(v.key==56) return v.value>0 && v.value<=255;
+    if(v.key==57) return v.value<8;
     if(v.key>=64 && v.key<=103) {
         int action=(v.key-64)%5;
         return (action!=0 && action!=1 && action!=4) || v.value<128;
@@ -92,7 +94,7 @@ class Reconciler {
     struct Fact { bool known=false,dirty=false; int kind=0; uint32_t a=0,b=0; };
     struct Seen { bool known=false; Intent intent; bool completed=false; int actual=0; };
     std::array<Parameter,128> parameters{};
-    std::array<Fact,78> facts{};
+    std::array<Fact,97> facts{};
     // Availability is a presentation gate, separate from confirmed Native
     // group state. A fresh program receives all6 field facts before it can act.
     std::array<uint8_t,8> initializedFields{};
@@ -121,12 +123,16 @@ class Reconciler {
     static int factIndex(int kind,uint32_t a) {
         if(kind==1) {
             if(a<48) return int(a);
+            if(a<56) return 78+int(a)-48;
+            if(a==57) return 96;
             if(a==114||a==115) return int(a)-66;
         }
         if(kind==3 && a<8) return 50+int(a);
         if(kind==4 && (a&15)<=8 && (a>>4)<(1u<<21)) return 58+int(a&15);
         if(kind==5 && a<(1u<<26) && ((a>>10)&7)<=5) return 67+int(a&7);
         if(kind==6 && a<=2) return 75+int(a);
+        if(kind==6 && a>=8 && a<16) return 86+int(a)-8;
+        if(kind==6 && a>=24 && a<26) return 94+int(a)-24;
         return -1;
     }
     bool setFact(int kind,uint32_t a,uint32_t b,bool force=false) {
@@ -177,6 +183,10 @@ class Reconciler {
                 if(wire.key==115) value=(value&~(127u<<7))|(uint32_t(actual)<<7);
                 setFact(6,1,value);
             }
+        }
+        if(actual!=rejected && wire.key==57 && actual<8) {
+            auto& meter=facts[76];
+            if(meter.known) setFact(6,1,(meter.b&0xffffffu)|(uint32_t(actual+1)<<24));
         }
         if(timedOut) ++timedOutCommands;
     }
@@ -300,7 +310,7 @@ public:
         // session-reset handshake has completed.
         if(!liveReady || value.generation!=epoch || value.seq<0||value.seq>127
            || factIndex(value.kind,value.a)<0 || value.b>0xfffffff
-           || (value.kind==1 && !(value.a<48?value.b<=128:
+           || (value.kind==1 && !(value.a<48?value.b<=128:value.a==57?value.b<=8:
                 parameter(int(value.a))&&valid(Intent{0,int(value.a),int(value.b)})))) {
             ++ignoredReplies;return;
         }
@@ -317,6 +327,13 @@ public:
         if(commandCount) {
             auto cmd=commands[size_t(commandHead)];
             key=cmd.intent.key;deviceSeq=cmd.intent.seq;value=cmd.intent.value;serial=cmd.serial;received=cmd.received;
+            // A just-selected source must reach Live before Begin for that
+            // group, even though replaceable state normally follows commands.
+            if(key>=64 && key<=103) {
+                const int patchKey=48+(key-64)/5;
+                auto& patch=parameters[size_t(patchKey)];
+                if(patch.dirty) {key=patchKey;deviceSeq=patch.deviceSeq;value=patch.desired;serial=patch.serial;received=patch.received;}
+            }
         } else {
             for(int n=0;n<128;++n) {
                 int candidate=(parameterCursor+n)%128;
@@ -367,9 +384,9 @@ public:
             int index=(replyCursor+n)%128;
             if(parameterReplies[size_t(index)]) {auto value=*parameterReplies[size_t(index)];parameterReplies[size_t(index)].reset();replyCursor=(index+1)%128;return stamp(value);}
         }
-        for(int n=0;n<78;++n) {
-            int index=(factCursor+n)%78;auto& f=facts[size_t(index)];
-            if(f.dirty) {f.dirty=false;factCursor=(index+1)%78;return stamp(Feedback{f.kind,f.a,f.b,epoch,0});}
+        for(size_t n=0;n<facts.size();++n) {
+            auto index=(size_t(factCursor)+n)%facts.size();auto& f=facts[index];
+            if(f.dirty) {f.dirty=false;factCursor=int((index+1)%facts.size());return stamp(Feedback{f.kind,f.a,f.b,epoch,0});}
         }
         return {};
     }
