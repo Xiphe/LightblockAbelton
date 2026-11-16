@@ -22,7 +22,7 @@ The existing Temple of Loops installation already has this structure. Its source
 
 Only one group monitors live input at a time. Source selection or a horizontal swipe selects that group. Group mute, volume and effects apply to its monitored signal as well as its loops.
 
-New recordings reuse quiet compatible tracks with an empty slot in the current phrase. Earlier clips keep their own source name and color. When `ALLOW_AUDIO_TRACK_CREATION = True`, maintenance may add tracks before `[Remote]`; insertion can interrupt audio under heavy load. No instruments or source effect racks are cloned.
+New recordings use the first available direct Audio track from left to right with an empty slot in the current phrase. Names and existing input routing do not give a later track priority. Effects and mixer settings stay intact; preparation adapts the chosen track's recording input and monitoring. Every subgroup's children stay outside this pool. Earlier clips keep their own source name and color. When `ALLOW_AUDIO_TRACK_CREATION = True`, maintenance may add tracks before `[Remote]`; insertion can interrupt audio under heavy load. No instruments or source effect racks are cloned.
 
 ## Local configuration
 

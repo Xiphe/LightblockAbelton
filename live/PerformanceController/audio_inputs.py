@@ -268,13 +268,19 @@ class AudioInputs:
         return (self.desired.get(group,0)|(self.prepared_masks.get(group,0)<<2)
                 |(int(group in self.busy)<<4)|(int(group in self.failed)<<5))
 
+    def available_lane(self,track,parent,row):
+        # Pool membership is structural, never a source name or sound preset.
+        return (same(getattr(track,'group_track',None),parent)
+                and not track.is_foldable and track.has_audio_input
+                and not track.is_frozen and not track.arm
+                and self.backend.recording._quiet(track)
+                and 0<=row<len(track.clip_slots)
+                and not track.clip_slots[row].has_clip
+                and not track.clip_slots[row].is_triggered)
+
     def compatible(self,track,parent,row,source):
-        b=self.backend
-        if (track.is_foldable or not track.has_audio_input or track.is_frozen or track.arm
-            or str(track.name).startswith(('[Patch]','[Return]','[Input '))
-            or not b.recording._quiet(track) or row>=len(track.clip_slots)
-            or track.clip_slots[row].has_clip or track.clip_slots[row].is_triggered):return False
-        return (b._parent_output(track,parent) and track.current_monitoring_state==OFF
+        return (self.available_lane(track,parent,row)
+                and track.current_monitoring_state==OFF
                 and route_equal(track.input_routing_type,source.route)
                 and route_equal(track.input_routing_channel,source.channel))
 
@@ -310,7 +316,18 @@ class AudioInputs:
             selected=self.selected(group)
             reserve=b.reserves.get(group)
             if reserve is not None and self.validate(reserve,group,row):
-                self.busy.discard(group);self.failed.discard(group);return
+                # A cancelled/deleted earlier slot can become free while a later
+                # reserve is ready. Reorder only in maintenance, never dispatch.
+                excluded=self.excluded(active)
+                first=[]
+                for track in item.tracks:
+                    if (not any(same(track,t) for t in excluded)
+                            and self.available_lane(track,item.group,row)):
+                        first.append(track)
+                        if len(first)==len(selected):break
+                if len(first)==len(reserve.members) and all(
+                        same(track,m.track) for track,m in zip(first,reserve.members)):
+                    self.busy.discard(group);self.failed.discard(group);return
             b.reserves.pop(group,None)
             job=self.jobs.get(group)
             if job is None or job['revision']!=self.revisions.get(group) or job['row']!=row:
@@ -320,29 +337,29 @@ class AudioInputs:
             excluded=self.excluded(active)+[m.track for m in job['members']]
             source=selected[len(job['members'])]
             if job['track'] is None:
-                candidates=[t for t in item.tracks if not any(same(t,e) for e in excluded)]
-                track=next((t for t in candidates if self.compatible(t,item.group,row,source)),None)
-                if track is not None:
+                track=next((t for t in item.tracks
+                            if not any(same(t,e) for e in excluded)
+                            and self.available_lane(t,item.group,row)),None)
+                if track is not None and self.compatible(track,item.group,row,source):
                     job['members'].append(Destination(source,track,track.clip_slots[row]))
                 else:
-                    track=next((t for t in candidates if not t.is_foldable and t.has_audio_input
-                                and not str(t.name).startswith(('[Patch]','[Return]','[Input '))
-                                and not t.is_frozen and not t.arm and b.recording._quiet(t)
-                                and row<len(t.clip_slots) and not t.clip_slots[row].has_clip
-                                and not t.clip_slots[row].is_triggered),None)
                     if not b.allow_audio_track_creation:raise ValueError('prepared Audio pool unavailable')
-                    if track is None:
+                    created=track is None
+                    if created:
                         track=b._create_audio_lane(group,row)
                         if track is None:return
-                    job['track']=track;job['stage']='monitor';job['at']=b.now();return
+                    job['track']=track;job['created']=created
+                    job['stage']='monitor';job['at']=b.now();return
             else:
                 track=job['track']
-                if (track.arm or not b.recording._quiet(track) or track.clip_slots[row].has_clip
+                if (not self.available_lane(track,item.group,row)
                     or not any(same(track,t) for t in item.tracks)):
                     raise ValueError('preparing Audio destination changed')
                 stage=job['stage']
                 if stage=='monitor':
-                    if not b._parent_output(track,item.group):
+                    # New Native tracks must finish their implicit parent setup.
+                    # Existing lanes retain their output, effects and mixer state.
+                    if job.get('created') and not b._parent_output(track,item.group):
                         if b.now()-job['at']>8:raise ValueError('parent routing preparation timeout')
                         return
                     job['stage']=stage='type'

@@ -62,6 +62,87 @@ class AudioInputChecks(unittest.TestCase):
     @staticmethod
     def members(take):return (take,)+take.members
 
+    def test_first_direct_audio_lane_wins_over_later_prepared_source_and_keeps_its_sound(self):
+        b=self.make(groups=1)
+        parent=b.state.groups[0].group
+        first,second=b.state.groups[0].tracks[:2]
+        first.name='[Return] R1 T-Bone'
+        first.input_routing_type=self.routes[1];first.input_routing_channel=self.post
+        first.output_routing_type='Sends Only';first.current_monitoring_state=0
+        first.devices=[object()];first.mute=True
+        first.mixer_device.volume.value=.31;first.mixer_device.panning.value=.67
+        first.mixer_device.sends[0].value=.43
+        historical=Clip(playing=False);historical.name='Previous microphone';historical.color=123
+        first.clip_slots[1].clip=historical
+        second.input_routing_type=self.routes[0];second.input_routing_channel=self.post
+        devices=tuple(first.devices)
+        nested=Track(self.song,'Custom subgroup',parent,foldable=True)
+        nested_lane=Track(self.song,'Tempting nested lane',nested)
+        self.song.routes(nested_lane,nested);nested_lane.input_routing_type=self.routes[0]
+        nested_lane.input_routing_channel=self.post
+        anchor=b.state.anchors[0];offset=self.song._tracks.index(anchor)
+        self.song._tracks[offset:offset]=[nested,nested_lane]
+        b.state.topology_dirty=True
+        self.ticks(80)
+        reserve=b.reserves[0]
+        self.assertIs(reserve.track,first)
+        self.assertNotIn(nested_lane,b.state.groups[0].tracks)
+        self.assertIs(first.input_routing_type,self.routes[0])
+        self.assertEqual(first.current_monitoring_state,2)
+        self.assertEqual(first.name,'T-Bone')
+        self.assertEqual(tuple(first.devices),devices)
+        self.assertTrue(first.mute)
+        self.assertEqual(first.mixer_device.volume.value,.31)
+        self.assertEqual(first.mixer_device.panning.value,.67)
+        self.assertEqual(first.mixer_device.sends[0].value,.43)
+        self.assertEqual(first.output_routing_type,'Sends Only')
+        self.assertIs(first.clip_slots[1].clip,historical)
+        self.assertEqual((historical.name,historical.color),('Previous microphone',123))
+        self.assertFalse(any(c[0]=='create_track' for c in self.song.calls))
+
+    def test_two_inputs_to_one_reuses_first_lane_even_when_second_already_matches(self):
+        b=self.make(initial=3,groups=1);self.ticks(80)
+        first,second=(m.track for m in b.reserves[0].members)
+        first.name='[Patch] Custom';second.name='SM-58'
+        self.assertEqual(b.dispatch(48,2),2);self.ticks(60)
+        self.assertIs(b.reserves[0].track,first)
+        self.assertIs(first.input_routing_type,self.routes[1])
+        self.assertEqual(first.name,'SM-58')
+        self.assertEqual(b.dispatch(48,1),1);self.ticks(60)
+        self.assertIs(b.reserves[0].track,first)
+        self.assertIs(first.input_routing_type,self.routes[0])
+        self.assertEqual(first.name,'T-Bone')
+        self.assertFalse(any(c[0]=='create_track' for c in self.song.calls))
+
+    def test_newly_available_earlier_lane_replaces_a_later_prepared_reserve(self):
+        b=self.make(groups=1);first=b.state.groups[0].tracks[0]
+        first.arm=True;self.ticks(70)
+        later=b.reserves[0].track;self.assertIsNot(later,first)
+        first.arm=False;self.ticks(60)
+        self.assertIs(b.reserves[0].track,first)
+        self.assertFalse(any(c[0] in ('fire','create_track') for c in self.song.calls))
+
+    def test_direct_lane_reuse_skips_frozen_armed_playing_and_triggered_lanes(self):
+        b=self.make(groups=1);parent=b.state.groups[0].group
+        anchor=b.state.anchors[0]
+        original=tuple(b.state.groups[0].tracks)
+        original[0].is_frozen=True;original[1].arm=True
+        original[2].playing_slot_index=0
+        original[3].has_audio_input=False;original[3].has_midi_input=True
+        blocked=Track(self.song,'Triggered',parent);self.song.routes(blocked,parent)
+        blocked.fired_slot_index=0
+        chosen=Track(self.song,'[Input Custom]',parent);self.song.routes(chosen,parent)
+        for t in (blocked,chosen):
+            t.available_input_routing_types=list(self.routes)
+            t.available_input_routing_channels=[self.post]
+        self.song._tracks[self.song._tracks.index(anchor):self.song._tracks.index(anchor)]=[blocked,chosen]
+        b.state.topology_dirty=True;self.ticks(80)
+        self.assertIs(b.reserves[0].track,chosen)
+        self.assertTrue(original[1].arm)
+        self.assertEqual(original[2].playing_slot_index,0)
+        self.assertEqual(blocked.fired_slot_index,0)
+        self.assertFalse(any(c[0]=='create_track' for c in self.song.calls))
+
     def test_patch_admits_absolute_latest_intent_without_graph_or_routing_work(self):
         b=self.make();self.ticks();self.song.track_reads=0;self.song.calls.clear()
         for mask in (3,1,2,3):self.assertEqual(b.dispatch(48,mask),mask)
