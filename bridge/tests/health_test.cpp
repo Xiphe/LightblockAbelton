@@ -87,6 +87,18 @@ int main() {
     assert(!health::diagnosticTap(true,16,107,3,Program::status,false));
     health::NotificationGate g;assert(g.accept(0));assert(!g.accept(749));assert(g.accept(750));
     auto words=health::event(health::State::noGroups,2);assert(words[0]==int32_t(0x53540203));assert(words[1]==0);assert(words[2]==0x23a8);
+    // Setup explanations must name the installed matched adapter, not the legacy script.
+    auto legacy=health::explanation(health::State::liveUnavailable,health::waitingForLive);
+    auto audio=health::explanation(health::State::liveUnavailable,health::waitingForLive,true);
+    assert(legacy.body.find("LightpadController")!=std::string::npos);
+    assert(legacy.body.find("LightpadAudioInputs")==std::string::npos);
+    assert(audio.body.find("LightpadAudioInputs")!=std::string::npos);
+    assert(audio.body.find("LightpadController")==std::string::npos);
+    assert(audio.body.find("Lightpad Bridge")!=std::string::npos);
+    // Audio readiness also depends on an explicitly configured, prepared Set.
+    auto setup=health::explanation(health::State::noGroups,health::noRemoteGroups,true);
+    assert(setup.body.find("configured")!=std::string::npos);
+    assert(setup.body.find("[Remote]")!=std::string::npos);
     assert(health::explanation(health::State::noGroups,0).body.find("[R1]")!=std::string::npos);
     assert(health::explanation(health::State::failure,health::programLoadFailed).body.find("repair")!=std::string::npos);
 }

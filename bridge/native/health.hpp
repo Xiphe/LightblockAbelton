@@ -89,7 +89,7 @@ inline const char* stateName(State s) {
     } return "failure";
 }
 struct Explanation { std::string title,body; };
-inline Explanation explanation(State state,uint8_t reason) {
+inline Explanation explanation(State state,uint8_t reason,bool audioPerformance=false) {
     if(reason==deviceBusy) return {"Lightpad is in use", "Close BLOCKS Code, Dashboard or another Lightpad uploader, then retry the bridge."};
     if(reason==programLoadFailed) return {"Controller could not load", "Retry Lightpad Bridge. If this continues, repair the controller installation. Existing recordings in Live are not changed by loading the pad program."};
     if(reason==deviceRejected) return {"Lightpad connection is not supported", "Use the configured Lightpad as a standalone block. Check the bridge device selection."};
@@ -97,8 +97,13 @@ inline Explanation explanation(State state,uint8_t reason) {
     switch(state) {
         case State::connecting:return {"Connecting Lightpad", "Connecting or restoring the controller. Please wait; Live's playback is unchanged."};
         case State::bridgeUnavailable:return {"Lightpad disconnected", "Check USB or reconnect Bluetooth MIDI, and make sure Lightpad Bridge is running."};
-        case State::liveUnavailable:return {"Waiting for Live", "Open Ableton Live. In Link, Tempo & MIDI settings, select LightpadController and set both Input and Output to Lightpad Bridge."};
-        case State::noGroups:return {"No remote groups in this Set", "Add [R1] through [R8] to a Group Track name to assign a Lightpad tile. Existing recordings are preserved."};
+        case State::liveUnavailable:return {"Waiting for Live",
+            std::string("Open Ableton Live. In Link, Tempo & MIDI settings, select ")
+            + (audioPerformance?"LightpadAudioInputs":"LightpadController")
+            + " and set both Input and Output to Lightpad Bridge."};
+        case State::noGroups:
+            if(audioPerformance) return {"Audio Set is not ready", "Open the configured, prepared Audio Set. It needs unique [R1] through [R8] Group Track prefixes and a rightmost [Remote] subgroup in each recording group. A different Set must first be configured for this controller."};
+            return {"No remote groups in this Set", "Add [R1] through [R8] to a Group Track name to assign a Lightpad tile. Existing recordings are preserved."};
         case State::failure:return {"Controller needs attention", "Live could not initialize the controller. Check the bridge's status details for the detected cause; no repeated recording command is sent automatically."};
         case State::ready:return {"Lightpad is ready", "The controller is connected to Live and usable remote groups were found."};
     } return {"Controller needs attention", "Check the bridge's status details."};

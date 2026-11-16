@@ -351,7 +351,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             }
         }
         if(detailRequested.exchange(-1)>=0 && statusActive() && notificationGate.accept(now())) {
-            auto why=health::explanation(displayState(),displayReason());
+            auto why=health::explanation(displayState(),displayReason(),options.audioPerformance);
             notificationResult="requesting";
             std::weak_ptr<int> life=notificationLife;
             requestBridgeNotification(why.title,why.body,[this,life](std::string result) {
@@ -729,7 +729,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         object->setProperty("host_health_reason",int(healthMonitor.reason(now())));
         object->setProperty("host_health_fresh",healthMonitor.fresh(now()));
         object->setProperty("recording_busy",healthMonitor.busy());
-        auto explanation=health::explanation(displayState(),displayReason());
+        auto explanation=health::explanation(displayState(),displayReason(),options.audioPerformance);
         object->setProperty("explanation_title",juce::String(explanation.title));
         object->setProperty("explanation",juce::String(explanation.body));
         object->setProperty("last_notification",juce::String(notificationResult));
@@ -751,6 +751,7 @@ int main(int argc,char** argv) {
         auto bundle=bridgeBundleConfiguration();
         options.serial=bundle.serial;options.source=bundle.source;options.modalSource=bundle.modalSource;
         options.statusSource=bundle.statusSource;options.status=bundle.status;options.lock=bundle.lock;
+        options.patchSource=bundle.patchSource;options.audioPerformance=bundle.audioPerformance;
         for(int i=1;i<argc;++i) { std::string arg=argv[i];
             if(arg=="--bundle-info") {
                 juce::DynamicObject::Ptr info=new juce::DynamicObject;
@@ -758,6 +759,9 @@ int main(int argc,char** argv) {
                 info->setProperty("controller",juce::String(options.source));
                 info->setProperty("metronome",juce::String(options.modalSource));
                 info->setProperty("status_program",juce::String(options.statusSource));
+                info->setProperty("patch",juce::String(options.patchSource));
+                info->setProperty("controller_mode",options.audioPerformance?"audio-performance":"legacy");
+                info->setProperty("status_file",juce::String(options.status));
                 std::cout<<juce::JSON::toString(juce::var(info.get()),true)<<'\n';return 0;
             }
             if(arg=="--explain") {

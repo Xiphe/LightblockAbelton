@@ -63,6 +63,8 @@ def main():
     parser.add_argument("--device", required=True, help="Exact 16-character Lightpad serial")
     parser.add_argument("--compiler", default="blocksctl")
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--audio-performance", action="store_true",
+                        help="Package the matched Audio controller, patch and metronome programs")
     parser.add_argument("--status-program", type=Path, default=ROOT / "lightpad/status.littlefoot")
     args = parser.parse_args()
     if sys.platform != "darwin":
@@ -91,15 +93,17 @@ def main():
     subprocess.run(["cmake", "--build", str(build), "--parallel", str(args.jobs)], check=True)
     subprocess.run(["ctest", "--test-dir", str(build), "--output-on-failure"], check=True)
     compiler_version = subprocess.check_output([args.compiler, "--version"], text=True).strip()
+    prefix = "performance-" if args.audio_performance else ""
     app, info = packager.package(
-        build / "lightpad-bridge", ROOT / "lightpad/main.littlefoot",
-        ROOT / "lightpad/metronome.littlefoot", args.device, output,
+        build / "lightpad-bridge", ROOT / ("lightpad/" + prefix + "main.littlefoot"),
+        ROOT / ("lightpad/" + prefix + "metronome.littlefoot"), args.device, output,
         notices(sdk, build / "package-notices"), args.compiler,
         build_metadata=dict(sdk=lock, compiler=compiler_version, native_type="Release"),
-        status_program=args.status_program)
+        status_program=args.status_program, audio_performance=args.audio_performance,
+        patch_program=ROOT / "lightpad/performance-patch.littlefoot" if args.audio_performance else None)
     print(json.dumps({"app": str(app), "input_binary_sha256": info["input_binary_sha256"],
                       "packaged_binary_sha256": packager.sha(app / "Contents/MacOS/lightpad-bridge"),
-                      "programs": info["programs"]}, indent=2))
+                      "controller_mode": info["controller_mode"], "programs": info["programs"]}, indent=2))
 
 
 if __name__ == "__main__":

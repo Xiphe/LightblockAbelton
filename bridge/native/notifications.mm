@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 #include "notifications.h"
+#include <stdexcept>
 
 static std::string text(NSString* value) { return value ? std::string([value UTF8String]) : std::string(); }
 BridgeBundleConfiguration bridgeBundleConfiguration()
@@ -11,13 +12,24 @@ BridgeBundleConfiguration bridgeBundleConfiguration()
         if(![[bundle bundleIdentifier] isEqualToString:@"net.xiphe.lightpad-bridge"]) return {};
         NSString* root=[bundle resourcePath];
         NSString* support=[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Lightpad Bridge"];
+        NSString* mode=[bundle objectForInfoDictionaryKey:@"LightpadBridgeControllerMode"];
+        if(mode && ![mode isEqualToString:@"legacy"] && ![mode isEqualToString:@"audio-performance"])
+            throw std::runtime_error("Unknown packaged controller mode");
+        bool audioPerformance=[mode isEqualToString:@"audio-performance"];
+        if(audioPerformance) {
+            for(NSString* name in @[@"controller.littlefoot",@"metronome.littlefoot",@"patch.littlefoot",@"status.littlefoot"])
+                if(![[NSFileManager defaultManager] fileExistsAtPath:[root stringByAppendingPathComponent:name]])
+                    throw std::runtime_error("Incomplete packaged Audio controller");
+        }
         return {text([bundle objectForInfoDictionaryKey:@"LightpadBridgeDeviceSerial"]),
             text([root stringByAppendingPathComponent:@"controller.littlefoot"]),
             text([root stringByAppendingPathComponent:@"metronome.littlefoot"]),
             [[NSFileManager defaultManager] fileExistsAtPath:[root stringByAppendingPathComponent:@"status.littlefoot"]]
                 ? text([root stringByAppendingPathComponent:@"status.littlefoot"]) : std::string(),
             text([support stringByAppendingPathComponent:@"status.json"]),
-            text([support stringByAppendingPathComponent:@"bridge.lock"])};
+            text([support stringByAppendingPathComponent:@"bridge.lock"]),
+            audioPerformance ? text([root stringByAppendingPathComponent:@"patch.littlefoot"]) : std::string(),
+            audioPerformance};
     }
 }
 void requestBridgeNotification(const std::string& title,const std::string& body,

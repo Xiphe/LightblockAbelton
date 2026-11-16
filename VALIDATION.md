@@ -2,6 +2,16 @@
 
 The functional baseline passed 842 offline checks and bounded physical trials on one macOS/Ableton/Lightpad setup. These results establish the cases below, not an endurance or sample-continuity guarantee.
 
+## Current Audio controller
+
+The responsive Audio baseline passed complete USB and Bluetooth trials in a cheap Set and Temple of Loops. Those covered mute chords, volume/pan/white controls, recording, Retry, Cancel, same-bar Accept-and-next and metronome switching. At 256 samples, the fixed eight-lane R3 test also completed without the insertion distortion.
+
+The later two-microphone extension passed 95 host checks, 12 joined compiled-device/C++/Python path checks and 153 compiled-device checks before packaging. The user accepted the repaired dual-source USB countdown/Accept timing and manual deletion recovery in Temple of Loops. These are bounded functional observations, not optical latency measurements or a dedicated dual-source Bluetooth/endurance test.
+
+Production packaging adds seven passing native CTests and 40 passing bridge tests. The latter include a real signed app launched in metadata-only mode, matching four-program defaults, configuration isolation, mismatch rejection and transactional installation/rollback tests. Device bytecode and musical command paths are unchanged by packaging. The installed login app then loaded the prepared Temple of Loops Set over USB and reported all eight groups and both sources ready. A subsequent helper restart while Live stayed open returned to main with unchanged source assignments and prepared reserves, zero reported transport errors and no recording-command replay. The latest app-only help-text update retained the same Live script. A full macOS reboot and a dedicated dual-source Bluetooth trial remain untested.
+
+The older checks below describe the legacy controller's completed installation, template and physical trials. Its portable template and host-owned protocol are not the current Audio setup.
+
 ## Offline checks
 
 | Suite | Passing checks | Run from checkout root |

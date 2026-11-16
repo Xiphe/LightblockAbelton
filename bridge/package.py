@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile both pad programs and stage a new background app; never install/start it."""
+"""Compile a matched set of pad programs and stage an app; never install/start it."""
 import argparse
 import hashlib
 import json
@@ -98,11 +98,19 @@ def compile_program(source, binary, compiler="blocksctl"):
 
 
 def package(binary, controller, metronome, device, output, notices=(),
-            compiler="blocksctl", build_metadata=None, status_program=None):
+            compiler="blocksctl", build_metadata=None, status_program=None,
+            audio_performance=False, patch_program=None):
     binary, controller, metronome, output = (
         Path(p).resolve() for p in (binary, controller, metronome, output))
     notices = [Path(p).resolve() for p in notices]
     status_program = Path(status_program).resolve() if status_program is not None else None
+    patch_program = Path(patch_program).resolve() if patch_program is not None else None
+    if audio_performance and (patch_program is None or status_program is None):
+        raise ValueError("Audio performance requires both patch and status programs")
+    if patch_program is not None and not audio_performance:
+        raise ValueError("Patch program requires Audio performance mode")
+    if patch_program is not None and not patch_program.is_file():
+        raise ValueError("Patch program must exist")
     if status_program is not None and not status_program.is_file():
         raise ValueError("Status program must exist")
     if not all(p.is_file() for p in (binary, controller, metronome)):
@@ -116,6 +124,8 @@ def package(binary, controller, metronome, device, output, notices=(),
 
     entries = {"main": (controller, "controller.littlefoot"),
                "metronome": (metronome, "metronome.littlefoot")}
+    if patch_program is not None:
+        entries["patch"] = (patch_program, "patch.littlefoot")
     if status_program is not None:
         entries["status"] = (status_program, "status.littlefoot")
     trees = {name: source_files(path, entry) for name, (path, entry) in entries.items()}
@@ -141,8 +151,11 @@ def package(binary, controller, metronome, device, output, notices=(),
                 destination: sha(source_root / destination)
                 for destination in sorted(trees[name]) if destination != entry}
     manifest = dict(
-        baseline="Live-authoritative controller with global connection status",
-        protocol="18/A8", input_binary_sha256=sha(binary), programs=programs,
+        baseline=("Optimistic Audio controller with dual-source patching" if audio_performance
+                  else "Live-authoritative controller with global connection status"),
+        controller_mode="audio-performance" if audio_performance else "legacy",
+        protocol="performance/F2" if audio_performance else "18/A8",
+        input_binary_sha256=sha(binary), programs=programs,
         code_signing=dict(mode="ad-hoc bundle", identifier=BUNDLE_ID),
         automatic_login_start=False, saved_default_writes=False,
         firmware_writes=False,
@@ -167,7 +180,8 @@ def package(binary, controller, metronome, device, output, notices=(),
                  CFBundleExecutable="lightpad-bridge", CFBundlePackageType="APPL",
                  CFBundleShortVersionString="0.2.0", CFBundleVersion="2",
                  LSUIElement=True, LSMultipleInstancesProhibited=True,
-                 LightpadBridgeDeviceSerial=device)
+                 LightpadBridgeDeviceSerial=device,
+                 LightpadBridgeControllerMode=manifest["controller_mode"])
     (output / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
     if notices:
         notice_root = resources / "notices"
@@ -191,10 +205,13 @@ if __name__ == "__main__":
     parser.add_argument("--metronome", required=True, type=Path)
     parser.add_argument("--device", required=True)
     parser.add_argument("--status-program", type=Path)
+    parser.add_argument("--audio-performance", action="store_true")
+    parser.add_argument("--patch-program", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--compiler", default="blocksctl")
     parser.add_argument("--notice", action="append", type=Path, default=[])
     args = parser.parse_args()
     app, info = package(args.binary, args.controller, args.metronome, args.device,
-                        args.output, args.notice, args.compiler, status_program=args.status_program)
+                        args.output, args.notice, args.compiler, status_program=args.status_program,
+                        audio_performance=args.audio_performance, patch_program=args.patch_program)
     print(json.dumps({"app": str(app), "packaged_binary_sha256": sha(app / "Contents/MacOS/lightpad-bridge"), **info}))

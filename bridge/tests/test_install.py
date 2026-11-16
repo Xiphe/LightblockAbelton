@@ -151,5 +151,96 @@ class InstallationTests(unittest.TestCase):
             install.rollback(Path(receipt['revision'])/'receipt.json',check_processes=lambda:None)
         self.assertTrue((self.script_target/'user-edited.py').exists())
 
+    def audio_fixture(self):
+        resources = self.app / 'Contents/Resources'
+        programs = {}
+        for name, filename in dict(main='controller.littlefoot', metronome='metronome.littlefoot',
+                                   patch='patch.littlefoot', status='status.littlefoot').items():
+            source = resources / filename
+            source.write_text('offline Audio ' + name)
+            programs[name] = dict(source_sha256=install.digest(source), includes_sha256={})
+        (resources/'build-info.json').write_text(json.dumps(dict(controller_mode='audio-performance', programs=programs)))
+        info = plistlib.loads((self.app/'Contents/Info.plist').read_bytes())
+        info['LightpadBridgeControllerMode'] = 'audio-performance'
+        (self.app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+        for module in ('surface', 'backend', 'health', 'protocol', 'model', 'audio_inputs',
+                       'bundle_recording', 'recording_core', 'recording_coverage', 'launch_admission',
+                       'selection_restore', 'timing'):
+            (self.script/(module+'.py')).write_text('# offline Audio module\n')
+        (self.script/'surface.py').write_text('class PerformanceController: pass\n')
+        self.private_configuration = self.root/'private-configuration.py'
+        self.private_configuration.write_text(
+            "TARGET_SET = ''\nTARGET_SETS = ('/Music/Temple of Loops.als',)\n"
+            "AUDIO_SOURCES = ({'name':'T-Bone','helper_name':'[Input 1]'},"
+            "{'name':'SM-58','helper_name':'[Input 2]'})\n"
+            "TRACE_PATH = '/Library/Application Support/Lightpad Bridge/live.jsonl'\n"
+            "STATUS_PATH = None\n")
+        return self.root/'Scripts/LightpadAudioInputs'
+
+    def test_audio_stage_apply_and_rollback_preserve_normal_script_and_source_configuration(self):
+        audio_target = self.audio_fixture()
+        source_before = install.hashes(self.script)
+        legacy_before = install.hashes(self.script_target)
+        plan = install.stage(self.app, self.script, self.stage, self.app_target, audio_target,
+                             self.support, self.login, configuration=self.private_configuration)
+        self.assertEqual(plan['controller_mode'], 'audio-performance')
+        self.assertEqual((self.stage/'LightpadAudioInputs/configuration.py').read_text(), self.private_configuration.read_text())
+        self.assertEqual(install.hashes(self.script), source_before)
+        receipt = install.apply(self.stage/'install-plan.json', check_processes=lambda:None)
+        self.assertEqual((audio_target/'configuration.py').read_text(), self.private_configuration.read_text())
+        self.assertEqual(install.hashes(self.script_target), legacy_before)
+        install.rollback(Path(receipt['revision'])/'receipt.json', check_processes=lambda:None)
+        self.assertFalse(audio_target.exists())
+        self.assertEqual(install.hashes(self.script_target), legacy_before)
+
+    def test_audio_app_cannot_overwrite_normal_script_folder(self):
+        self.audio_fixture()
+        with self.assertRaisesRegex(ValueError, 'matching Live script folder'):
+            install.stage(self.app, self.script, self.stage, self.app_target, self.script_target,
+                          self.support, self.login, configuration=self.private_configuration)
+        self.assertFalse(self.stage.exists())
+
+    def test_audio_stage_rejects_mismatched_metadata_programs_and_host(self):
+        audio_target = self.audio_fixture()
+        info_path = self.app/'Contents/Info.plist'
+        info = plistlib.loads(info_path.read_bytes())
+        del info['LightpadBridgeControllerMode']
+        info_path.write_bytes(plistlib.dumps(info))
+        with self.assertRaisesRegex(ValueError, 'sealed launch defaults'):
+            install.stage(self.app, self.script, self.stage, self.app_target, audio_target,
+                          self.support, self.login, configuration=self.private_configuration)
+        info['LightpadBridgeControllerMode'] = 'audio-performance'
+        info_path.write_bytes(plistlib.dumps(info))
+        patch_source = self.app/'Contents/Resources/patch.littlefoot'
+        patch_source.write_text('tampered')
+        with self.assertRaisesRegex(ValueError, 'bundle metadata: patch'):
+            install.stage(self.app, self.script, self.stage, self.app_target, audio_target,
+                          self.support, self.login, configuration=self.private_configuration)
+        audio_target = self.audio_fixture()
+        (self.script/'bundle_recording.py').unlink()
+        with self.assertRaisesRegex(ValueError, 'complete matched PerformanceController'):
+            install.stage(self.app, self.script, self.stage, self.app_target, audio_target,
+                          self.support, self.login, configuration=self.private_configuration)
+        self.assertFalse(self.stage.exists())
+
+    def test_audio_stage_rejects_incomplete_or_private_configuration(self):
+        audio_target = self.audio_fixture()
+        valid = self.private_configuration.read_text()
+        invalid = (
+            ("TARGET_SETS = ()\nTARGET_SET = ''\n", 'explicit absolute Live Set paths'),
+            ("TARGET_SETS = ('relative.als',)\n", 'explicit absolute Live Set paths'),
+            ("AUDIO_SOURCES = ()\n", 'two named source/helper'),
+            ("AUDIO_SOURCES = ({'name':'x','helper_name':'same'}, {'name':'y','helper_name':'same'})\n", 'must be unique'),
+            ("STATUS_PATH = 'relative.json'\n", 'diagnostic paths'),
+            ("STATUS_PATH = '/verification/experiments/status.json'\n", 'private experiment'),
+        )
+        for override, message in invalid:
+            with self.subTest(override=override):
+                self.private_configuration.write_text(valid + override)
+                with self.assertRaisesRegex(ValueError, message):
+                    install.stage(self.app, self.script, self.stage, self.app_target, audio_target,
+                                  self.support, self.login, configuration=self.private_configuration)
+                self.assertFalse(self.stage.exists())
+
 
 if __name__=='__main__':unittest.main()

@@ -55,7 +55,85 @@ def agent_plist(app_target, support):
                 StandardErrorPath=str(support / 'bridge.stderr.log'))
 
 
-def stage(app, script, output, app_target, script_target, support, login_target, login=True):
+def controller_mode(app, info):
+    resources = app / 'Contents/Resources'
+    manifest_path = resources / 'build-info.json'
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+    mode = manifest.get('controller_mode', 'legacy')
+    if mode not in ('legacy', 'audio-performance'):
+        raise ValueError('Unsupported controller mode in app metadata')
+    if info.get('LightpadBridgeControllerMode', 'legacy') != mode:
+        raise ValueError('App controller mode metadata does not match its sealed launch defaults')
+    if mode == 'audio-performance':
+        entries = dict(main='controller.littlefoot', metronome='metronome.littlefoot',
+                       patch='patch.littlefoot', status='status.littlefoot')
+        if set(manifest.get('programs', {})) != set(entries):
+            raise ValueError('Audio app requires its matched main, metronome, patch and status programs')
+        for name, filename in entries.items():
+            program = resources / filename
+            metadata = manifest['programs'][name]
+            if not program.is_file() or digest(program) != metadata.get('source_sha256'):
+                raise ValueError('Audio program does not match bundle metadata: ' + name)
+            for relative, expected in metadata.get('includes_sha256', {}).items():
+                include = Path(relative)
+                if include.is_absolute() or '..' in include.parts:
+                    raise ValueError('Audio program include escapes bundle resources')
+                source = resources / include
+                if not source.is_file() or digest(source) != expected:
+                    raise ValueError('Audio include does not match bundle metadata: ' + relative)
+    return mode
+
+
+def configuration_values(configuration):
+    result = {}
+    for node in ast.parse(configuration, filename='configuration.py').body:
+        if isinstance(node, ast.Assign):
+            try:
+                value = ast.literal_eval(node.value)
+            except (ValueError, TypeError):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    result[target.id] = value
+    return result
+
+
+def validate_host(script, configuration, mode):
+    if 'verification/experiments/' in configuration:
+        raise ValueError('Production configuration must not depend on private experiment paths')
+    settings = configuration_values(configuration)
+    if mode == 'legacy':
+        if settings.get('LIVE_STATE_MODE') is not True or not (script / 'health.py').is_file():
+            raise ValueError('Production installation requires Live-state mode and matching host health support')
+        return
+    modules = ('surface', 'backend', 'health', 'protocol', 'model', 'audio_inputs',
+               'bundle_recording', 'recording_core', 'recording_coverage', 'launch_admission',
+               'selection_restore', 'timing')
+    if any(not (script / (name + '.py')).is_file() for name in modules):
+        raise ValueError('Audio app requires the complete matched PerformanceController script')
+    surface = ast.parse((script / 'surface.py').read_text())
+    if not any(isinstance(node, ast.ClassDef) and node.name == 'PerformanceController' for node in surface.body):
+        raise ValueError('Audio app requires the matched PerformanceController script')
+    paths = settings.get('TARGET_SETS') or (settings.get('TARGET_SET'),)
+    if (not isinstance(paths, tuple) or not paths or any(
+            not isinstance(path, str) or not Path(path).is_absolute() or Path(path).suffix.lower() != '.als'
+            for path in paths)):
+        raise ValueError('Audio configuration requires explicit absolute Live Set paths')
+    sources = settings.get('AUDIO_SOURCES')
+    if (not isinstance(sources, tuple) or len(sources) != 2 or any(
+            not isinstance(source, dict) or any(not isinstance(source.get(key), str) or not source[key]
+                for key in ('name', 'helper_name')) for source in sources)):
+        raise ValueError('Audio configuration requires two named source/helper definitions')
+    if any(len({source[key] for source in sources}) != 2 for key in ('name', 'helper_name')):
+        raise ValueError('Audio source and helper names must be unique')
+    for key in ('TRACE_PATH', 'STATUS_PATH'):
+        value = settings.get(key)
+        if value is not None and (not isinstance(value, str) or not Path(value).is_absolute()):
+            raise ValueError('Audio diagnostic paths must be absolute or None: ' + key)
+
+
+def stage(app, script, output, app_target, script_target, support, login_target, login=True,
+          configuration=None):
     app, script, output, app_target, script_target, support, login_target = (
         Path(p).expanduser().absolute() for p in (app, script, output, app_target, script_target, support, login_target))
     if output.exists():
@@ -67,26 +145,24 @@ def stage(app, script, output, app_target, script_target, support, login_target,
         raise ValueError('App must have the native Lightpad Bridge bundle identity')
     if not (app / 'Contents/Resources/status.littlefoot').is_file():
         raise ValueError('Production app requires its separate status program')
-    if app_target.suffix != '.app' or script_target.name != 'LightpadController':
-        raise ValueError('Installation targets must name the app and LightpadController folder')
-    # Refuse the current prototype's private runtime paths in a production stage.
-    configuration = (script / 'configuration.py').read_text()
-    if 'verification/experiments/' in configuration:
-        raise ValueError('Production configuration must not depend on private experiment paths')
-    settings = ast.parse(configuration, filename='configuration.py')
-    live_mode = None
-    for node in settings.body:
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'LIVE_STATE_MODE' for t in node.targets):
-            live_mode = node.value.value if isinstance(node.value, ast.Constant) else None
-    if live_mode is not True or not (script / 'health.py').is_file():
-        raise ValueError('Production installation requires Live-state mode and matching host health support')
+    mode = controller_mode(app, info)
+    expected_targets = ('LightpadAudioInputs', 'PerformanceController') if mode == 'audio-performance' else ('LightpadController',)
+    if app_target.suffix != '.app' or script_target.name not in expected_targets:
+        raise ValueError('Installation targets must name the app and matching Live script folder: ' + ', '.join(expected_targets))
+    configuration_path = Path(configuration).expanduser().absolute() if configuration is not None else script / 'configuration.py'
+    if configuration_path.is_symlink():
+        raise ValueError('Symbolic-link configuration files are not supported')
+    configuration_text = configuration_path.read_text()
+    validate_host(script, configuration_text, mode)
     hashes(app); hashes(script)  # reject symlinks before creating output
     output.mkdir(parents=True)
     copy(app, output / 'Lightpad Bridge.app')
-    copy(script, output / 'LightpadController')
+    staged_script = output / script_target.name
+    copy(script, staged_script)
+    (staged_script / 'configuration.py').write_text(configuration_text)
     entries = []
     for name, source, target in (('app', output / 'Lightpad Bridge.app', app_target),
-                                 ('live_script', output / 'LightpadController', script_target)):
+                                 ('live_script', staged_script, script_target)):
         entries.append(dict(name=name, source=str(source), target=str(target),
                             before=hashes(target), after=hashes(source)))
     if login:
@@ -94,7 +170,7 @@ def stage(app, script, output, app_target, script_target, support, login_target,
         agent.write_bytes(plistlib.dumps(agent_plist(app_target, support)))
         entries.append(dict(name='login_agent', source=str(agent), target=str(login_target),
                             before=hashes(login_target), after=hashes(agent)))
-    plan = dict(schema=1, entries=entries, support=str(support), login_enabled=login,
+    plan = dict(schema=1, controller_mode=mode, entries=entries, support=str(support), login_enabled=login,
                 launch_label=LABEL, source_stage=str(output), saved_default_writes=False,
                 firmware_writes=False, live_preference_writes=False, audio_saves=False)
     (output / 'install-plan.json').write_text(json.dumps(plan, indent=2) + '\n')
@@ -235,10 +311,11 @@ def main():
     staging = sub.add_parser('stage')
     staging.add_argument('--app', required=True, type=Path)
     staging.add_argument('--script', required=True, type=Path)
+    staging.add_argument('--configuration', type=Path, help='Private configuration copied into the staged Live script')
     staging.add_argument('--output', required=True, type=Path)
     home = Path.home(); support = home / 'Library/Application Support/Lightpad Bridge'
     staging.add_argument('--app-target', type=Path, default=home / 'Applications/Lightpad Bridge.app')
-    staging.add_argument('--script-target', type=Path, default=home / 'Music/Ableton/User Library/Remote Scripts/LightpadController')
+    staging.add_argument('--script-target', type=Path, help='Defaults to LightpadAudioInputs for Audio mode, otherwise LightpadController')
     staging.add_argument('--support', type=Path, default=support)
     staging.add_argument('--login-target', type=Path, default=home / 'Library/LaunchAgents' / (LABEL + '.plist'))
     staging.add_argument('--no-login', action='store_true')
@@ -247,8 +324,12 @@ def main():
     reverting = sub.add_parser('rollback'); reverting.add_argument('receipt', type=Path)
     args = parser.parse_args()
     if args.command == 'stage':
+        if args.script_target is None:
+            info = plistlib.loads((args.app / 'Contents/Info.plist').read_bytes())
+            folder = 'LightpadAudioInputs' if controller_mode(args.app, info) == 'audio-performance' else 'LightpadController'
+            args.script_target = home / 'Music/Ableton/User Library/Remote Scripts' / folder
         result = stage(args.app, args.script, args.output, args.app_target, args.script_target,
-                       args.support, args.login_target, login=not args.no_login)
+                       args.support, args.login_target, login=not args.no_login, configuration=args.configuration)
     elif args.command == 'apply': result = apply(args.plan, args.activate_login)
     else: result = rollback(args.receipt)
     print(json.dumps(result, indent=2))

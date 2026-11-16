@@ -35,7 +35,7 @@ With Lightpad Bridge, BLOCKS Code, Dashboard and other SDK owners closed, find t
 Discovery accesses the device. The following build itself is offline; replace the serial and use new build/output paths:
 
 ```sh
-python3 bridge/build.py \
+python3 bridge/build.py --audio-performance \
   --sdk ../blocksctl/vendor/sdk \
   --compiler ../blocksctl/build/blocksctl \
   --build-dir /tmp/lightpad-production-build \
@@ -43,26 +43,19 @@ python3 bridge/build.py \
   --output '/tmp/Lightpad Bridge.app'
 ```
 
-The build verifies all 685 vendor files and the inline connection hash, runs the native CTests, compiles all three pad programs, enforces their individual 7,200-byte budgets and packages supplier notices. `--status-program SOURCE` selects another reviewed status entry point; the default is `lightpad/status.littlefoot`.
+The build verifies all 685 vendor files and the inline connection hash, runs the native CTests, compiles all four Audio pad programs, enforces their individual 7,200-byte budgets and packages supplier notices. `--status-program SOURCE` selects another reviewed status entry point; the default is `lightpad/status.littlefoot`.
 
 Packaging resolves quoted relative Littlefoot includes, copies them into the bundle and records their hashes. Includes must stay within their source directory; absolute paths, parent traversal, symlinks, cycles and conflicting destinations are rejected. Status needs both `idle-animation.littlefoot` and `idle-statements-prototype.littlefoot`.
+
+Omit `--audio-performance` only when building a matched legacy `LightpadController` installation. Audio mode packages main, metronome, patch and status. The signed bundle selects this mode automatically, without launch arguments or checkout paths.
 
 The completed app receives a local ad-hoc signature and strict seal verification. Do not edit bundled files afterward. `Contents/Resources/build-info.json` records source, include, SDK/compiler and native input hashes; packaging reports the post-signing executable hash separately. Build/staging starts no app, opens no MIDI and writes no firmware or saved startup program.
 
 ## Matched Audio input mode
 
-The build/install commands in this guide package the normal three-program controller. The local Audio implementation uses the same native executable with explicit source options and the matched [PerformanceController setup](../live/PerformanceController/README.md). Start a built executable from the checkout root after closing any other helper that owns the device or the virtual ports:
+`--audio-performance` packages the local-feedback controller and the matched [PerformanceController setup](../live/PerformanceController/README.md). `build-info.json` records `controller_mode="audio-performance"`; the sealed Info.plist selects the same mode at launch. All four sources and relative includes live inside the app. `--bundle-info` reports the selected mode and resource paths without opening MIDI.
 
-```sh
-/absolute/build/lightpad-bridge --audio-performance \
-  --device YOUR_16_CHARACTER_SERIAL \
-  --source "$PWD/lightpad/performance-main.littlefoot" \
-  --modal-source "$PWD/lightpad/performance-metronome.littlefoot" \
-  --patch-source "$PWD/lightpad/performance-patch.littlefoot" \
-  --status-source "$PWD/lightpad/status.littlefoot"
-```
-
-`--patch-source` requires `--audio-performance`. It is not automatically added to the normal app bundle by `build.py`. Configure and install the matching Live adapter before using this mode; mixing it with the normal script or older pad programs is unsupported. This command changes neither the saved pad startup nor firmware. The helper keeps USB/Bluetooth discovery and the same virtual MIDI ports while switching programs.
+When debugging an unbundled executable, pass `--audio-performance`, the exact `--device`, and absolute `--source`, `--modal-source`, `--patch-source` and `--status-source` paths. Normal installed use needs none of these arguments. `--patch-source` requires Audio mode. Mixing Audio programs with the legacy Live script is unsupported.
 
 With patch enabled, short Mode opens patch from main and returns to main from either settings screen. Holding Mode for at least400ms opens the metronome from main/patch and opens patch from the metronome. Releasing a recognized hold does not also short-click. Contacts and recording protect mode switches; background patch preparation does not prevent returning to main.
 
@@ -81,6 +74,8 @@ These exercise the compiled clients, actual C++ reconciler and Python backend wi
 
 ## Install
 
+### Audio performance installation
+
 Close Live and the running helper before applying or rolling back. If the helper login agent is loaded, unload it first; skip this on a first installation:
 
 ```sh
@@ -92,11 +87,14 @@ Prepare a new installation plan from the checkout root. Staging changes neither 
 ```sh
 python3 bridge/install.py stage \
   --app '/tmp/Lightpad Bridge.app' \
-  --script "$PWD/live/LightpadController" \
+  --script "$PWD/live/PerformanceController" \
+  --configuration /absolute/private/audio-configuration.py \
   --output /tmp/lightpad-install-plan
 ```
 
-The plan validates the signed app identity, all three programs, matching host health support and normal Live-state configuration. Defaults are `~/Applications/Lightpad Bridge.app`, `~/Music/Ableton/User Library/Remote Scripts/LightpadController` and `~/Library/LaunchAgents/net.xiphe.lightpad-bridge.plist`. Use a new plan directory if one exists. `--no-login` omits the login agent; `install.py stage --help` lists custom destinations.
+Prepare the private configuration from [Live setup](../live/README.md), using durable Set and diagnostic paths. Staging copies it into the Live package without modifying source files. Audio staging checks matching bundle mode, all four source/include hashes, the complete host package and explicit configuration. Verify the candidate's signature with `codesign --verify --strict '/tmp/Lightpad Bridge.app'`.
+
+Defaults are `~/Applications/Lightpad Bridge.app`, `~/Music/Ableton/User Library/Remote Scripts/LightpadAudioInputs` and `~/Library/LaunchAgents/net.xiphe.lightpad-bridge.plist`. Existing `LightpadController` files are preserved. A legacy-mode app instead requires the legacy script and defaults to its `LightpadController` target. Use a new plan directory if one exists. `--no-login` omits the login agent; `install.py stage --help` lists custom destinations.
 
 Save the pad's standalone startup while all SDK owners are closed:
 
@@ -128,7 +126,7 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/net.xiphe.lightpa
 
 This starts the helper and enables login startup with failed-exit restart. With `--no-login`, open the installed app manually. For an already registered installation, `apply --activate-login` can start the agent during apply.
 
-Restart Live, select the two Bridge ports, install the template and choose audio defaults as described in [Live setup](../live/README.md). The installer does not change Live preferences, install templates, save recordings or write the pad startup.
+Restart Live, select `LightpadAudioInputs` with both Bridge ports, and open the configured prepared Set as described in [Live setup](../live/README.md). The installer does not change Live preferences, install templates, save recordings or write the pad startup.
 
 ## Connect and diagnose
 
@@ -138,7 +136,7 @@ A healthy Bluetooth connection stays active when USB is plugged in; USB is prefe
 | --- | --- |
 | Touchable idle tunnel | Wait for loading; if it persists, check the physical connection and helper |
 | White Ableton logo | Open Live and check the control surface's Bridge input/output |
-| Orange `[R]` | Add a valid `[R1]` through `[R8]` prefix to a Group Track |
+| Orange `[R]` | Open the configured prepared Set; check unique `[R1]` through `[R8]` groups and rightmost `[Remote]` subgroups. See [Live setup](../live/README.md). |
 | Red `!` | Tap for the observed problem and next action |
 
 Only fault-icon taps request a local Mac notification. Idle touches affect the animation, and Mode is inactive on status. Allow Lightpad Bridge notifications when requested; Focus can suppress a banner. Keep your mirroring/sharing preferences as desired. An explanation is also available without MIDI:

@@ -1,72 +1,64 @@
-# Live controller
+# Live controller setup
 
-`LightpadController/` is a Python Remote Script loaded by Ableton Live. It discovers marked groups in the current Set and owns gestures, recording actions and mixer changes. [Lightpad Bridge](../bridge/README.md) handles the device connection and programs.
+The current Audio controller uses [PerformanceController](PerformanceController/). It accepts semantic commands from the bridge and uses retained Native targets for immediate mixer and recording actions. Gestures, views and optimistic feedback belong to the device.
 
-## Setup
+## Install and connect
 
-Install the entire `LightpadController` directory through the [matched installer](../bridge/README.md#install). Its default target is `~/Music/Ableton/User Library/Remote Scripts/LightpadController`. Restart Live after installation.
+Use the [matched Audio installer](../bridge/README.md#audio-performance-installation) to install the complete package as `~/Music/Ableton/User Library/Remote Scripts/LightpadAudioInputs`. Restart Live after replacing script files. Do not edit an active installed script.
 
-In Link, Tempo & MIDI settings, choose `LightpadController`, with Input and Output both `Lightpad Bridge`. No per-Set MIDI mapping or Max for Live device is required. Disable competing direct BLOCKS control surfaces and raw Lightpad Track/Remote routes. Restart Live after removing an old script so its listeners are gone. Back up your own preferences before changing them; do not replace the whole preferences file while Live is open.
+In Link, Tempo & MIDI settings select `LightpadAudioInputs`, with Input and Output both `Lightpad Bridge`. Disable competing scripts on these ports and competing raw Lightpad routes. The helper and Live package must both use Audio performance mode.
 
-For a fresh project, install [the template](../templates/Lightpad%20Remote.als):
+Open a prepared Set whose absolute path appears in the installed `configuration.py`. `TARGET_SETS` is an explicit allowlist; an empty list falls back to `TARGET_SET`. Untitled and unlisted Sets are unavailable. After Save As or moving a Set, update the local path configuration through a staged install and restart Live. The installer does not change Live preferences or prepare the Set automatically.
 
-```sh
-mkdir -p "$HOME/Music/Ableton/User Library/Templates"
-cp -n 'templates/Lightpad Remote.als' "$HOME/Music/Ableton/User Library/Templates/Lightpad Remote.als"
-```
+## Prepared Set
 
-Run these commands from the checkout root, or use File > Save As Template in Live. Use your configured User Library if it is elsewhere. Open **Templates > Lightpad Remote** to get a new Untitled Set, then save under your own name.
+- Give Group Tracks unique `[R1]` through `[R8]` prefixes. Unused numbers are allowed.
+- Each usable group needs an existing rightmost direct subgroup named `[Remote]`.
+- In each `[Remote]`, prepare `[Input 1]` and `[Input 2]` Audio helpers for the two configured sources.
+- Place source tracks named `T-Bone` and `SM-58` inside a uniquely named `[Inputs]` hierarchy. Its subgroups are organizational. Effects remain on each source; helpers take its Post FX signal.
+- Keep prepared music Audio tracks directly inside each remote group, before `[Remote]`. Four per group is the current starting inventory, not a hard limit. Two selected sources consume two lanes per take.
 
-For another Set, give Group Tracks unique `[R1]` through `[R8]` prefixes. `[R1] Vocals` maps to tile 1 regardless of its suffix or position. Unused numbers are allowed. A duplicate number or a marker on a non-group makes that assignment unavailable; other valid groups remain usable. Keep at least one child track in each group because Live rejects childless saved groups.
+The existing Temple of Loops installation already has this structure. Its source hardware inputs are deliberately preserved. Both currently use hardware input 1; change the original source tracks in Live when connecting your actual microphones.
 
-Select the audio interface and recording source in Live. New takes create Audio Tracks with Live's defaults. They do not clone an input/instrument track or force a fixed input, monitoring mode or routing. The template's empty child tracks only preserve native group structure. Start transport before recording; Begin while stopped silently does nothing.
+Only one group monitors live input at a time. Source selection or a horizontal swipe selects that group. Group mute, volume and effects apply to its monitored signal as well as its loops.
 
-## State and recording
+New recordings reuse quiet compatible tracks with an empty slot in the current phrase. Earlier clips keep their own source name and color. When `ALLOW_AUDIO_TRACK_CREATION = True`, maintenance may add tracks before `[Remote]`; insertion can interrupt audio under heavy load. No instruments or source effect racks are cloned.
 
-Live is authoritative. Saving, Save As, populated reopening, rename/reorder and manual clip launches require no manifest, saved-file hash or external ownership database. Mixed rows and unequal loop lengths are valid.
+## Local configuration
 
-The leftmost eligible currently playing loop supplies timing, including muted and valid MIDI loops. Unfinished recordings cannot be references. Each take captures its reference's current length and phase; another take reads Live again. Without a playing reference, use the next safe bar and a free row after the last occupied row.
+Pass a private Python configuration file to `bridge/install.py stage --configuration FILE`. The installer copies it into the staged Live package, validates its mode and records hashes. Local Set paths, bindings and diagnostics stay outside the public repository.
 
-Accept finishes at the next safe bar. A late unissued action moves to a later legal boundary while keeping the request. Accept-and-next finishes first, then waits for the next take's captured loop wrap; safe coincident boundaries are supported. Retry discards only the current unaccepted take and captures a fresh reference. Actual clip flags and anchors confirm recording; a countdown reaching zero is not confirmation.
-
-Fresh-phrase advance stops all playback in only that group and finds a free row after the highest currently playing row, or the last occupied row if nothing plays. Existing clips and other groups remain untouched. New tracks/scenes are created as needed. Retry may reuse its own emptied track, but arbitrary manual tracks are never recording destinations.
-
-An already running manual recording can be adopted. The selected recording group wins, including a selected nonrecording child of that group; otherwise use the leftmost recording track. Reading state issues no recording writes. A reserved empty slot does not authorize deleting a manual clip that appears there. Already issued Native actions are observed rather than blindly replayed after an exception or reconnect.
-
-## Configuration
-
-Normal configuration in [configuration.py](LightpadController/configuration.py) uses `LIVE_STATE_MODE = True` with no manifest or proof opt-in. Keep those defaults for normal use.
-
-The four white controls default to the first four sends; source `PARAMETER_TARGETS` remains `{}`. This is application-wide script configuration, keyed by zero-based group number. This example changes only R1's first three controls and keeps its fourth on send D. The racks must occupy device positions 0 and 1 with these exact names:
+Required Audio settings include:
 
 ```python
-PARAMETER_TARGETS = {0: (
-    {"kind": "device", "device_path": [0], "expected_device_name": "Random Rev + Delay V2",
-     "parameter_name": "Reverb"},
-    {"kind": "device", "device_path": [0], "expected_device_name": "Random Rev + Delay V2",
-     "parameter_name": "Delay"},
-    {"kind": "device", "device_path": [1], "expected_device_name": "Stereo Random Filter",
-     "parameter_name": "FX Vol"},
-    {"kind": "send", "index": 3},
-)}
+TARGET_SETS = ('/absolute/path/Your Project/Your Set.als',)
+AUDIO_SOURCES = (
+    {'name': 'T-Bone', 'helper_name': '[Input 1]'},
+    {'name': 'SM-58', 'helper_name': '[Input 2]'},
+)
+ALLOW_AUDIO_TRACK_CREATION = True
 ```
 
-Names are case-sensitive, and a named parameter must match uniquely. A missing/ambiguous macro or mismatched rack disables only that control; volume, pan, mute and other controls stay usable. Indexed targets using `parameter_index` remain valid, with optional `expected_parameter_name` and `expected_device_name` guards. Indices are zero-based; nested device paths alternate device/chain/device indices. Rack reordering or replacement after binding requires an explicit rebind; name matching does not silently adopt another rack.
+Start from [configuration.py](PerformanceController/configuration.py) and retain its other defaults. Set `TRACE_PATH` and `STATUS_PATH` to durable writable local files, or leave them `None`. Diagnostics must not point into a development experiment folder.
 
-Apply source configuration through the matched installer with Live/helper closed, then restart Live to reload the script. Configuration is shared across Sets, so other Sets without those named racks leave the affected bars unavailable. Do not edit an active installed script. Assignment and input-selection screens are not implemented.
+`PARAMETER_BINDINGS` maps zero-based group indices to four white controls. Volume and pan are independent. A send target is `{'kind': 'send', 'index': 0}`. A named device target is:
 
-## Code and tests
+```python
+{'kind': 'device', 'device_path': [0],
+ 'expected_device_name': 'Random Rev + Delay V2',
+ 'parameter_name': 'Reverb'}
+```
 
-| Module | Responsibility |
-| --- | --- |
-| `live_state.py` | Marked-group discovery, actual clips, phase and Live bar grid |
-| `live_recording.py` | Per-take timing, allocation, queued actions and guarded cleanup |
-| `live_controller.py` | Snapshots, clocks, mixer bindings and recording adoption |
-| `surface.py` / `device_ui.py` | MIDI callbacks, gestures, view reconciliation and local feedback |
-| `output_pacing.py` / `health.py` | Shared graphics budget and independent helper health |
+For the Temple racks the first three controls target `Reverb`, `Delay` and `FX Vol`; the fourth remains send index 3. Names must match uniquely. Missing or replaced targets disable only their own control, rather than writing to an unrelated parameter.
+
+## Recording and checks
+
+Start transport before recording. Begin uses a prepared destination and the current playing-loop reference. Accept ends at the next safe bar, moving to the following bar if the imminent boundary cannot be reached safely. Accept-and-next finishes and starts its replacement at the same boundary. Cancel and Retry affect only the current unaccepted take. Clear stops only its group and advances to a free phrase row without deleting clips.
+
+See the [adapter documentation](PerformanceController/README.md) for transaction ownership, partial failures and maintenance. Host tests open no Live or MIDI:
 
 ```sh
-python3 -m unittest discover -s live/tests -v
+python3 -m unittest discover -s live/PerformanceController -p 'test_*.py' -v
 ```
 
-The host suite uses fake Native objects and opens no Live or MIDI. See [architecture](../ARCHITECTURE.md) and [validation](../VALIDATION.md) for timing safeguards and the boundary between offline checks and physical evidence.
+The legacy `LightpadController` package and `templates/Lightpad Remote.als` use a different protocol and setup. Keep them paired with a legacy app; that template does not supply Audio-mode source helpers or configuration.

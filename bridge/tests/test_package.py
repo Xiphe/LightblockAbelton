@@ -1,6 +1,7 @@
 """Package the real compiled pad sources offline; never launch the staged app."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -79,6 +80,71 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(result["binary_sha256"], manifest["programs"]["status"]["binary_sha256"])
         self.assertLessEqual(manifest["programs"]["status"]["total"],package.DEVICE_BUDGET)
         self.assertFalse(manifest["saved_default_writes"])
+
+    @unittest.skipUnless(shutil.which("blocksctl"), "offline blocksctl compiler required")
+    def test_audio_mode_packages_four_matched_programs_without_checkout_dependency(self):
+        lightpad = ROOT / "lightpad"
+        target, manifest = package.package(
+            self.binary, lightpad / "performance-main.littlefoot",
+            lightpad / "performance-metronome.littlefoot", "TESTSERIAL000001",
+            self.root / "Audio.app", audio_performance=True,
+            patch_program=lightpad / "performance-patch.littlefoot",
+            status_program=lightpad / "status.littlefoot")
+        self.assertEqual(manifest["controller_mode"], "audio-performance")
+        self.assertEqual(set(manifest["programs"]), {"main", "metronome", "patch", "status"})
+        info = plistlib.loads((target / "Contents/Info.plist").read_bytes())
+        self.assertEqual(info["LightpadBridgeControllerMode"], manifest["controller_mode"])
+        resources = self.root / "isolated-audio"
+        shutil.copytree(target / "Contents/Resources", resources)
+        for key, entry in (("main", "controller"), ("metronome", "metronome"),
+                           ("patch", "patch"), ("status", "status")):
+            result = package.compile_program(resources / (entry + ".littlefoot"),
+                                             self.root / (key + ".bin"))
+            self.assertEqual(result["binary_sha256"], manifest["programs"][key]["binary_sha256"])
+            self.assertLessEqual(result["total"], package.DEVICE_BUDGET)
+        self.assertNotIn(str(ROOT), json.dumps(manifest))
+
+    def test_audio_mode_requires_matching_patch_and_status_before_creating_app(self):
+        target = self.root / "Never.app"
+        for kwargs in ({"audio_performance": True},
+                       {"audio_performance": True, "patch_program": self.controller},
+                       {"patch_program": self.controller},
+                       {"audio_performance": True, "patch_program": self.root / "missing",
+                        "status_program": self.controller}):
+            with self.assertRaises(ValueError):
+                package.package(self.binary, self.controller, self.metronome,
+                                "TESTSERIAL000001", target, **kwargs)
+            self.assertFalse(target.exists())
+
+    @unittest.skipUnless(os.environ.get("LIGHTPAD_BRIDGE_BINARY") and shutil.which("blocksctl"),
+                         "built bridge binary and offline compiler required")
+    def test_signed_app_starts_with_matched_audio_defaults_without_midi(self):
+        # --bundle-info exits before GUI initialization, locking, SDK or MIDI discovery.
+        self.signer_patch.stop()
+        lightpad = ROOT / "lightpad"
+        target, _ = package.package(
+            Path(os.environ["LIGHTPAD_BRIDGE_BINARY"]), lightpad / "performance-main.littlefoot",
+            lightpad / "performance-metronome.littlefoot", "TESTSERIAL000001",
+            self.root / "Audio.app", audio_performance=True,
+            patch_program=lightpad / "performance-patch.littlefoot",
+            status_program=lightpad / "status.littlefoot")
+        executable = target / "Contents/MacOS/lightpad-bridge"
+        info = json.loads(subprocess.check_output([str(executable), "--bundle-info"], text=True))
+        self.assertEqual(info["controller_mode"], "audio-performance")
+        self.assertEqual(info["serial"], "TESTSERIAL000001")
+        resources = target / "Contents/Resources"
+        for key, name in (("controller", "controller"), ("metronome", "metronome"),
+                          ("patch", "patch"), ("status_program", "status")):
+            self.assertEqual(Path(info[key]), resources / (name + ".littlefoot"))
+        self.assertEqual(Path(info["status_file"]), Path.home() /
+                         "Library/Application Support/Lightpad Bridge/status.json")
+        # Legacy packages retain their original defaults, without implicit patch mode.
+        legacy, _ = package.package(Path(os.environ["LIGHTPAD_BRIDGE_BINARY"]), self.controller,
+                                    self.metronome, "TESTSERIAL000001", self.root / "Legacy.app")
+        info = json.loads(subprocess.check_output(
+            [str(legacy / "Contents/MacOS/lightpad-bridge"), "--bundle-info"], text=True))
+        self.assertEqual(info["controller_mode"], "legacy")
+        self.assertEqual(info["patch"], "")
 
     def test_missing_modal_and_invalid_serial_create_no_app(self):
         target = self.root / "Never.app"

@@ -3,7 +3,8 @@
 #include <functional>
 #include <string>
 struct BridgeBundleConfiguration {
-    std::string serial,source,modalSource,statusSource,status,lock;
+    std::string serial,source,modalSource,statusSource,status,lock,patchSource;
+    bool audioPerformance=false;
 };
 BridgeBundleConfiguration bridgeBundleConfiguration();
 // Called only after an explicit status tap or user-requested permission action.
