@@ -92,14 +92,14 @@
   "program": {
     "source": "lightpad/status.littlefoot",
     "source_sha256": "e5b621291babb074157d5e3d40417f092b1a9826ef3b2ef9da6c309976d2aac3",
-    "binary_sha256": "2ea5e1dd7d0dfbbc604877cdb9c821eb18fcd6449e804a1752c82db1b874a8d0",
-    "code": 5035,
+    "binary_sha256": "fe459f7aca9fb2dd17dc8dd4968cf4d8d17621af4cf9a58581dd5691c0ad6a1c",
+    "code": 5457,
     "heap": 432,
-    "total": 5467,
-    "free": 1733,
-    "globals_bytes": 220,
+    "total": 5889,
+    "free": 1311,
+    "globals_bytes": 216,
     "includes": {
-      "idle-animation.littlefoot": "336210ce549c721a578f3d3b67ebfa0f335cc39150122e78167e1255007d7ee0",
+      "idle-animation.littlefoot": "aa4f9088b5685db48076f915fcda2dc4aaf0c85d8ab58fced97bd7fc9ad1c189",
       "idle-statements-prototype.littlefoot": "887dcadf7d96d0c57651ed4908a6bb2e0ad258eff79aec92676660ee20f2019a"
     }
   },

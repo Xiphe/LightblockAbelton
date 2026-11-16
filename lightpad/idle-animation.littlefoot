@@ -1,4 +1,4 @@
-// Accepted v9 idle gestures, with brief automatic statement interludes.
+// Accepted v9 idle gestures, with a tunnel/statement/Pride idle sequence.
 // Origin: codex/idle-animation-discovery at bb90f24.
 // THROWAWAY idle discovery v9: corner entry, free movement along the outer edge.
 // Native curved primitives give depth without expensive per-pixel iteration.
@@ -52,14 +52,58 @@ int statementTapAt;
 int statementTapFinger;
 float statementTapX;
 float statementTapY;
-int autoStatementAt;
-int autoStatementUntil;
-int autoStatementScreen;
+int idleSequenceAt;
+bool idlePride;
 
-void postponeAutomaticStatement(int now)
+void restartIdleSequence(int now)
 {
-    autoStatementUntil = now;
-    autoStatementAt = now + 7000 + getRandomInt(8001);
+    idleSequenceAt = now; idlePride = false;
+}
+
+void blendIdleStatement(int alpha)
+{
+    // Cover each destination pixel once, including the opaque black asset
+    // background. Overlapping black/glyph blends would attenuate the tunnel twice.
+    for (int y = 0; y < 15; ++y)
+    {
+        if (y < 2 || y >= 13) blendRect((alpha << 24) | 0xff0000, 0, y, 15, 1);
+        else
+        {
+            int row = 0;
+            if (y < 7)
+            {
+                int shift = (y - 2) * 4;
+                row = ((idleStatementFont(70) >> shift) & 15)
+                    | (((idleStatementFont(67) >> shift) & 15) << 5)
+                    | (((idleStatementFont(75) >> shift) & 15) << 10);
+            }
+            else if (y >= 8)
+            {
+                int shift = (y - 8) * 4;
+                row = ((idleStatementFont(65) >> shift) & 15)
+                    | (((idleStatementFont(70) >> shift) & 15) << 5)
+                    | (((idleStatementFont(68) >> shift) & 15) << 10);
+            }
+            int x = 0;
+            while (x < 15)
+            {
+                int start = x;
+                bool white = (row & (1 << x)) != 0;
+                while (x < 15 && ((row & (1 << x)) != 0) == white) ++x;
+                blendRect((alpha << 24) | (white ? 0xffffff : 0), start, y, x - start, 1);
+            }
+        }
+    }
+}
+
+void blendIdlePride(int alpha)
+{
+    blendRect((alpha << 24) | 0xe40303, 0, 0, 15, 2);
+    blendRect((alpha << 24) | 0xff8c00, 0, 2, 15, 3);
+    blendRect((alpha << 24) | 0xffed00, 0, 5, 15, 2);
+    blendRect((alpha << 24) | 0x008026, 0, 7, 15, 3);
+    blendRect((alpha << 24) | 0x24408e, 0, 10, 15, 2);
+    blendRect((alpha << 24) | 0x732982, 0, 12, 15, 3);
 }
 
 int touchCorner(int finger)
@@ -188,7 +232,7 @@ void initialiseIdle()
     statementMode = false; statementPreview = false;
     statementHoldConsumed = false; statementTap = false;
     statementScreen = 0; statementHoldAt = 0;
-    autoStatementScreen = 0; postponeAutomaticStatement(lastFrame);
+    restartIdleSequence(lastFrame);
     clearDisplay();
     log(10000);
 }
@@ -216,7 +260,7 @@ void idleTouchStart(int index, float x, float y, float z, float vz)
     fingers = fingers | (1 << index);
     idleTouchMove(index, x, y, z, vz);
     int now = getMillisecondCounter();
-    postponeAutomaticStatement(now);
+    restartIdleSequence(now);
     if (statementMode || statementPreview || statementHoldConsumed)
     {
         if (statementMode && !statementPreview && !statementHoldConsumed && touchCount() == 1)
@@ -254,7 +298,7 @@ void idleTouchEnd(int index, float x, float y, float z, float vz)
     idleTouchMove(index, x, y, z, vz);
     bool handled = statementMode || statementPreview || statementHoldConsumed;
     fingers = fingers & ~(1 << index);
-    if (fingers == 0) postponeAutomaticStatement(getMillisecondCounter());
+    if (fingers == 0) restartIdleSequence(getMillisecondCounter());
     if (statementPreview)
     {
         statementPreview = false; statementHoldConsumed = true; statementTap = false;
@@ -294,15 +338,20 @@ void repaintIdle()
     lastFrame = now;
     checkStatementHold(now);
     if (statementMode != statementPreview) { drawIdleStatement(statementScreen); return; }
+    int sequenceAge = 0;
     if (fingers == 0 && !statementMode && !statementPreview && !statementHoldConsumed)
     {
-        if (now - autoStatementAt >= 0)
+        sequenceAge = now - idleSequenceAt;
+        if (idlePride || sequenceAge >= 64000)
         {
-            autoStatementScreen = getRandomInt(3);
-            autoStatementUntil = now + 500 + getRandomInt(1001);
-            autoStatementAt = now + 7000 + getRandomInt(8001);
+            idlePride = true; drawIdleStatement(1); return;
         }
-        if (now - autoStatementUntil < 0) { drawIdleStatement(autoStatementScreen); return; }
+        if (sequenceAge >= 47000)
+        {
+            drawIdleStatement(0);
+            if (sequenceAge >= 62000) blendIdlePride((sequenceAge - 62000) * 255 / 2000);
+            return;
+        }
     }
     int a = anchorA;
     int b = anchorB;
@@ -361,6 +410,7 @@ void repaintIdle()
                         int(float(alpha) * (0.2 + branching * 0.8)), int(180.0 + branching * 20.0)),
                     cx - separation, cy, radius + (1.0 - branching) * 0.65, false);
     }
+    if (sequenceAge >= 45000) blendIdleStatement((sequenceAge - 45000) * 255 / 2000);
     if (now > nextReport)
     {
         log(1000000 + min(99, getTimeInCurrentFunctionCall()) * 100 + family);

@@ -80,16 +80,9 @@ class StatusIdleTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256((PAD / 'idle-statements-prototype.littlefoot').read_bytes()).hexdigest(),
                          '887dcadf7d96d0c57651ed4908a6bb2e0ad258eff79aec92676660ee20f2019a')
 
-    def status(self, random_values=(), now=1000):
+    def status(self, now=1000):
         vm = Harness(self.programs['status']); vm.circles = []
         vm._register('blendCircle/vifffb', lambda *args: vm.circles.append(args))
-        values = iter(random_values); vm.random_requests = []
-        def random(upper):
-            vm.random_requests.append(upper)
-            value = next(values, 0)
-            self.assertTrue(0 <= value < upper)
-            return value
-        vm._register('getRandomInt/ii', random)
         vm.time_ms = now; vm.call('initialise/v')
         return vm
 
@@ -97,69 +90,111 @@ class StatusIdleTests(unittest.TestCase):
         vm.time_ms = now; vm.circles.clear(); vm.call('repaint/v')
         return 'animation' if len(vm.circles) == 16 else 'statement'
 
-    def test_automatic_intervals_duration_and_screens_use_the_requested_ranges(self):
-        for screen, delay, duration, next_delay in ((0, 7000, 500, 15000),
-                                                   (1, 11234, 1057, 8321),
-                                                   (2, 15000, 1500, 7000)):
-            vm = self.status((delay-7000, screen, duration-500, next_delay-7000))
-            start = 1000 + delay
-            self.assertEqual(self.status_paint(vm, start-1), 'animation')
-            self.assertEqual(self.status_paint(vm, start), 'statement')
-            shown = [row[:] for row in vm.leds]
-            vm.call('drawIdleStatement/vi', screen)
-            self.assertEqual(vm.leds, shown)
-            self.assertEqual(self.status_paint(vm, start+duration-1), 'statement')
-            self.assertEqual(self.status_paint(vm, start+duration), 'animation')
-            self.assertEqual(self.status_paint(vm, start+next_delay-1), 'animation')
-            self.assertEqual(self.status_paint(vm, start+next_delay), 'statement')
-            self.assertEqual(vm.random_requests[:4], [8001, 3, 1001, 8001])
-            self.assertFalse(any(message[1] == 107 for message in vm.midi))
-            self.assertLessEqual(vm.code_size + vm.heap_size, 7200)
+    def asset(self, screen):
+        vm = self.status(); vm.call('drawIdleStatement/vi', screen)
+        return [row[:] for row in vm.leds]
 
-    def test_touch_cancels_automatic_statement_and_postpones_until_after_release(self):
-        vm = self.status((0, 2, 1000, 0))
-        self.assertEqual(self.status_paint(vm, 8000), 'statement')
+    def test_idle_sequence_keeps_tunnel_45s_statement_15s_then_pride_forever(self):
+        vm = self.status(); afd, pride = self.asset(0), self.asset(1)
+        self.assertEqual(self.status_paint(vm, 45999), 'animation')
+        self.assertTrue(all(pixel == 0x010107 for row in vm.leds for pixel in row))
+        self.assertEqual(self.status_paint(vm, 46000), 'animation')
+        self.assertTrue(all(pixel == 0x010107 for row in vm.leds for pixel in row))
+        self.assertEqual(self.status_paint(vm, 48000), 'statement')
+        self.assertEqual(vm.leds, afd)
+        self.status_paint(vm, 62999); self.assertEqual(vm.leds, afd)
+        self.status_paint(vm, 63000); self.assertEqual(vm.leds, afd)
+        self.status_paint(vm, 65000); self.assertEqual(vm.leds, pride)
+        self.status_paint(vm, 10000000); self.assertEqual(vm.leds, pride)
+        self.assertFalse(any(message[1] == 107 for message in vm.midi))
+        self.assertLessEqual(vm.code_size + vm.heap_size, 7200)
+
+    def test_tunnel_to_statement_crossfade_blends_every_pixel_exactly_once(self):
+        vm = self.status(); afd = self.asset(0)
+        # Curved rendering is a Native fake. Inject an arbitrary nonuniform
+        # tunnel image to test actual compiled crossfade composition, without
+        # claiming to reproduce firmware circle rasterization or LED rounding.
+        tunnel = [[((x*13+21) << 16) | ((y*11+17) << 8) | (x*5+y*7+31)
+                   for x in range(15)] for y in range(15)]
+        def curved(*args):
+            if not vm.circles: vm.leds = [row[:] for row in tunnel]
+            vm.circles.append(args)
+        vm._register('blendCircle/vifffb', curved)
+        self.status_paint(vm, 47000)
+        expected = [[Harness.blend(base, (127 << 24) | target) & 0xffffff
+                     for base, target in zip(a, b)] for a, b in zip(tunnel, afd)]
+        self.assertEqual(vm.leds, expected)
+        self.assertNotEqual(vm.leds, afd)
+        self.assertNotEqual(vm.leds, tunnel)
+        coverage = [[0]*15 for _ in range(15)]
+        for overlay in vm.overlays:
+            self.assertEqual(overlay['alpha'], 127)
+            x,y,w,h = overlay['rect']
+            for yy in range(y,y+h):
+                for xx in range(x,x+w): coverage[yy][xx] += 1
+        self.assertTrue(all(count == 1 for row in coverage for count in row))
+
+    def test_statement_to_pride_crossfade_mixes_both_full_images(self):
+        vm = self.status(); afd, pride = self.asset(0), self.asset(1)
+        self.status_paint(vm, 64000)
+        expected = [[Harness.blend(base, (127 << 24) | target) & 0xffffff
+                     for base,target in zip(a,b)] for a,b in zip(afd,pride)]
+        self.assertEqual(vm.leds, expected)
+        self.assertNotEqual(vm.leds, afd)
+        self.assertNotEqual(vm.leds, pride)
+        self.assertEqual(len(vm.overlays), 6)
+        self.assertTrue(all(overlay['alpha'] == 127 for overlay in vm.overlays))
+
+    def test_pride_tap_restarts_the_complete_cycle_from_last_release(self):
+        vm = self.status(); self.status_paint(vm, 65000)
+        self.assertEqual(vm.leds, self.asset(1))
         self.touch([vm], 'touchStart', 4, 1., 1.)
-        self.assertEqual(self.status_paint(vm, 8000), 'animation')
-        self.assertEqual(self.status_paint(vm, 28000), 'animation')
-        self.touch([vm], 'touchEnd', 4, 1., 1., 0.)
-        self.assertEqual(self.status_paint(vm, 34999), 'animation')
-        self.assertEqual(self.status_paint(vm, 35000), 'statement')
+        self.assertEqual(self.status_paint(vm, 65000), 'animation')
+        vm.time_ms = 65020; self.touch([vm], 'touchEnd', 4, 1., 1., 0.)
+        self.assertEqual(self.status_paint(vm, 110019), 'animation')
+        self.status_paint(vm, 112020); self.assertEqual(vm.leds, self.asset(0))
+        self.status_paint(vm, 129020); self.assertEqual(vm.leds, self.asset(1))
 
-    def test_manual_statement_mode_keeps_priority_over_automatic_timer(self):
+    def test_held_touch_keeps_animation_and_restarts_45s_on_release(self):
+        vm = self.status(); self.touch([vm], 'touchStart', 4, 1., 1.)
+        self.assertEqual(self.status_paint(vm, 100000), 'animation')
+        self.touch([vm], 'touchEnd', 4, 1., 1., 0.)
+        self.assertEqual(self.status_paint(vm, 144999), 'animation')
+        self.status_paint(vm, 147000); self.assertEqual(vm.leds, self.asset(0))
+
+    def test_manual_statement_mode_keeps_priority_over_sequence(self):
         vm = self.status(); a, b = (.1, .1), (1.8, 1.8)
         self.down([vm], a, b)
         self.assertEqual(self.status_paint(vm, 3000), 'statement')
         self.up([vm], a, b)
         manual = [row[:] for row in vm.leds]
-        self.assertEqual(self.status_paint(vm, 30000), 'statement')
-        self.assertEqual(vm.leds, manual)
+        self.status_paint(vm, 200000); self.assertEqual(vm.leds, manual)
         self.down([vm], a, b)
-        self.assertEqual(self.status_paint(vm, 32000), 'animation')
+        self.assertEqual(self.status_paint(vm, 202000), 'animation')
         self.up([vm], a, b)
-        self.assertEqual(self.status_paint(vm, 38999), 'animation')
-        self.assertEqual(self.status_paint(vm, 39000), 'statement')
+        self.assertEqual(self.status_paint(vm, 246999), 'animation')
+        self.status_paint(vm, 249000); self.assertEqual(vm.leds, self.asset(0))
 
-    def test_fault_icons_override_automatic_flash_and_idle_reentry_restarts_timer(self):
+    def test_fault_icons_override_pride_and_idle_reentry_restarts_sequence(self):
         for value in (2, 3, 4):
-            vm = self.status((0, 1, 1000, 0))
-            self.assertEqual(self.status_paint(vm, 8000), 'statement')
+            vm = self.status(); self.status_paint(vm, 65000)
             vm.call('handleMessage/viii', MAGIC | value, 0, HEADER)
-            self.status_paint(vm, 8000)
-            fresh = self.status(); fresh.time_ms = 8000
+            self.status_paint(vm, 65000)
+            fresh = self.status(); fresh.time_ms = 65000
             fresh.call('handleMessage/viii', MAGIC | value, 0, HEADER)
-            self.status_paint(fresh, 8000)
+            self.status_paint(fresh, 65000)
             self.assertEqual(vm.leds, fresh.leds)
             vm.call('handleMessage/viii', MAGIC, 0, HEADER)
-            self.assertEqual(self.status_paint(vm, 8000), 'animation')
-            self.assertEqual(self.status_paint(vm, 14999), 'animation')
-            self.assertEqual(self.status_paint(vm, 15000), 'statement')
+            self.assertEqual(self.status_paint(vm, 65000), 'animation')
+            self.assertEqual(self.status_paint(vm, 109999), 'animation')
+            self.status_paint(vm, 112000); self.assertEqual(vm.leds, self.asset(0))
 
-    def test_automatic_timer_crosses_signed_millisecond_wrap(self):
-        now = (1 << 31) - 3000; vm = self.status(now=now)
-        self.assertEqual(self.status_paint(vm, now+6999), 'animation')
-        self.assertEqual(self.status_paint(vm, now+7000), 'statement')
-        self.assertEqual(self.status_paint(vm, now+7500), 'animation')
+    def test_sequence_crosses_millisecond_wrap_and_terminal_pride_stays_latched(self):
+        now = (1 << 31) - 30000; vm = self.status(now=now)
+        self.assertEqual(self.status_paint(vm, now+44999), 'animation')
+        self.status_paint(vm, now+47000); self.assertEqual(vm.leds, self.asset(0))
+        self.status_paint(vm, now+64000); self.assertEqual(vm.leds, self.asset(1))
+        self.status_paint(vm, now+(1 << 31)+100000); self.assertEqual(vm.leds, self.asset(1))
 
     def test_touch_pressure_join_release_all_patterns_match_accepted_bytecode(self):
         pair = self.pair()

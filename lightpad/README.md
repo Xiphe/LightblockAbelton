@@ -6,7 +6,7 @@ The Lightpad renders and animates locally on a 15 by 15 LED grid. Live interpret
 | --- | --- | ---: | ---: |
 | `main.littlefoot` | Group overview, held mixer and recording controls | 7,110 | 90 |
 | `metronome.littlefoot` | Full-screen meter, click and tap tempo | 5,331 | 1,869 |
-| `status.littlefoot` | Connection status and standalone idle | 5,467 | 1,733 |
+| `status.littlefoot` | Connection status and standalone idle | 5,889 | 1,311 |
 | `idle-animation.littlefoot` | Shared touchable tunnel, included by status | Included above | |
 | `idle-statements-prototype.littlefoot` | Shared hidden-message assets/interaction | Included above | |
 
@@ -22,7 +22,7 @@ Touch exactly two opposite corners to preview hidden messages. Either diagonal w
 
 The message set is FCK/AFD, rainbow flag, trans flag and BLM. Fault states instead show the white Ableton logo, orange `[R]` or red `!`; tapping a fault icon requests a Mac explanation.
 
-While the tunnel is untouched, FCK/AFD or either flag briefly appears at random. Starts are 7–15 seconds apart and each interlude lasts 0.5–1.5 seconds. Touch cancels the interlude and starts a new interval after release. The manual message gesture still includes all four screens.
+While untouched, the tunnel runs for 45 seconds, crossfades into FCK/AFD over two seconds, holds that image for 15 seconds, then crossfades into the Pride rainbow over two seconds. Pride stays until touch. Touch immediately restores the interactive tunnel and restarts the 45-second phase after release. The manual message gesture still includes all four screens.
 
 ## Tests
 
@@ -41,7 +41,7 @@ python3 lightpad/tests/test_metronome_layout.py
 python3 lightpad/tests/test_metronome_swing.py
 ```
 
-The 91 checks compile actual Littlefoot bytecode and execute it in `tests/littlefoot_harness.py` with fake graphics, clock, touch and MIDI natives. They open no device, MIDI port, Live process or app. They cover snapshots, contact context, fractional fader fill, failure flash, dots/pages, marker animation, metronome geometry/swing and status/idle behavior. The idle comparison fixture is `tests/fixtures/idle-fractal-prototype.littlefoot`; it is test data, not another runtime program.
+The device checks compile actual Littlefoot bytecode and execute it in `tests/littlefoot_harness.py` with fake graphics, clock, touch and MIDI natives. They open no device, MIDI port, Live process or app. They cover snapshots, contact context, fractional fader fill, failure flash, dots/pages, marker animation, metronome geometry/swing and status/idle behavior. The idle comparison fixture is `tests/fixtures/idle-fractal-prototype.littlefoot`; it is test data, not another runtime program.
 
 `tests/fixtures/current_device.json` and `status_device.json` pin intentional source/binary/resource and scene changes. Review a rendering change before updating fixtures. The VM checks opcodes, bounds and its fixed 800-byte globals/stack reserve; this reserve is not extra program memory.
 
