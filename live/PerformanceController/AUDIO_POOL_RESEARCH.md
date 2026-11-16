@@ -60,3 +60,8 @@ A separate documented lead exists: Live12.3 release notes mention faster new-tra
 ## Bounded trial result
 
 The user approved eight fixed Audio lanes on R3 in the original Temple of Loops Set and256samples, with512only as fallback. In the subsequent Bluetooth trial the user reported clean audio and responsive interaction. Private runtime telemetry confirmed the no-creation policy active; the Native trace contains nine recording starts, eight finishes and no Audio-track creation events. This supports removing insertion from this performance path, without proving the engine-internal cause. The captured final trace remains on phrase row0, so physical cross-phrase reuse is not independently established by that trace; policy tests cover it. Final per-group capacities and source-switch/rerouting audio safety remain open.
+
+
+## Chosen operating policy
+
+On2026-11-16 the user deferred the shared reserve and native Push-mover investigation. Start each loop group with four configured Audio lanes, retaining any existing extras. The Set itself holds that editable starting capacity; no startup scheduler forces a track count. Keep `ALLOW_AUDIO_TRACK_CREATION=True` so ordinary bounded background preparation can add a lane when no compatible local destination remains. The user explicitly accepts the known insertion artifact for this overflow. Reuse existing lanes on later phrase rows and preserve their previous clips. No shared reserve, track movement or archiving fallback is introduced.

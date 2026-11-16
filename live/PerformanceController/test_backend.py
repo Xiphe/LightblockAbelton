@@ -182,6 +182,65 @@ class BackendChecks(unittest.TestCase):
         first=b.reserves[0].track;take=self.begin()
         self.assertIs(take.track,first)
 
+    def test_four_prepared_lanes_expand_in_background_and_reuse_after_clear(self):
+        b=self.make(groups=1)
+        group=b.state.groups[0].group;anchor=b.state.anchors[0]
+        for index in range(3):
+            track=Track(self.song,'Prepared source %d'%index,group)
+            self.song.routes(track,group,True)
+            self.song._tracks.insert(self.song._tracks.index(anchor),track)
+        b.state.discover();self.warm()
+        initial=tuple(b.state.groups[0].tracks)
+        selected=self.song.view.selected_track
+        creates=lambda:sum(call[0]=='create_track' for call in self.song.calls)
+        self.assertEqual(len(initial),4)
+        self.assertEqual(creates(),0)
+        accepted=[]
+        for token in range(1,4):
+            take=self.begin(token);self.ticks(8)
+            self.accept(take)
+            take.clip.name='Original source %d'%token;take.clip.color=token
+            accepted.append(take.clip)
+            self.assertEqual(creates(),0)
+        fourth=self.begin(4);self.ticks(12)
+        # The fourth recording consumes the last prepared lane. Only bounded
+        # maintenance creates/configures its next destination, before Next.
+        self.assertEqual(creates(),1)
+        spare=b.reserves[0].track
+        self.assertNotIn(spare,initial)
+        self.assertFalse(b.tasks)
+        direct=[t for t in self.song.tracks if t.group_track is group]
+        self.assertEqual(tuple(direct[:-2]),initial)
+        self.assertIs(direct[-2],spare)
+        self.assertIs(direct[-1],anchor)
+        self.assertIs(self.song.view.selected_track,selected)
+        self.song.advance(fourth.anchor+2.)
+        self.assertEqual(b.dispatch(67,4|(5<<7)),0)
+        self.assertEqual(creates(),1)
+        fifth=fourth.following
+        self.assertIs(fifth.track,spare)
+        self.assertEqual(fifth.target,fourth.finish_target)
+        self.ticks(1);self.song.advance(fourth.finish_target);self.ticks(1)
+        self.assertIs(b.recording.take,fifth)
+        self.assertEqual(fifth.state,'recording')
+        self.assertEqual(fifth.anchor,fourth.finish_target)
+        fourth.clip.name='Original source 4';fourth.clip.color=4
+        accepted.append(fourth.clip)
+        self.assertEqual(b.dispatch(68,5),0);self.ticks(20)
+        self.assertFalse(fifth.slot.has_clip)
+        # A next spare may also be prepared while the fifth take starts. Clear
+        # reuses the existing lanes, including those with historical clips.
+        expanded=tuple(b.state.groups[0].tracks);created=creates()
+        self.assertEqual(b.dispatch(104,0),0);self.ticks(16)
+        fresh=self.begin(6)
+        self.assertIn(fresh.track,initial)
+        self.assertEqual(fresh.row,1)
+        self.assertEqual(tuple(b.state.groups[0].tracks),expanded)
+        self.assertEqual(creates(),created)
+        self.assertEqual([track.clip_slots[0].clip for track in initial],accepted)
+        self.assertEqual([(clip.name,clip.color) for clip in accepted],
+                         [('Original source %d'%token,token) for token in range(1,5)])
+
     def test_next_reserve_prepared_while_recording_before_accept_next(self):
         b=self.make();self.warm();take=self.begin()
         self.ticks(8)
