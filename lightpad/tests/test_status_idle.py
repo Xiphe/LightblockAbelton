@@ -7,7 +7,6 @@ Littlefoot bytecode. These checks cannot measure hardware latency or LED optics.
 """
 import hashlib
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tempfile
@@ -74,18 +73,93 @@ class StatusIdleTests(unittest.TestCase):
         self.touch(pair, 'touchEnd', 0, *a, z=0.)
         self.touch(pair, 'touchEnd', 1, *b, z=0.)
 
-    def test_idle_implementation_is_exact_approved_logic_with_scoped_callback_names(self):
+    def test_approved_reference_and_statement_assets_remain_unchanged(self):
         original = REFERENCE.read_text()
         self.assertEqual(hashlib.sha256(original.encode()).hexdigest(),
                          '2d52cd9405ae94b583b7cd6ec2836756b710636ef85f36395105389c6d6a052b')
-        original = original.replace('#heapsize: 64\n', '')
-        for old, new in (('initialise', 'initialiseIdle'), ('touchStart', 'idleTouchStart'),
-                         ('touchMove', 'idleTouchMove'), ('touchEnd', 'idleTouchEnd'), ('repaint', 'repaintIdle')):
-            original = re.sub(r'\b' + old + r'\b', new, original)
-        extracted = (PAD / 'idle-animation.littlefoot').read_text().split('\n', 2)[2]
-        self.assertEqual(extracted, original)
         self.assertEqual(hashlib.sha256((PAD / 'idle-statements-prototype.littlefoot').read_bytes()).hexdigest(),
                          '887dcadf7d96d0c57651ed4908a6bb2e0ad258eff79aec92676660ee20f2019a')
+
+    def status(self, random_values=(), now=1000):
+        vm = Harness(self.programs['status']); vm.circles = []
+        vm._register('blendCircle/vifffb', lambda *args: vm.circles.append(args))
+        values = iter(random_values); vm.random_requests = []
+        def random(upper):
+            vm.random_requests.append(upper)
+            value = next(values, 0)
+            self.assertTrue(0 <= value < upper)
+            return value
+        vm._register('getRandomInt/ii', random)
+        vm.time_ms = now; vm.call('initialise/v')
+        return vm
+
+    def status_paint(self, vm, now):
+        vm.time_ms = now; vm.circles.clear(); vm.call('repaint/v')
+        return 'animation' if len(vm.circles) == 16 else 'statement'
+
+    def test_automatic_intervals_duration_and_screens_use_the_requested_ranges(self):
+        for screen, delay, duration, next_delay in ((0, 7000, 500, 15000),
+                                                   (1, 11234, 1057, 8321),
+                                                   (2, 15000, 1500, 7000)):
+            vm = self.status((delay-7000, screen, duration-500, next_delay-7000))
+            start = 1000 + delay
+            self.assertEqual(self.status_paint(vm, start-1), 'animation')
+            self.assertEqual(self.status_paint(vm, start), 'statement')
+            shown = [row[:] for row in vm.leds]
+            vm.call('drawIdleStatement/vi', screen)
+            self.assertEqual(vm.leds, shown)
+            self.assertEqual(self.status_paint(vm, start+duration-1), 'statement')
+            self.assertEqual(self.status_paint(vm, start+duration), 'animation')
+            self.assertEqual(self.status_paint(vm, start+next_delay-1), 'animation')
+            self.assertEqual(self.status_paint(vm, start+next_delay), 'statement')
+            self.assertEqual(vm.random_requests[:4], [8001, 3, 1001, 8001])
+            self.assertFalse(any(message[1] == 107 for message in vm.midi))
+            self.assertLessEqual(vm.code_size + vm.heap_size, 7200)
+
+    def test_touch_cancels_automatic_statement_and_postpones_until_after_release(self):
+        vm = self.status((0, 2, 1000, 0))
+        self.assertEqual(self.status_paint(vm, 8000), 'statement')
+        self.touch([vm], 'touchStart', 4, 1., 1.)
+        self.assertEqual(self.status_paint(vm, 8000), 'animation')
+        self.assertEqual(self.status_paint(vm, 28000), 'animation')
+        self.touch([vm], 'touchEnd', 4, 1., 1., 0.)
+        self.assertEqual(self.status_paint(vm, 34999), 'animation')
+        self.assertEqual(self.status_paint(vm, 35000), 'statement')
+
+    def test_manual_statement_mode_keeps_priority_over_automatic_timer(self):
+        vm = self.status(); a, b = (.1, .1), (1.8, 1.8)
+        self.down([vm], a, b)
+        self.assertEqual(self.status_paint(vm, 3000), 'statement')
+        self.up([vm], a, b)
+        manual = [row[:] for row in vm.leds]
+        self.assertEqual(self.status_paint(vm, 30000), 'statement')
+        self.assertEqual(vm.leds, manual)
+        self.down([vm], a, b)
+        self.assertEqual(self.status_paint(vm, 32000), 'animation')
+        self.up([vm], a, b)
+        self.assertEqual(self.status_paint(vm, 38999), 'animation')
+        self.assertEqual(self.status_paint(vm, 39000), 'statement')
+
+    def test_fault_icons_override_automatic_flash_and_idle_reentry_restarts_timer(self):
+        for value in (2, 3, 4):
+            vm = self.status((0, 1, 1000, 0))
+            self.assertEqual(self.status_paint(vm, 8000), 'statement')
+            vm.call('handleMessage/viii', MAGIC | value, 0, HEADER)
+            self.status_paint(vm, 8000)
+            fresh = self.status(); fresh.time_ms = 8000
+            fresh.call('handleMessage/viii', MAGIC | value, 0, HEADER)
+            self.status_paint(fresh, 8000)
+            self.assertEqual(vm.leds, fresh.leds)
+            vm.call('handleMessage/viii', MAGIC, 0, HEADER)
+            self.assertEqual(self.status_paint(vm, 8000), 'animation')
+            self.assertEqual(self.status_paint(vm, 14999), 'animation')
+            self.assertEqual(self.status_paint(vm, 15000), 'statement')
+
+    def test_automatic_timer_crosses_signed_millisecond_wrap(self):
+        now = (1 << 31) - 3000; vm = self.status(now=now)
+        self.assertEqual(self.status_paint(vm, now+6999), 'animation')
+        self.assertEqual(self.status_paint(vm, now+7000), 'statement')
+        self.assertEqual(self.status_paint(vm, now+7500), 'animation')
 
     def test_touch_pressure_join_release_all_patterns_match_accepted_bytecode(self):
         pair = self.pair()

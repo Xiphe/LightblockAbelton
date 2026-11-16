@@ -1,5 +1,5 @@
-// Accepted v9 idle behavior, extracted with callback names scoped for status.
-// Origin: codex/idle-animation-discovery at bb90f24. Logic is unchanged.
+// Accepted v9 idle gestures, with brief automatic statement interludes.
+// Origin: codex/idle-animation-discovery at bb90f24.
 // THROWAWAY idle discovery v9: corner entry, free movement along the outer edge.
 // Native curved primitives give depth without expensive per-pixel iteration.
 // One finger bends the tunnel; pressure moves into it. Two fingers pull its ends.
@@ -52,6 +52,15 @@ int statementTapAt;
 int statementTapFinger;
 float statementTapX;
 float statementTapY;
+int autoStatementAt;
+int autoStatementUntil;
+int autoStatementScreen;
+
+void postponeAutomaticStatement(int now)
+{
+    autoStatementUntil = now;
+    autoStatementAt = now + 7000 + getRandomInt(8001);
+}
 
 int touchCorner(int finger)
 {
@@ -179,6 +188,7 @@ void initialiseIdle()
     statementMode = false; statementPreview = false;
     statementHoldConsumed = false; statementTap = false;
     statementScreen = 0; statementHoldAt = 0;
+    autoStatementScreen = 0; postponeAutomaticStatement(lastFrame);
     clearDisplay();
     log(10000);
 }
@@ -206,6 +216,7 @@ void idleTouchStart(int index, float x, float y, float z, float vz)
     fingers = fingers | (1 << index);
     idleTouchMove(index, x, y, z, vz);
     int now = getMillisecondCounter();
+    postponeAutomaticStatement(now);
     if (statementMode || statementPreview || statementHoldConsumed)
     {
         if (statementMode && !statementPreview && !statementHoldConsumed && touchCount() == 1)
@@ -243,6 +254,7 @@ void idleTouchEnd(int index, float x, float y, float z, float vz)
     idleTouchMove(index, x, y, z, vz);
     bool handled = statementMode || statementPreview || statementHoldConsumed;
     fingers = fingers & ~(1 << index);
+    if (fingers == 0) postponeAutomaticStatement(getMillisecondCounter());
     if (statementPreview)
     {
         statementPreview = false; statementHoldConsumed = true; statementTap = false;
@@ -282,6 +294,16 @@ void repaintIdle()
     lastFrame = now;
     checkStatementHold(now);
     if (statementMode != statementPreview) { drawIdleStatement(statementScreen); return; }
+    if (fingers == 0 && !statementMode && !statementPreview && !statementHoldConsumed)
+    {
+        if (now - autoStatementAt >= 0)
+        {
+            autoStatementScreen = getRandomInt(3);
+            autoStatementUntil = now + 500 + getRandomInt(1001);
+            autoStatementAt = now + 7000 + getRandomInt(8001);
+        }
+        if (now - autoStatementUntil < 0) { drawIdleStatement(autoStatementScreen); return; }
+    }
     int a = anchorA;
     int b = anchorB;
     float dt = float(elapsed);

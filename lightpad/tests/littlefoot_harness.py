@@ -142,6 +142,8 @@ class Harness:
     def _register_natives(self):
         self._register("getMillisecondCounter/i", lambda: self.time_ms)
         self._register("getTimeInCurrentFunctionCall/i", lambda: 0)
+        # Deterministic native fake; tests can override to exercise RNG bounds.
+        self._register("getRandomInt/ii", lambda upper: 0)
         for kind in ("i", "f"):
             self._register(f"abs/{kind}{kind}", abs)
             self._register(f"min/{kind}{kind}{kind}", min)

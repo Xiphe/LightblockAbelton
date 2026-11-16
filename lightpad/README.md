@@ -6,7 +6,7 @@ The Lightpad renders and animates locally on a 15 by 15 LED grid. Live interpret
 | --- | --- | ---: | ---: |
 | `main.littlefoot` | Group overview, held mixer and recording controls | 7,110 | 90 |
 | `metronome.littlefoot` | Full-screen meter, click and tap tempo | 5,331 | 1,869 |
-| `status.littlefoot` | Connection status and standalone idle | 5,320 | 1,880 |
+| `status.littlefoot` | Connection status and standalone idle | 5,467 | 1,733 |
 | `idle-animation.littlefoot` | Shared touchable tunnel, included by status | Included above | |
 | `idle-statements-prototype.littlefoot` | Shared hidden-message assets/interaction | Included above | |
 
@@ -21,6 +21,8 @@ One finger bends the tunnel, pressure changes motion/distortion, and two fingers
 Touch exactly two opposite corners to preview hidden messages. Either diagonal works. Hold for two seconds to latch the mode; release sooner to return. During preview both contacts may move through the outer three-pixel edge band; entering the interior cancels it. After both fingers lift, short taps cycle messages. Use the same opposite-corner preview/hold to return to the animation. Idle touches send no diagnostic requests.
 
 The message set is FCK/AFD, rainbow flag, trans flag and BLM. Fault states instead show the white Ableton logo, orange `[R]` or red `!`; tapping a fault icon requests a Mac explanation.
+
+While the tunnel is untouched, FCK/AFD or either flag briefly appears at random. Starts are 7–15 seconds apart and each interlude lasts 0.5–1.5 seconds. Touch cancels the interlude and starts a new interval after release. The manual message gesture still includes all four screens.
 
 ## Tests
 
