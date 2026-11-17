@@ -107,7 +107,8 @@ def validate_host(script, configuration, mode):
             raise ValueError('Production installation requires Live-state mode and matching host health support')
         return
     modules = ('surface', 'backend', 'health', 'protocol', 'model', 'audio_inputs',
-               'bundle_recording', 'recording_core', 'recording_coverage', 'launch_admission',
+               'bundle_recording', 'audio_patch_state', 'direct_monitoring',
+               'recording_core', 'recording_coverage', 'launch_admission',
                'selection_restore', 'timing')
     if any(not (script / (name + '.py')).is_file() for name in modules):
         raise ValueError('Audio app requires the complete matched PerformanceController script')
@@ -119,13 +120,9 @@ def validate_host(script, configuration, mode):
             not isinstance(path, str) or not Path(path).is_absolute() or Path(path).suffix.lower() != '.als'
             for path in paths)):
         raise ValueError('Audio configuration requires explicit absolute Live Set paths')
-    sources = settings.get('AUDIO_SOURCES')
-    if (not isinstance(sources, tuple) or len(sources) != 2 or any(
-            not isinstance(source, dict) or any(not isinstance(source.get(key), str) or not source[key]
-                for key in ('name', 'helper_name')) for source in sources)):
-        raise ValueError('Audio configuration requires two named source/helper definitions')
-    if any(len({source[key] for source in sources}) != 2 for key in ('name', 'helper_name')):
-        raise ValueError('Audio source and helper names must be unique')
+    if settings.get('AUDIO_SOURCES') != 'catalog':
+        raise ValueError("Audio configuration requires AUDIO_SOURCES = 'catalog'; "
+                         "source tracks are discovered inside [Inputs], without named helper definitions")
     for key in ('TRACE_PATH', 'STATUS_PATH'):
         value = settings.get(key)
         if value is not None and (not isinstance(value, str) or not Path(value).is_absolute()):

@@ -6,9 +6,9 @@ using namespace performance;
 
 static Intent intent(int sequence,int key,int value,int generation=1) { return Intent{sequence,key,value,generation}; }
 static Ack ack(const Dispatch& d,int value) { return Ack{d.generation,d.seq,d.key,value}; }
-static std::vector<Feedback> drain(Reconciler& r,double time=0) {
+static std::vector<Feedback> drain(Reconciler& r,double time=0,bool patchNames=false) {
     std::vector<Feedback> out;
-    for(int n=0;n<1024;++n) {auto value=r.takeFeedback(time);if(!value) return out;out.push_back(*value);}
+    for(int n=0;n<1024;++n) {auto value=r.takeFeedback(time,patchNames);if(!value) return out;out.push_back(*value);}
     assert(false);return out;
 }
 static void ready(Reconciler& r,int generation=1) {r.reset(generation,0);r.handshake(generation,1);auto s=r.takeFeedback(1);assert(s&&s->kind==0&&s->a==127);}
@@ -299,7 +299,7 @@ static void failed_sdk_feedback_is_retained_without_native_replay() {
 }
 static void patch_intents_keep_latest_and_precede_recording() {
     Reconciler r;ready(r);
-    assert(valid(intent(0,48,3)));assert(!valid(intent(0,48,4)));
+    assert(valid(intent(0,48,127)));assert(!valid(intent(0,48,128)));
     assert(valid(intent(0,57,7)));assert(!valid(intent(0,57,8)));
     assert(r.intent(intent(0,48,1),2));auto initial=r.takeDispatch(3);assert(initial&&initial->key==48);
     assert(r.intent(intent(1,48,3),4));assert(r.intent(intent(2,48,2),5));
@@ -336,8 +336,43 @@ static void patch_intents_keep_latest_and_precede_recording() {
     bool owner=false;for(auto f:drain(facts,7)) owner|=f.kind==6&&f.a==1&&(f.b>>24)==7;
     assert(owner);
 }
+static void seven_source_metadata_and_patch_only_names() {
+    Reconciler r;ready(r);
+    int sequence=0;
+    for(int source=0;source<7;++source)
+        r.receiveObservation({1,sequence++,6,uint32_t(24+source),uint32_t(0x200000+source)},2);
+    r.receiveObservation({1,sequence++,1,57,8},2);
+    r.receiveObservation({1,sequence++,6,8,127u|(65u<<7)|(1u<<14)},2);
+    for(int chunk=0;chunk<56;++chunk)
+        r.receiveObservation({1,sequence++,6,uint32_t(40+chunk),uint32_t(1000+chunk)},2);
+    auto main=drain(r,3);
+    assert(main.size()==9);assert(!r.pending());
+    int colors=0;bool owner=false,readiness=false;
+    for(auto f:main) {
+        assert(f.kind!=6 || f.a<40 || f.a>=96);
+        if(f.kind==6&&f.a>=24&&f.a<31) {++colors;assert(f.b==0x200000+f.a-24);}
+        owner|=f.kind==1&&f.a==57&&f.b==8;
+        readiness|=f.kind==6&&f.a==8&&f.b==(127u|(65u<<7)|(1u<<14));
+    }
+    assert(colors==7&&owner&&readiness);
+    // Coalesce while the modal is closed. New labels must neither keep main
+    // busy nor obscure performance feedback, and deliver the latest word only.
+    r.receiveObservation({1,sequence++,6,95,99999},4);
+    assert(drain(r,4).empty());assert(!r.pending());
+    auto names=drain(r,5,true);assert(names.size()==56);
+    for(auto f:names) {assert(f.kind==6&&f.a>=40&&f.a<96);assert(f.b==(f.a==95?99999u:1000u+f.a-40));}
+    assert(drain(r,6,true).empty());
+    r.reseed(7);auto reopened=drain(r,7,true);
+    int count=0;for(auto f:reopened) if(f.kind==6&&f.a>=40&&f.a<96) ++count;
+    assert(count==56);
+    // A failed SDK label send is retained, but remains patch-only on retry.
+    r.reseed(8);auto next=drain(r,8,true);Feedback name;
+    for(auto f:next) if(f.kind==6&&f.a==95) name=f;
+    assert(r.feedbackFailed(name));assert(drain(r,9).empty());
+    auto retry=drain(r,9,true);assert(retry.size()==1&&retry[0].a==95&&retry[0].b==99999);
+}
 int main() {
-    parsers();superseding_parameters();discrete_order_and_deduplication();bounded_overflow();patch_intents_keep_latest_and_precede_recording();
+    parsers();seven_source_metadata_and_patch_only_names();superseding_parameters();discrete_order_and_deduplication();bounded_overflow();patch_intents_keep_latest_and_precede_recording();
     timeout_no_replay_and_quarantine();reset_and_reseed();observations_and_priorities();acknowledged_state_updates_already_dirty_snapshots();prehandshake_facts_cannot_poison_a_new_session();group_availability_waits_for_field_delivery();failed_sdk_feedback_is_retained_without_native_replay();
     std::cout<<"performance: parser, coalescing, ordering, timeout, reconnect and bounded-model checks passed\n";
 }

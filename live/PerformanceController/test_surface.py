@@ -204,6 +204,40 @@ class SurfaceChecks(unittest.TestCase):
                 self.assertEqual(json.loads(path.read_text())['reserves'],[])
         self.assertEqual(self.song.track_reads,0)
 
+    def test_audio_status_uses_cached_catalog_and_storage_without_native_reads(self):
+        from contextlib import ExitStack
+        from tempfile import TemporaryDirectory
+        import json
+        from test_audio_inputs import AudioInputChecks
+        surface=self.make()
+        previous=surface.backend
+        fixture=AudioInputChecks();backend=fixture.make(initial=3)
+        self.addCleanup(fixture.doCleanups)
+        previous.close();surface.backend=backend
+        inputs=backend.audio_inputs
+        backend.dispatch(49,1)
+        self.assertGreater(inputs.state_store.pending,0)
+        fixture.song.track_reads=0
+        native_targets=[fixture.input_root]+list(fixture.sources)+[g.group for g in backend.state.groups.values()]
+        with TemporaryDirectory() as temporary, ExitStack() as guards:
+            for track in native_targets:
+                guards.enter_context(patch.object(track,'get_data',side_effect=AssertionError('status must not read Native metadata')))
+                guards.enter_context(patch.object(track,'set_data',side_effect=AssertionError('status must not write Native metadata')))
+            path=Path(temporary)/'status.json'
+            with patch.object(adapter.config,'STATUS_PATH',str(path)), patch.object(adapter.time,'monotonic',return_value=20.):
+                surface._status()
+                status=json.loads(path.read_text())
+        audio=status['audio_inputs']
+        self.assertEqual(audio['catalog_size'],2)
+        self.assertEqual(audio['storage_pending'],inputs.state_store.pending)
+        self.assertEqual(audio['storage_errors'],[])
+        self.assertEqual(audio['catalog_issues'],inputs.issues)
+        self.assertNotIn('helper_updates',audio)
+        self.assertEqual(audio['desired']['1'],1)
+        self.assertEqual(audio['monitor_owner'],1)
+        self.assertEqual(fixture.song.track_reads,0)
+        self.assertFalse(any(e.get('event')=='status_write_failed' for e in backend.events))
+
     def test_private_status_io_failure_does_not_escape_or_stop_commands(self):
         from tempfile import TemporaryDirectory
         surface=self.make();self.handshake()

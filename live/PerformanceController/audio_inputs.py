@@ -1,14 +1,16 @@
-"""Two retained Audio inputs and bounded preparation, outside MIDI dispatch.
+"""Original Audio sources, Set-local choices and prepared recording lanes.
 
-The explicitly prepared [Input n] helpers inside each rightmost [Remote]
-subgroup persist assignments through their mute flags. Their configured route
-objects, rather than ambiguous source display names, identify input endpoints.
+Discovery and Native preparation are maintenance work. Touch commands change
+cached intent only; actual recording lanes provide monitoring without helpers.
 """
 from dataclasses import dataclass
+import json
 from .model import same
+from .audio_patch_state import AudioPatchState
 
-
-OFF, IN = 2, 0
+OFF, IN, AUTO = 2, 0, 1
+MAX_SOURCES = 7
+PREPARED_KEY = 'net.xiphe.lightpad.audio.prepared-lane.v1'
 
 
 def label(value):
@@ -16,8 +18,15 @@ def label(value):
 
 
 def route_equal(left, right):
-    a, b = getattr(left, 'identifier', None), getattr(right, 'identifier', None)
-    return a == b if a is not None and b is not None else same(left, right)
+    return same(left, right)
+
+
+def source_route(route, source):
+    return same(getattr(route, 'attached_object', None), source.track)
+
+
+def post_fx(channel):
+    return label(channel).casefold().replace(' ', '') == 'postfx'
 
 
 @dataclass(frozen=True)
@@ -28,7 +37,7 @@ class Source:
     color: int
     color_index: int
     route: object
-    channel: object
+    channel: object = None
 
 
 @dataclass(frozen=True)
@@ -54,242 +63,237 @@ class BundleReserve:
 class AudioInputs:
     def __init__(self, backend, specs):
         self.backend, self.song = backend, backend.song
-        self.specs = tuple(specs)
-        if len(self.specs) != 2:
-            raise ValueError('Audio patching requires exactly two prepared sources')
-        self.sources, self.helpers, self.issues = {}, {}, {}
-        self._source_candidates={}
+        self.state_store = AudioPatchState()
+        self.sources, self.issues = {}, {}
+        self.catalog_tracks = ()
+        self._source_candidates = {}
         self.desired, self.revisions = {}, {}
-        self.confirmed,self.last_ready,self._intents={},{},{}
-        self._owner_revision=0
+        self.confirmed, self.last_ready, self._intents = {}, {}, {}
+        self._owner_revision = 0
         self.monitor_owner = None
-        self.monitor_dirty = False
-        self._helper_actual={}
-        self._helper_plan={}
-        self.jobs = {}
-        self.prepared_masks = {}
-        self.busy = set()
-        self.failed = set()
-        self._initialized = set()
+        self.jobs, self.prepared_masks = {}, {}
+        self.busy, self.failed = set(), set()
+        self._available = 0
+        self._observe_at = -10.
+        self.root = None
+        self._storage_errors = ()
         self.discover()
 
+    @staticmethod
+    def _within(track, root):
+        parent = getattr(track, 'group_track', None)
+        for unused in range(32):
+            if parent is None: return False
+            if same(parent, root): return True
+            parent = getattr(parent, 'group_track', None)
+        return False
+
+    def _prune_groups(self):
+        live_groups = set(self.backend.state.groups)
+        for mapping in (self.desired, self.revisions, self.confirmed, self.last_ready,
+                        self._intents, self.jobs, self.prepared_masks,
+                        self.backend.reserves, self.backend.failures):
+            for group in tuple(mapping):
+                if group not in live_groups:mapping.pop(group, None)
+        self.busy.intersection_update(live_groups)
+        self.failed.intersection_update(live_groups)
+        for intent in self._intents.values():
+            if intent['previous_owner'] not in live_groups:intent['previous_owner'] = None
+
     def discover(self):
+        self._prune_groups()
         tracks = self.backend.state.tracks
-        roots = [t for t in tracks if t.is_foldable and str(t.name).split(' ',1)[0]=='[Inputs]']
-        def within(track, root):
-            parent = getattr(track,'group_track',None)
-            for unused in range(32):
-                if parent is None: return False
-                if same(parent,root): return True
-                parent=getattr(parent,'group_track',None)
-            return False
-        candidates, helpers, issues = {}, {}, {}
-        for g,anchor in self.backend.state.anchors.items():
-            children = [t for t in tracks if same(getattr(t,'group_track',None),anchor)]
-            found=[]
-            for spec in self.specs:
-                matches=[t for t in children if not t.is_foldable and t.has_audio_input
-                         and str(t.name)==spec['helper_name']]
-                found.append(matches[0] if len(matches)==1 else None)
-            if all(found): helpers[g]=tuple(found)
-            else: issues[g]='prepared input helpers unavailable'
-        for i,spec in enumerate(self.specs):
-            matches=[t for t in tracks if len(roots)==1 and not t.is_foldable
-                     and t.has_audio_input and str(t.name)==spec['name'] and within(t,roots[0])]
-            helper=next((items[i] for items in helpers.values()),None)
-            if len(matches)!=1 or helper is None:continue
-            candidates[i]=(matches[0],helper)
-        self.sources={}
-        self._source_candidates=candidates
-        self.helpers,self.issues=helpers,issues
-        for g,items in helpers.items():
-            for i,t in enumerate(items):
-                self._helper_actual[g,i,'mute']=bool(t.mute)
-                self._helper_actual[g,i,'current_monitoring_state']=t.current_monitoring_state
-        self._available=getattr(self,'_available',0)
-        for g,items in helpers.items():
-            if g not in self._initialized:
-                self.desired[g]=sum((not bool(t.mute))<<i for i,t in enumerate(items))
-                self.confirmed[g]=self.desired[g]
-                self.revisions[g]=0;self._initialized.add(g)
-            # A unique actual monitor group can be recovered from Live.
-        owners={g for g,items in helpers.items() if any(t.current_monitoring_state==IN and not t.mute for t in items)}
-        if self.monitor_owner is None and len(owners)==1:self.monitor_owner=next(iter(owners))
-        if self._helper_plan:self._plan_helpers()
-        self.observe_sources()
+        roots = [t for t in tracks if t.is_foldable and str(t.name).split(' ', 1)[0] == '[Inputs]']
+        self.root = roots[0] if len(roots) == 1 else None
+        if self.root is None:
+            self.sources = {}; self._source_candidates = {}; self._available = 0
+            self.catalog_tracks = (); self.monitor_owner = None
+            self.issues = {'catalog': 'unique [Inputs] group unavailable'}
+            return
+        catalog = tuple(t for t in tracks if not t.is_foldable and t.has_audio_input
+                        and self._within(t, self.root))
+        if len(catalog) > MAX_SOURCES:
+            raise ValueError('Audio catalog exceeds seven supported sources')
+        catalog_changed = (len(catalog) != len(self.catalog_tracks) or
+                           any(not same(a, b) for a, b in zip(catalog, self.catalog_tracks)))
+        self.catalog_tracks = catalog
+        old_ids = self.state_store.source_ids
+        confirmed_ids = {g: tuple(identifier for i, identifier in enumerate(old_ids) if mask & (1 << i))
+                         for g, mask in self.confirmed.items()}
+        self.state_store.bind(self.root, catalog, {g: item.group for g, item in self.backend.state.groups.items()})
+        previous = tuple(self.sources.values())
+        self.sources = {}; self._source_candidates = {}; self.issues = dict(self.state_store.issues)
+        probes = [t for item in self.backend.state.groups.values() for t in item.tracks
+                  if not t.is_foldable and t.has_audio_input]
+        for i, track in enumerate(catalog):
+            if i in self.state_store.duplicate_indices or i in self.state_store.invalid_indices: continue
+            prior = next((s for s in previous if same(s.track, track)), None)
+            if prior is not None:
+                self.sources[i] = Source(i, track, str(track.name), int(track.color),
+                                         int(getattr(track, 'color_index', 0)), prior.route)
+            elif probes:
+                self._source_candidates[i] = (track, probes[0])
+        for group in self.backend.state.groups:
+            wanted = self.state_store.mask(group)
+            before = self.desired.get(group)
+            self.desired[group] = wanted
+            self.confirmed[group] = (sum(1 << i for i, identifier in enumerate(self.state_store.source_ids)
+                                         if identifier in confirmed_ids[group])
+                                     if group in confirmed_ids else wanted)
+            self.revisions.setdefault(group, 0)
+            if before is not None and (before != wanted or catalog_changed):
+                self.revisions[group] += 1
+                if group in self._intents:self._intents[group]['revision'] = self.revisions[group]
+                self.backend.reserves.pop(group, None); self.jobs.pop(group, None)
+                self.prepared_masks.pop(group, None)
+                self.busy.add(group)
+        self.monitor_owner = self.state_store.monitor_owner
+        self.observe_sources(force=True)
+
+    def _recover_prepared_ownership(self):
+        # Saved arms belong to us only with our own marker and matching actual
+        # source/parent/monitoring state. Unmarked manual arms stay untouched.
+        for group, item in self.backend.state.groups.items():
+            for track in item.tracks:
+                try:
+                    if not track.arm or track.is_foldable or not track.has_audio_input:continue
+                    raw=track.get_data(PREPARED_KEY,'')
+                    if not raw:continue
+                    marker=json.loads(raw)
+                    if marker.get('schema')!=1 or marker.get('group')!=group:continue
+                    attached=getattr(track.input_routing_type,'attached_object',None)
+                    matching=any(identifier==marker.get('source') and same(source,attached)
+                                 for identifier,source in zip(self.state_store.source_ids,self.catalog_tracks))
+                    if (matching and same(track.group_track,item.group) and post_fx(track.input_routing_channel)):
+                        self.backend.monitoring.recover_saved(track,group)
+                except (RuntimeError,AttributeError,ValueError,TypeError):continue
+
+    def _mark_prepared_ownership(self, group, reserve):
+        for member in reserve.members:
+            identifier=self.state_store.source_ids[member.source.index]
+            payload=json.dumps(dict(schema=1,group=group,source=identifier,row=reserve.row),
+                               sort_keys=True,separators=(',',':'))
+            if member.track.get_data(PREPARED_KEY,'')!=payload:
+                member.track.set_data(PREPARED_KEY,payload)
 
     def _complete_source_profiles(self):
-        """Complete only missing profiles from two retained startup candidates.
-
-        Live may expose the saved tracks before their routing properties have
-        settled. Readiness is not discovery: retry those retained objects, not
-        the whole Set, and never replace a ready canonical route here.
-        """
-        for i,(source,helper) in self._source_candidates.items():
-            if i in self.sources:continue
+        offered = []
+        for i, (source, probe) in self._source_candidates.items():
+            if i in self.sources: continue
             try:
-                if str(source.name)!=self.specs[i]['name']:continue
-                route,channel=helper.input_routing_type,helper.input_routing_channel
-                if label(channel).casefold().replace(' ','')!='postfx':continue
-                expected=self.specs[i].get('route_identifier')
-                if expected is not None and str(getattr(route,'identifier',''))!=str(expected):continue
-                self.sources[i]=Source(i,source,str(source.name),int(source.color),
-                                       int(getattr(source,'color_index',0)),route,channel)
-            except (RuntimeError,AttributeError,TypeError,ValueError):continue
+                cached = next((choices for target, choices in offered if same(target, probe)), None)
+                if cached is None:
+                    cached = tuple(probe.available_input_routing_types); offered.append((probe, cached))
+                choices = [r for r in cached if same(getattr(r, 'attached_object', None), source)]
+                if len(choices) != 1: continue
+                self.sources[i] = Source(i, source, str(source.name), int(source.color),
+                                         int(getattr(source, 'color_index', 0)), choices[0])
+            except (RuntimeError, AttributeError, TypeError, ValueError): continue
 
     @property
-    def available(self):return self._available
+    def available(self): return self._available
 
-    def observe_sources(self):
+    def observe_sources(self, force=False):
+        if not force and self.backend.now() - self._observe_at < .75: return
+        self._observe_at = self.backend.now()
         self._complete_source_profiles()
-        before=self._available
-        available=0
-        for i,source in self.sources.items():
+        before = self._available
+        available = 0
+        for i, source in tuple(self.sources.items()):
             try:
-                if (not source.track.is_frozen and str(source.track.name)==source.name
-                    and source.track.current_monitoring_state==IN
-                    and label(source.track.output_routing_type).casefold().replace(' ','')=='sendsonly'
-                    and all(p.value==p.min for p in source.track.mixer_device.sends)):
-                    available|=1<<i
-                    color=int(source.track.color);index=int(getattr(source.track,'color_index',0))
-                    if (color,index)!=(source.color,source.color_index):
-                        self.sources[i]=Source(i,source.track,source.name,color,index,source.route,source.channel)
-            except (RuntimeError,AttributeError):pass
-        self._available=available
-        if available&~before:
-            for group,reason in tuple(self.backend.failures.items()):
-                wanted=self.desired.get(group,0)
-                if reason=='no available recording source' and wanted and not wanted&~available:
-                    self.backend.failures.pop(group,None);self.failed.discard(group)
-                    self.busy.add(group)
+                if (not source.track.is_frozen and source.track.current_monitoring_state == IN
+                        and label(source.track.output_routing_type).casefold().replace(' ', '') == 'sendsonly'
+                        and all(p.value == p.min for p in source.track.mixer_device.sends)):
+                    available |= 1 << i
+                name, color = str(source.track.name), int(source.track.color)
+                index = int(getattr(source.track, 'color_index', 0))
+                if (name, color, index) != (source.name, source.color, source.color_index):
+                    self.sources[i] = Source(i, source.track, name, color, index, source.route)
+            except (RuntimeError, AttributeError): pass
+        self._available = available
+        # Saved arm/routing properties may settle after constructor discovery.
+        # Reconcile only our marked retained lanes on the slow source cadence.
+        self._recover_prepared_ownership()
+        if available & ~before:
+            for group, reason in tuple(self.backend.failures.items()):
+                wanted = self.desired.get(group, 0)
+                if reason == 'no available recording source' and wanted and not wanted & ~available:
+                    self.backend.failures.pop(group, None); self.failed.discard(group); self.busy.add(group)
 
     @property
     def group_mask(self):
-        return sum(bool(self.desired.get(g,0))<<g for g in self.backend.state.groups
-                   if g in self.helpers and not self.desired.get(g,0)&~self.available)
+        return sum(bool(self.desired.get(g, 0)) << g for g in self.backend.state.groups
+                   if self.root is not None and not self.state_store.unresolved(g)
+                   and self.state_store.selected_ids(g) is not None
+                   and not self.desired.get(g, 0) & ~self.available)
 
-    def set_patch(self,group,mask):
-        old=self.desired.get(group,0)
-        if group not in self.helpers or (mask&~old)&~self.available:raise ValueError('input unavailable')
-        if self.desired.get(group,0)!=mask:
-            self.desired[group]=mask;self.revisions[group]=self.revisions.get(group,0)+1
-            self.backend.reserves.pop(group,None)
-            self.jobs.pop(group,None)
-            self.prepared_masks.pop(group,None)
-        self.failed.discard(group);self.busy.add(group)
-        self._owner_revision+=1
-        self._intents[group]=dict(revision=self.revisions.get(group,0),
-                                  previous_owner=self.monitor_owner,owner_revision=self._owner_revision)
-        self.monitor_owner=group;self._plan_helpers()
+    def set_patch(self, group, mask):
+        old = self.desired.get(group, 0)
+        if self.root is None or group not in self.backend.state.groups or mask & ~((1 << MAX_SOURCES) - 1):
+            raise ValueError('Audio group or selection unavailable')
+        if (mask & ~old) & ~self.available: raise ValueError('input unavailable')
+        self.state_store.set_patch(group, mask)
+        if old != mask:
+            self.desired[group] = mask; self.revisions[group] = self.revisions.get(group, 0) + 1
+            self.backend.reserves.pop(group, None); self.jobs.pop(group, None)
+            self.prepared_masks.pop(group, None)
+        self.failed.discard(group); self.busy.add(group)
+        self._owner_revision += 1
+        self._intents[group] = dict(revision=self.revisions.get(group, 0),
+                                  previous_owner=self.monitor_owner, owner_revision=self._owner_revision)
+        self.monitor_owner = group
+        self.state_store.set_monitor(group)
         return mask
 
-    def set_monitor(self,group):
-        if group not in self.helpers:raise ValueError('monitor group unavailable')
-        self._owner_revision+=1;self.monitor_owner=group;self._plan_helpers()
+    def set_monitor(self, group):
+        if self.root is None or group not in self.backend.state.groups: raise ValueError('monitor group unavailable')
+        self._owner_revision += 1; self.monitor_owner = group
+        self.state_store.set_monitor(group)
         return group
 
-    def _plan_helpers(self):
-        """Pure cached plan; rapid absolute intents replace, never queue."""
-        plan={}
-        for g,items in self.helpers.items():
-            for i,helper in enumerate(items):
-                enabled=bool(self.desired.get(g,0)&(1<<i))
-                for attr,wanted in (('mute',not enabled),
-                                    ('current_monitoring_state',IN if enabled and g==self.monitor_owner else OFF)):
-                    key=g,i,attr
-                    if self._helper_actual.get(key)!=wanted:plan[key]=wanted
-        self._helper_plan=plan;self.monitor_dirty=bool(plan)
+    def flush_state(self):
+        if self.root is None or self.busy: return
+        result = self.state_store.flush(max_writes=2)
+        if result.errors != self._storage_errors:
+            self._storage_errors = result.errors
+            if result.errors:
+                self.backend.events.append(dict(event='patch_storage_failed', errors=result.errors))
 
-    def reconcile_helpers(self):
-        """At most six retained setters for a two-input owner/patch change.
+    def selected(self, group):
+        mask = self.desired.get(group, 0)
+        if self.root is None or group not in self.backend.state.groups:
+            raise ValueError('Audio group unavailable')
+        if (not mask or mask & ~self.available or self.state_store.unresolved(group)
+                or self.state_store.selected_ids(group) is None):
+            raise ValueError('no available recording source')
+        return tuple(self.sources[i] for i in range(len(self.catalog_tracks)) if mask & (1 << i))
 
-        Disable old paths before enabling new paths. A Native exception cancels
-        the remaining plan instead of replaying an uncertain write or enabling
-        a second path after an uncertain disable.
-        """
-        if not self.monitor_dirty:return
-        def order(pair):
-            (g,i,attr),wanted=pair
-            return (0 if attr=='current_monitoring_state' and wanted==OFF else
-                    1 if attr=='mute' and wanted else 2 if attr=='mute' else 3,g,i)
-        for key,wanted in sorted(self._helper_plan.items(),key=order)[:6]:
-            if self._helper_plan.get(key)!=wanted:continue
-            g,i,attr=key
-            self._helper_plan.pop(key,None)
-            try:setattr(self.helpers[g][i],attr,wanted)
-            except (RuntimeError,ValueError,AttributeError) as error:
-                self._helper_plan.clear();self.monitor_dirty=False
-                self.failed.add(g);self.issues[g]=str(error);self.monitor_owner=None
-                raise
-            self._helper_actual[key]=wanted
-        self._plan_helpers()
+    def routing_fact(self, group):
+        return (self.desired.get(group, 0) | (self.prepared_masks.get(group, 0) << 7)
+                | (int(group in self.busy) << 14) | (int(group in self.failed) << 15))
 
-    def observe_helpers(self,group):
-        """Slow Live-side reconciliation never overwrites our pending intent."""
-        if group not in self.helpers or any(key[0]==group for key in self._helper_plan):return
-        items=self.helpers[group]
-        actual=0
-        for i,helper in enumerate(items):
-            mute=bool(helper.mute);mode=helper.current_monitoring_state
-            self._helper_actual[group,i,'mute']=mute
-            self._helper_actual[group,i,'current_monitoring_state']=mode
-            if not mute:actual|=1<<i
-        if actual!=self.desired.get(group,0):
-            self.desired[group]=actual;self.revisions[group]=self.revisions.get(group,0)+1
-            self.confirmed[group]=actual
-            self._intents.pop(group,None)
-            self.jobs.pop(group,None);self.backend.reserves.pop(group,None)
-            self.prepared_masks.pop(group,None);self.failed.discard(group)
-            self.backend.failures.pop(group,None)
-        if not self._helper_plan:
-            owners={g for g in self.helpers if any(
-                not self._helper_actual.get((g,i,'mute'),True)
-                and self._helper_actual.get((g,i,'current_monitoring_state'))==IN for i in range(2))}
-            self.monitor_owner=next(iter(owners)) if len(owners)==1 else None
-
-    def source_ready(self,helper,source):
-        return (route_equal(helper.input_routing_type,source.route)
-                and route_equal(helper.input_routing_channel,source.channel))
-
-    def selected(self,group):
-        mask=self.desired.get(group,0)
-        if not mask or mask&~self.available:raise ValueError('no available recording source')
-        if group not in self.helpers:raise ValueError('prepared input helpers unavailable')
-        for i in range(2):
-            if mask&(1<<i):
-                helper=self.helpers[group][i]
-                if (str(helper.name)!=self.specs[i]['helper_name']
-                    or not self.source_ready(helper,self.sources[i])
-                    or not self.backend._parent_output(helper,self.backend.state.anchors[group])):
-                    raise ValueError('prepared input helper routing changed')
-        return tuple(self.sources[i] for i in range(2) if mask&(1<<i))
-
-    def routing_fact(self,group):
-        return (self.desired.get(group,0)|(self.prepared_masks.get(group,0)<<2)
-                |(int(group in self.busy)<<4)|(int(group in self.failed)<<5))
-
-    def available_lane(self,track,parent,row):
-        # Pool membership is structural, never a source name or sound preset.
-        return (same(getattr(track,'group_track',None),parent)
-                and not track.is_foldable and track.has_audio_input
-                and not track.is_frozen and not track.arm
+    def available_lane(self, track, parent, row):
+        return (same(getattr(track, 'group_track', None), parent)
+                and not track.is_foldable and track.has_audio_input and not track.is_frozen
+                and (not track.arm or self.backend.monitoring.owned(track))
                 and self.backend.recording._quiet(track)
-                and 0<=row<len(track.clip_slots)
-                and not track.clip_slots[row].has_clip
-                and not track.clip_slots[row].is_triggered)
+                and 0 <= row < len(track.clip_slots)
+                and not track.clip_slots[row].has_clip and not track.clip_slots[row].is_triggered)
 
-    def compatible(self,track,parent,row,source):
-        return (self.available_lane(track,parent,row)
-                and track.current_monitoring_state==OFF
-                and route_equal(track.input_routing_type,source.route)
-                and route_equal(track.input_routing_channel,source.channel))
+    def compatible(self, track, parent, row, source):
+        return (self.available_lane(track, parent, row)
+                and (track.current_monitoring_state == OFF or
+                     track.current_monitoring_state == AUTO and self.backend.monitoring.owned(track))
+                and source_route(track.input_routing_type, source) and post_fx(track.input_routing_channel))
 
     def validate(self,reserve,group,row):
         item=self.backend.state.groups[group]
         if (reserve.row!=row or reserve.revision!=self.revisions.get(group)
             or not same(reserve.parent,item.group)):return False
         selected=self.selected(group)
-        if tuple(s.index for s in selected)!=tuple(m.source.index for m in reserve.members):return False
+        if (len(selected)!=len(reserve.members) or any(
+                source.index!=member.source.index or not same(source.track,member.source.track)
+                for source,member in zip(selected,reserve.members))):return False
         return all(any(same(m.track,t) for t in item.tracks)
                    and same(m.slot,m.track.clip_slots[row])
                    and self.compatible(m.track,item.group,row,m.source) for m in reserve.members)
@@ -301,12 +305,18 @@ class AudioInputs:
                 if take is not None:result.extend(t.track for t in (take,)+tuple(getattr(take,'members',())))
         return result
 
+    def _confirm_reserve(self, group, reserve):
+        self.last_ready[group] = reserve
+        self.confirmed[group] = self.desired[group]
+        self._intents.pop(group, None)
+        self.jobs.pop(group, None)
+        self.busy.discard(group)
+        self.failed.discard(group)
+
     def maintenance(self,group,row,active):
         b=self.backend;item=b.state.groups[group]
         attempted_revision=self.revisions.get(group,0)
         try:
-            self.reconcile_helpers()
-            self.observe_helpers(group)
             if not self.desired.get(group,0):
                 self.jobs.pop(group,None);b.reserves.pop(group,None)
                 self.prepared_masks[group]=0
@@ -327,7 +337,7 @@ class AudioInputs:
                         if len(first)==len(selected):break
                 if len(first)==len(reserve.members) and all(
                         same(track,m.track) for track,m in zip(first,reserve.members)):
-                    self.busy.discard(group);self.failed.discard(group);return
+                    self._confirm_reserve(group,reserve);return
             b.reserves.pop(group,None)
             job=self.jobs.get(group)
             if job is None or job['revision']!=self.revisions.get(group) or job['row']!=row:
@@ -343,9 +353,9 @@ class AudioInputs:
                 if track is not None and self.compatible(track,item.group,row,source):
                     job['members'].append(Destination(source,track,track.clip_slots[row]))
                 else:
-                    if not b.allow_audio_track_creation:raise ValueError('prepared Audio pool unavailable')
                     created=track is None
                     if created:
+                        if not b.allow_audio_track_creation:raise ValueError('prepared Audio pool unavailable')
                         track=b._create_audio_lane(group,row)
                         if track is None:return
                     job['track']=track;job['created']=created
@@ -367,12 +377,12 @@ class AudioInputs:
                         track.current_monitoring_state=OFF;return
                 if stage=='type':
                     job['stage']=stage='channel'
-                    if not route_equal(track.input_routing_type,source.route):
-                        choices=[r for r in track.available_input_routing_types if route_equal(r,source.route)]
+                    if not source_route(track.input_routing_type,source):
+                        choices=[r for r in track.available_input_routing_types if source_route(r,source)]
                         if len(choices)!=1:raise ValueError('source route unavailable or ambiguous')
                         track.input_routing_type=choices[0];return
                 if stage=='channel':
-                    if not route_equal(track.input_routing_type,source.route):
+                    if not source_route(track.input_routing_type,source):
                         if b.now()-job['at']>8:raise ValueError('source routing confirmation timeout')
                         return
                     choices=[r for r in track.available_input_routing_channels if label(r).casefold().replace(' ','')=='postfx']
@@ -390,15 +400,16 @@ class AudioInputs:
             self.prepared_masks[group]=sum(1<<m.source.index for m in job['members'])
             if len(job['members'])==len(selected):
                 for m in job['members']:
-                    try:m.track.name=m.source.name;m.track.color_index=m.source.color_index
+                    try:
+                        if str(m.track.name)!=m.source.name:m.track.name=m.source.name
+                        if int(m.track.color_index)!=m.source.color_index:m.track.color_index=m.source.color_index
                     except (RuntimeError,ValueError,AttributeError) as error:
                         b.events.append(dict(event='source_appearance_unavailable',group=group,reason=str(error)))
                 if self.revisions.get(group,0)!=job['revision'] or self.jobs.get(group) is not job:return
-                b.reserves[group]=BundleReserve(group,item.group,row,job['revision'],tuple(job['members']))
-                self.last_ready[group]=b.reserves[group]
-                self.confirmed[group]=self.desired[group]
-                self._intents.pop(group,None)
-                self.jobs.pop(group,None);self.busy.discard(group);self.failed.discard(group)
+                reserve=BundleReserve(group,item.group,row,job['revision'],tuple(job['members']))
+                self._mark_prepared_ownership(group,reserve)
+                b.reserves[group]=reserve
+                self._confirm_reserve(group,reserve)
         except (RuntimeError,ValueError,AttributeError,IndexError,TypeError) as exc:
             self.fail_preparation(group,str(exc),attempted_revision)
             b.events.append(dict(event='input_preparation_failed',group=group,reason=str(exc)))
@@ -416,7 +427,8 @@ class AudioInputs:
             if intent['owner_revision']==self._owner_revision:
                 self.monitor_owner=intent['previous_owner'];self._owner_revision+=1
             self._intents.pop(group,None)
-            self._plan_helpers()
+            self.state_store.set_patch(group,wanted)
+            self.state_store.set_monitor(self.monitor_owner)
         self.failed.add(group);self.busy.discard(group);self.issues[group]=reason
         self.prepared_masks[group]=wanted
         prior=self.last_ready.get(group)

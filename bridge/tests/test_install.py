@@ -164,15 +164,15 @@ class InstallationTests(unittest.TestCase):
         info['LightpadBridgeControllerMode'] = 'audio-performance'
         (self.app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         for module in ('surface', 'backend', 'health', 'protocol', 'model', 'audio_inputs',
-                       'bundle_recording', 'recording_core', 'recording_coverage', 'launch_admission',
+                       'bundle_recording', 'audio_patch_state', 'direct_monitoring',
+                       'recording_core', 'recording_coverage', 'launch_admission',
                        'selection_restore', 'timing'):
             (self.script/(module+'.py')).write_text('# offline Audio module\n')
         (self.script/'surface.py').write_text('class PerformanceController: pass\n')
         self.private_configuration = self.root/'private-configuration.py'
         self.private_configuration.write_text(
             "TARGET_SET = ''\nTARGET_SETS = ('/Music/Temple of Loops.als',)\n"
-            "AUDIO_SOURCES = ({'name':'T-Bone','helper_name':'[Input 1]'},"
-            "{'name':'SM-58','helper_name':'[Input 2]'})\n"
+            "AUDIO_SOURCES = 'catalog'\n"
             "TRACE_PATH = '/Library/Application Support/Lightpad Bridge/live.jsonl'\n"
             "STATUS_PATH = None\n")
         return self.root/'Scripts/LightpadAudioInputs'
@@ -223,14 +223,28 @@ class InstallationTests(unittest.TestCase):
                           self.support, self.login, configuration=self.private_configuration)
         self.assertFalse(self.stage.exists())
 
+    def test_audio_stage_requires_state_and_direct_monitoring_modules(self):
+        for missing in ('audio_patch_state.py', 'direct_monitoring.py'):
+            with self.subTest(module=missing):
+                audio_target = self.audio_fixture()
+                (self.script/missing).unlink()
+                with self.assertRaisesRegex(ValueError, 'complete matched PerformanceController'):
+                    install.stage(self.app, self.script, self.stage, self.app_target, audio_target,
+                                  self.support, self.login, configuration=self.private_configuration)
+                self.assertFalse(self.stage.exists())
+
     def test_audio_stage_rejects_incomplete_or_private_configuration(self):
         audio_target = self.audio_fixture()
         valid = self.private_configuration.read_text()
         invalid = (
             ("TARGET_SETS = ()\nTARGET_SET = ''\n", 'explicit absolute Live Set paths'),
             ("TARGET_SETS = ('relative.als',)\n", 'explicit absolute Live Set paths'),
-            ("AUDIO_SOURCES = ()\n", 'two named source/helper'),
-            ("AUDIO_SOURCES = ({'name':'x','helper_name':'same'}, {'name':'y','helper_name':'same'})\n", 'must be unique'),
+            ("AUDIO_SOURCES = ()\n", "AUDIO_SOURCES = 'catalog'"),
+            ("AUDIO_SOURCES = ({'name':'T-Bone','helper_name':'[Input 1]'}, {'name':'SM-58','helper_name':'[Input 2]'})\n", "AUDIO_SOURCES = 'catalog'"),
+            ("AUDIO_SOURCES = False\n", "AUDIO_SOURCES = 'catalog'"),
+            ("AUDIO_SOURCES = True\n", "AUDIO_SOURCES = 'catalog'"),
+            ("AUDIO_SOURCES = 'Catalog'\n", "AUDIO_SOURCES = 'catalog'"),
+            ("AUDIO_SOURCES = ['catalog']\n", "AUDIO_SOURCES = 'catalog'"),
             ("STATUS_PATH = 'relative.json'\n", 'diagnostic paths'),
             ("STATUS_PATH = '/verification/experiments/status.json'\n", 'private experiment'),
         )

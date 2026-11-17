@@ -58,9 +58,10 @@ class AudioInputPathTests(unittest.TestCase):
         self.addCleanup(self.close_pipe)
         self.obs=0;self.commands=[]
         self.exchange('reset 1 %s'%self.vm.time_ms)
+        self.exchange('patch-names 1')
         self.backend.reseed()
         self.until(lambda:0 in self.backend.reserves)
-        for unused in range(10):self.advance(100)
+        self.until(lambda:[191,108,37] in self.vm.midi)
         self.assertIn([191,108,37],self.vm.midi)
         self.assertEqual(self.patch_mask(),1)
 
@@ -72,6 +73,7 @@ class AudioInputPathTests(unittest.TestCase):
     def switch(self,name):
         now=self.vm.time_ms;self.vm=Harness(self.programs[name]);self.vm.time_ms=now
         self.vm.call('initialise/v');self.midi_cursor=0
+        self.exchange('patch-names %d'%(name=='patch'))
         self.exchange('reseed %d'%now);self.pump();self.advance(100)
 
     def patch_mask(self):return self.vm.heap_bytes(32,1)[0]

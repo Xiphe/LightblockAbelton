@@ -1,6 +1,7 @@
 """Audio patch/bundle policy over queued Native calls, not hardware evidence."""
 from pathlib import Path
 import sys
+import json
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace as NS
@@ -8,47 +9,50 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from PerformanceController import configuration
 from PerformanceController.backend import Backend, REJECT
 from PerformanceController.fake_native import PerformanceSong, Track, Clip
+from PerformanceController.audio_patch_state import SOURCE_KEY, PATCH_KEY, OWNER_KEY
+from PerformanceController.audio_inputs import PREPARED_KEY
 
 Q={'q_bar':4,'q_half':5,'q_quarter':7,'q_eight':9,'q_sixtenth':11}
-SPECS=({'name':'T-Bone','helper_name':'[Input 1]'},
-       {'name':'SM-58','helper_name':'[Input 2]'})
+SPECS=({'name':'T-Bone'}, {'name':'SM-58'})
 
 class AudioInputChecks(unittest.TestCase):
-    def make(self,initial=1,groups=2,helper_channels_ready=True):
+    def make(self,initial=1,groups=2,routes_ready=True,source_count=2,lanes=4):
         self.clock=0.;self.song=PerformanceSong(groups)
-        self.routes=(NS(identifier='source-a',display_name='T-Bone'),
-                     NS(identifier='source-b',display_name='SM-58'))
         self.post=NS(identifier='postfx',display_name='Post FX')
         roots=[t for t in self.song._tracks if t.is_foldable and t.name.startswith('[R') and t.name!='[Remote]']
         root=Track(self.song,'[Inputs] Sources',foldable=True);self.song._tracks.append(root)
-        self.sources=[]
-        for i,spec in enumerate(SPECS):
-            s=Track(self.song,spec['name'],root);s.color_index=60+i
-            s.current_monitoring_state=0;s.output_routing_type='Sends Only'
-            for send in s.mixer_device.sends:send.value=send.min
-            self.song._tracks.append(s);self.sources.append(s)
+        self.input_root=root;self.sources=[]
+        identifiers=[]
+        specs=SPECS+tuple({'name':'Source %d'%(i+1)} for i in range(2,source_count))
+        for i,spec in enumerate(specs):
+            source=Track(self.song,spec['name'],root);source.color_index=60+i
+            source.current_monitoring_state=0;source.output_routing_type='Sends Only'
+            for send in source.mixer_device.sends:send.value=send.min
+            identifier='00000000-0000-0000-0000-%012d'%(i+1)
+            source.set_data(SOURCE_KEY,identifier);identifiers.append(identifier)
+            self.song._tracks.append(source);self.sources.append(source)
+        self.routes=tuple(NS(identifier='source-'+str(i),display_name=spec['name'],attached_object=source)
+                          for i,(spec,source) in enumerate(zip(specs,self.sources)))
+        root.set_data(OWNER_KEY,json.dumps(dict(schema=1,group=0)))
         for g,parent in enumerate(roots):
+            selected=[identifiers[i] for i in range(len(identifiers)) if g==0 and initial&(1<<i)]
+            parent.set_data(PATCH_KEY,json.dumps(dict(schema=1,sources=selected)))
             anchor=next(t for t in self.song._tracks if t.group_track is parent and t.is_foldable)
-            for n in range(3):
-                t=Track(self.song,'Prepared lane %d'%n,parent);self.song.routes(t,parent,True)
-                self.song._tracks.insert(self.song._tracks.index(anchor),t)
-            for i,spec in enumerate(SPECS):
-                t=Track(self.song,spec['helper_name'],anchor);self.song.routes(t,anchor)
-                t.input_routing_type=self.routes[i]
-                t.input_routing_channel=self.post if helper_channels_ready else 'Loading routing channel'
-                t.mute=not(bool(initial&(1<<i)) and g==0)
-                self.song._tracks.insert(self.song._tracks.index(anchor)+1,t)
-        for t in self.song._tracks:
-            if not t.is_foldable:
-                t.available_input_routing_types=list(self.routes)+['Ext. In','No Input']
-                t.available_input_routing_channels=[self.post]
+            for n in range(lanes-1):
+                track=Track(self.song,'Prepared lane %d'%n,parent);self.song.routes(track,parent,True)
+                self.song._tracks.insert(self.song._tracks.index(anchor),track)
+        for track in self.song._tracks:
+            if not hasattr(track,'color_index'):track.color_index=0
+            if not track.is_foldable:
+                track.available_input_routing_types=(list(self.routes) if routes_ready else [])+['Ext. In','No Input']
+                track.available_input_routing_channels=[self.post]
         old_create=self.song.create_audio_track
         def create(index):
-            old_create(index);t=self.song._tracks[index]
-            t.available_input_routing_types=list(self.routes)+['Ext. In','No Input']
-            t.available_input_routing_channels=[self.post]
+            old_create(index);track=self.song._tracks[index]
+            track.available_input_routing_types=list(self.routes)+['Ext. In','No Input']
+            track.available_input_routing_channels=[self.post]
         self.song.create_audio_track=create
-        self.config=patch.object(configuration,'AUDIO_SOURCES',SPECS,create=True);self.config.start();self.addCleanup(self.config.stop)
+        self.config=patch.object(configuration,'AUDIO_SOURCES',specs,create=True);self.config.start();self.addCleanup(self.config.stop)
         self.backend=Backend(self.song,Q,now=lambda:self.clock);self.addCleanup(self.backend.close)
         return self.backend
     def ticks(self,n=40):
@@ -61,6 +65,19 @@ class AudioInputChecks(unittest.TestCase):
         self.assertEqual(take.state,'recording');return take
     @staticmethod
     def members(take):return (take,)+take.members
+
+    def assert_cleanup_or_idle_reserve(self,take):
+        reserve=self.backend.reserves.get(take.group)
+        for member in self.members(take):
+            if not member.track.arm:continue
+            self.assertIsNotNone(reserve,'an armed cleaned-up lane must be a ready idle reserve')
+            destination=next((m for m in reserve.members if m.track is member.track),None)
+            self.assertIsNotNone(destination)
+            self.assertTrue(self.backend.monitoring.owned(member.track))
+            self.assertEqual(member.track.current_monitoring_state,1)
+            self.assertFalse(destination.slot.has_clip)
+            self.assertLess(member.track.playing_slot_index,0)
+
 
     def test_first_direct_audio_lane_wins_over_later_prepared_source_and_keeps_its_sound(self):
         b=self.make(groups=1)
@@ -88,7 +105,8 @@ class AudioInputChecks(unittest.TestCase):
         self.assertIs(reserve.track,first)
         self.assertNotIn(nested_lane,b.state.groups[0].tracks)
         self.assertIs(first.input_routing_type,self.routes[0])
-        self.assertEqual(first.current_monitoring_state,2)
+        self.assertEqual(first.current_monitoring_state,1)
+        self.assertTrue(first.arm and b.monitoring.owned(first))
         self.assertEqual(first.name,'T-Bone')
         self.assertEqual(tuple(first.devices),devices)
         self.assertTrue(first.mute)
@@ -152,17 +170,26 @@ class AudioInputChecks(unittest.TestCase):
         self.ticks(40);self.assertEqual(len(b.reserves[0].members),2)
         self.assertFalse(b.failures)
 
-    def test_helpers_persist_selection_and_only_monitor_owner_is_live(self):
+    def test_group_metadata_persists_selection_and_only_owner_reserve_monitors(self):
         b=self.make();self.ticks();self.assertEqual(b.dispatch(48,3),3)
         self.assertEqual(b.dispatch(49,1),1);self.ticks(50)
         a=b.audio_inputs
         self.assertEqual(a.monitor_owner,1)
-        self.assertEqual([t.mute for t in a.helpers[0]],[False,False])
-        self.assertEqual([t.current_monitoring_state for t in a.helpers[0]],[2,2])
-        self.assertEqual([t.current_monitoring_state for t in a.helpers[1]],[0,2])
-        self.assertEqual(b.dispatch(57,0),0);self.ticks(5)
-        self.assertEqual([t.current_monitoring_state for t in a.helpers[0]],[0,0])
-        self.assertEqual([t.current_monitoring_state for t in a.helpers[1]],[2,2])
+        self.assertTrue(all(not member.track.arm for member in b.reserves[0].members))
+        self.assertTrue(all(member.track.arm and member.track.current_monitoring_state==1
+                            and b.monitoring.owned(member.track) for member in b.reserves[1].members))
+        for group,mask in ((0,3),(1,1)):
+            payload=json.loads(b.state.groups[group].group.get_data(PATCH_KEY,''))
+            expected=[a.state_store.source_ids[i] for i in range(2) if mask&(1<<i)]
+            self.assertEqual(set(payload['sources']),set(expected))
+        self.assertEqual(json.loads(self.input_root.get_data(OWNER_KEY,''))['group'],1)
+        self.assertEqual(b.dispatch(57,0),0);self.ticks(8)
+        self.assertTrue(all(member.track.arm and member.track.current_monitoring_state==1
+                            for member in b.reserves[0].members))
+        self.assertTrue(all(not member.track.arm and member.track.current_monitoring_state==2
+                            for member in b.reserves[1].members))
+        self.assertEqual(json.loads(self.input_root.get_data(OWNER_KEY,''))['group'],0)
+        self.assertFalse(any(track.name.startswith('[Input ') for track in self.song._tracks))
 
     def test_two_sources_record_finish_same_bar_and_stamp_independent_clips(self):
         b=self.make(initial=3);self.ticks(65);take=self.start()
@@ -176,7 +203,7 @@ class AudioInputChecks(unittest.TestCase):
         self.song.advance(take.finish_target);self.ticks(1)
         self.assertIs(b.recording.take,following)
         self.assertTrue(all(m.clip.is_playing and not m.clip.is_recording for m in self.members(take)))
-        self.assertTrue(all(not m.track.arm for m in self.members(take)))
+        self.assert_cleanup_or_idle_reserve(take)
         self.assertTrue(all(m.clip.is_recording for m in self.members(following)))
         self.assertEqual({m.anchor for m in self.members(following)},{take.finish_target})
         self.assertEqual(b.dispatch(68,2),0);self.ticks(5)
@@ -193,7 +220,7 @@ class AudioInputChecks(unittest.TestCase):
         self.assertIsNone(b.recording.take)
         self.assertEqual(b.failed_take,(0,1))
         self.assertTrue(all(not m.slot.has_clip for m in self.members(take)))
-        self.assertTrue(all(not m.track.arm for m in self.members(take)))
+        self.assert_cleanup_or_idle_reserve(take)
 
     def test_pending_patch_retarget_keeps_active_bundle_sources(self):
         b=self.make(initial=3);self.ticks(65);take=self.start()
@@ -210,31 +237,34 @@ class AudioInputChecks(unittest.TestCase):
         self.assertIs(b.reserves[0].track.input_routing_type,self.routes[1])
         self.assertIsNot(b.reserves[0].track.input_routing_type,self.routes[0])
 
-    def test_manual_helper_changes_reconcile_without_undoing_them(self):
-        b=self.make();self.ticks();helper=b.audio_inputs.helpers[0][1]
-        helper.mute=False;helper.current_monitoring_state=0
-        b.audio_inputs.helpers[0][0].current_monitoring_state=0
+    def test_manual_destination_reroute_does_not_reassign_the_source_choice(self):
+        b=self.make();self.ticks();lane=b.reserves[0].track
+        lane.input_routing_type=self.routes[1]
         self.ticks(40)
-        self.assertEqual(b.audio_inputs.desired[0],3)
-        self.assertFalse(helper.mute)
+        self.assertEqual(b.audio_inputs.desired[0],1)
+        self.assertEqual(b.audio_inputs.state_store.mask(0),1)
+        self.assertIs(b.reserves[0].track,lane)
+        self.assertIs(lane.input_routing_type.attached_object,self.sources[0])
         self.assertEqual(b.audio_inputs.monitor_owner,0)
-        self.assertEqual(len(b.reserves[0].members),2)
+        self.assertTrue(lane.arm and lane.current_monitoring_state==1)
 
-    def test_short_monitor_plan_is_bounded_and_disables_before_enabling(self):
+    def test_retained_monitor_handoff_disables_old_paths_before_enabling_new(self):
         b=self.make(initial=3);self.ticks(65);self.assertEqual(b.dispatch(49,3),3);self.ticks(40)
         calls=[]
         class Watched(Track):
             def __setattr__(self,name,value):
-                if name in ('mute','current_monitoring_state'):calls.append((self.group_track.group_track.name,name,value))
+                if name in ('arm','current_monitoring_state'):
+                    calls.append((self.group_track.name,name,value))
                 super().__setattr__(name,value)
-        for group,items in b.audio_inputs.helpers.items():
-            for item in items:item.__class__=Watched
+        for reserve in b.reserves.values():
+            for member in reserve.members:member.track.__class__=Watched
         self.song.track_reads=0
         self.assertEqual(b.dispatch(57,0),0)
+        self.assertFalse(calls,'monitor gesture admission must use cached state only')
         self.ticks(1)
-        self.assertLessEqual(len(calls),6)
         modes=[value for group,name,value in calls if name=='current_monitoring_state']
-        self.assertEqual(modes,[2,2,0,0])
+        self.assertEqual(modes,[2,2,1,1])
+        self.assertLessEqual(len(calls),8,'two old and two new retained monitoring paths only')
         self.assertEqual(self.song.track_reads,0)
 
     def test_uncertain_handoff_preserves_accepted_bundle_and_never_replays(self):
@@ -254,7 +284,7 @@ class AudioInputChecks(unittest.TestCase):
 
     def test_unavailable_selected_source_can_be_removed_but_not_added(self):
         b=self.make(initial=3);self.ticks(65)
-        self.sources[1].is_frozen=True;b.audio_inputs.observe_sources()
+        self.sources[1].is_frozen=True;b.audio_inputs.observe_sources(force=True)
         self.assertEqual(b.audio_inputs.available,1)
         self.assertFalse(b.audio_inputs.group_mask&1)
         self.assertEqual(b.dispatch(64,1),REJECT)
@@ -271,21 +301,31 @@ class AudioInputChecks(unittest.TestCase):
         self.song.advance(take.target);self.ticks(1)
         self.song.advance(take.target+5);self.ticks(4)
         self.assertIsNone(b.recording.take);self.assertEqual(b.failed_take,(0,1))
-        self.assertTrue(all(not m.track.arm for m in self.members(take)))
+        self.assert_cleanup_or_idle_reserve(take)
         self.assertTrue(all(not m.slot.has_clip for m in self.members(take)))
 
     def test_failed_member_arm_never_launches_or_leaves_other_member_armed(self):
         b=self.make(initial=3);self.ticks(65)
+        attempts=[]
         class RefusedArm(Track):
             def __setattr__(self,name,value):
-                if name=='arm' and value:raise RuntimeError('Native arm refused')
+                if name=='arm' and value:
+                    attempts.append(self)
+                    raise RuntimeError('Native arm refused')
                 super().__setattr__(name,value)
-        b.reserves[0].members[1].track.__class__=RefusedArm
-        self.assertEqual(b.dispatch(64,1),0);take=b.recording.take
-        self.song.advance(take.target-.5);self.ticks(5)
+        failed=tuple(member.track for member in b.reserves[0].members)
+        failed[1].arm=False;failed[1].__class__=RefusedArm
+        self.assertEqual(b.dispatch(64,1),0)
+        self.ticks(100)
         self.assertFalse(any(c[0]=='fire' for c in self.song.calls))
-        self.assertIsNone(b.recording.take);self.assertEqual(b.failed_take,(0,1))
-        self.assertTrue(all(not m.track.arm for m in self.members(take)))
+        self.assertIsNone(b.recording.take);self.assertIsNone(b.pending_begin)
+        self.assertEqual(b.failed_take,(0,1))
+        self.assertTrue(all(not track.arm for track in failed))
+        failed_attempts=len(attempts)
+        self.assertGreater(failed_attempts,0)
+        self.ticks(30)
+        self.assertEqual(len(attempts),failed_attempts,'latched Native failure must stop automatic arm retries')
+        self.assertTrue(all(not track.arm for track in failed))
 
     def test_manual_adopted_take_accepts_without_bundle_metadata(self):
         b=self.make();self.ticks(65)
@@ -313,7 +353,7 @@ class AudioInputChecks(unittest.TestCase):
                 self.assertIsNone(b.recording.take)
                 self.assertEqual(b.failed_take,(0,2 if next_take else 1))
                 self.assertEqual(tuple(m.slot.clip for m in self.members(take)),old)
-                self.assertTrue(all(not m.track.arm for m in self.members(take)))
+                self.assert_cleanup_or_idle_reserve(take)
                 if following is not None:
                     self.assertTrue(all(not m.slot.has_clip and not m.track.arm for m in self.members(following)))
                 fires=sum(c[0]=='fire' for c in self.song.calls);self.ticks(20)
@@ -347,7 +387,8 @@ class AudioInputChecks(unittest.TestCase):
         self.assertEqual(a.prepared_masks[0],1)
         self.assertNotIn(0,a.busy)
         self.ticks(1)
-        self.assertEqual([t.mute for t in a.helpers[0]],[False,True])
+        self.assertEqual(a.state_store.mask(0),1)
+        self.assertTrue(b.reserves[0].track.arm and b.monitoring.owned(b.reserves[0].track))
         self.assertEqual(len(b.reserves[0].members),1)
         self.assertNotIn(0,b.failures)
 
@@ -378,7 +419,8 @@ class AudioInputChecks(unittest.TestCase):
         take.track.quiet();b.state.observe(0);self.ticks(5)
         self.assertIsNone(b.recording.take);self.assertEqual(b.failed_take,(0,1))
         self.assertEqual(tuple(m.slot.clip for m in self.members(take)),old)
-        self.assertTrue(all(not m.clip.is_recording and not m.track.arm for m in self.members(take)))
+        self.assertTrue(all(not m.clip.is_recording for m in self.members(take)))
+        self.assert_cleanup_or_idle_reserve(take)
 
     def test_all_unconfirmed_finishes_are_bounded_and_never_replayed(self):
         b=self.make(initial=3);self.ticks(65);take=self.start()
@@ -396,7 +438,9 @@ class AudioInputChecks(unittest.TestCase):
         self.assertEqual(b.dispatch(48,2),2);self.ticks(25)
         self.assertEqual(b.audio_inputs.desired[0],0)
         self.assertEqual(b.audio_inputs.prepared_masks[0],0)
-        self.assertEqual([t.mute for t in b.audio_inputs.helpers[0]],[True,True])
+        self.assertEqual(b.audio_inputs.state_store.mask(0),0)
+        self.assertNotIn(0,b.reserves)
+        self.assertFalse(any(track.arm for track in b.state.groups[0].tracks))
 
     def test_surface_stays_ready_after_manual_deletion_invalidates_completed_clips(self):
         from test_surface import SurfaceChecks, adapter
@@ -462,56 +506,272 @@ class AudioInputChecks(unittest.TestCase):
         self.assertTrue(all(m.slot.has_clip and not m.clip.is_recording for m in self.members(current)))
         self.assertFalse(any(e['event']=='display_failed' for e in b.events))
 
-    def test_constructor_recovers_when_saved_helper_channels_settle_after_loading(self):
-        b=self.make(initial=3,helper_channels_ready=False)
+    def test_constructor_recovers_when_native_source_choices_settle_after_loading(self):
+        b=self.make(initial=3,routes_ready=False)
         self.assertEqual(b.audio_inputs.available,0)
         self.assertFalse(b.audio_inputs.sources)
         self.ticks(12)
         self.assertEqual(b.failures[0],'no available recording source')
-        for helpers in b.audio_inputs.helpers.values():
-            for helper in helpers:helper.input_routing_channel=self.post
+        for group in b.state.groups.values():
+            for track in group.tracks:track.available_input_routing_types=list(self.routes)+['Ext. In','No Input']
         self.assertFalse(b.state.topology_dirty)
         self.ticks(60)
         self.assertEqual(b.audio_inputs.available,3)
         self.assertEqual(len(b.reserves[0].members),2)
         self.assertNotIn(0,b.failures)
 
-    def test_startup_profile_completion_keeps_configured_source_identity(self):
-        b=self.make(initial=3,helper_channels_ready=False)
+    def test_startup_profile_uses_actual_source_identity_after_source_rename(self):
+        b=self.make(initial=3,routes_ready=False)
         self.sources[0].name='Renamed source during load'
-        for helpers in b.audio_inputs.helpers.values():
-            for helper in helpers:helper.input_routing_channel=self.post
-        b.audio_inputs.observe_sources()
-        self.assertEqual(b.audio_inputs.available,2)
-        self.assertNotIn(0,b.audio_inputs.sources)
-        self.sources[0].name='T-Bone'
-        b.audio_inputs.observe_sources()
+        probe=b.state.groups[0].tracks[0]
+        # A same-label route to a destination Track must not replace the source.
+        decoy=NS(display_name='Renamed source during load',attached_object=probe)
+        for group in b.state.groups.values():
+            for track in group.tracks:track.available_input_routing_types=[decoy]+list(self.routes)
+        b.audio_inputs.observe_sources(force=True)
         self.assertEqual(b.audio_inputs.available,3)
+        self.assertIs(b.audio_inputs.sources[0].track,self.sources[0])
+        self.assertEqual(b.audio_inputs.sources[0].name,'Renamed source during load')
+        self.ticks(60)
+        self.assertIs(b.reserves[0].members[0].track.input_routing_type.attached_object,self.sources[0])
 
-    def test_startup_profile_retry_is_bounded_and_stops_reading_ready_helpers(self):
-        b=self.make(initial=3,groups=8,helper_channels_ready=False)
+    def test_startup_profile_retry_uses_retained_probe_then_stops_reading_choices(self):
+        b=self.make(initial=3,groups=8,routes_ready=False)
         reads=[]
-        class CountHelperRoutingReads(Track):
+        class CountRoutingReads(Track):
             def __getattribute__(self,name):
-                if name in ('input_routing_type','input_routing_channel'):reads.append(name)
+                if name=='available_input_routing_types':reads.append(self)
                 return super().__getattribute__(name)
-        for helpers in b.audio_inputs.helpers.values():
-            for helper in helpers:helper.__class__=CountHelperRoutingReads
+        probe=b.state.groups[0].tracks[0];probe.__class__=CountRoutingReads
         self.song.track_reads=0;self.song.calls.clear()
-        b.audio_inputs.observe_sources()
+        b.audio_inputs.observe_sources(force=True)
         self.assertEqual(b.audio_inputs.available,0)
-        self.assertEqual(len(reads),4,'only two retained source/helper candidates may be retried')
+        self.assertEqual(len(reads),1,'one retained destination probe read supplies every missing source')
+        self.assertTrue(all(track is probe for track in reads))
         self.assertEqual(self.song.track_reads,0)
         self.assertFalse(self.song.calls)
-        for helpers in b.audio_inputs.helpers.values():
-            for helper in helpers:helper.input_routing_channel=self.post
-        b.audio_inputs.observe_sources()
+        probe.available_input_routing_types=list(self.routes)
+        b.audio_inputs.observe_sources(force=True)
         self.assertEqual(b.audio_inputs.available,3)
         reads.clear()
-        for unused in range(100):b.audio_inputs.observe_sources()
-        self.assertFalse(reads,'ready canonical routes must not be read again')
+        for unused in range(100):b.audio_inputs.observe_sources(force=True)
+        self.assertFalse(reads,'completed profiles must not scan available choices again')
         self.assertEqual(self.song.track_reads,0)
         self.assertFalse(self.song.calls)
+
+    def test_reopen_recovers_marked_idle_arm_without_adding_a_second_monitor(self):
+        b=self.make(initial=1,groups=1);self.ticks(80)
+        lanes=b.state.groups[0].tracks;first=b.reserves[0].track
+        self.assertIs(first,lanes[0])
+        marker=json.loads(first.get_data(PREPARED_KEY,''))
+        self.assertEqual(marker,dict(schema=1,group=0,source=b.audio_inputs.state_store.source_ids[0],row=0))
+        manual=lanes[-1]
+        self.assertEqual(manual.get_data(PREPARED_KEY,''),'')
+        manual.arm=True;manual.current_monitoring_state=2
+        saved_modes=[(track,track.arm,track.current_monitoring_state) for track in lanes]
+        b.close()
+        # A saved Set restores the pre-close arm/mode values, rather than the
+        # old process's shutdown cleanup. All ownership caches are new below.
+        for track,arm,mode in saved_modes:
+            track.arm=arm;track.current_monitoring_state=mode
+        self.song.calls.clear()
+        self.backend=Backend(self.song,Q,now=lambda:self.clock);self.addCleanup(self.backend.close)
+        fresh=self.backend
+        self.assertTrue(fresh.monitoring.owned(first))
+        self.assertFalse(fresh.monitoring.owned(manual))
+        self.assertFalse(self.song.calls,'saved ownership recovery must not mutate Native state')
+        self.ticks(80)
+        self.assertIs(fresh.reserves[0].track,first)
+        audible=[track for track in fresh.state.groups[0].tracks
+                 if track.arm and track.current_monitoring_state==1]
+        self.assertEqual(audible,[first])
+        self.assertTrue(manual.arm)
+        self.assertEqual(manual.current_monitoring_state,2)
+        self.assertFalse(fresh.monitoring.owned(manual))
+        self.assertFalse(any(call[0]=='create_track' for call in self.song.calls))
+        self.assertFalse(fresh.failures)
+
+    def test_reopen_recovers_saved_idle_arm_when_native_routing_settles_later(self):
+        b=self.make(initial=1,groups=1);self.ticks(80)
+        lanes=b.state.groups[0].tracks;first=b.reserves[0].track
+        self.assertIs(first,lanes[0])
+        self.assertTrue(first.get_data(PREPARED_KEY,''))
+        manual=lanes[-1];manual.arm=True;manual.current_monitoring_state=2
+        saved_modes=[(track,track.arm,track.current_monitoring_state) for track in lanes]
+        b.close()
+        for track,arm,mode in saved_modes:
+            track.arm=arm;track.current_monitoring_state=mode
+        # Native exposes saved Track objects before attached route objects and
+        # offered source choices have completed loading. The source UUID is
+        # already saved, so no source identity must be guessed from its name.
+        self.routes[0].attached_object=None
+        for track in lanes:track.available_input_routing_types=[self.routes[1],'Ext. In','No Input']
+        self.song.calls.clear()
+        self.backend=Backend(self.song,Q,now=lambda:self.clock);self.addCleanup(self.backend.close)
+        fresh=self.backend
+        self.assertFalse(fresh.monitoring.owned(first))
+        self.assertEqual(fresh.audio_inputs.available,2)
+        self.ticks(12)
+        self.assertTrue(first.arm and first.current_monitoring_state==1)
+        self.assertTrue(manual.arm and manual.current_monitoring_state==2)
+        self.assertNotIn(0,fresh.reserves)
+        self.assertFalse(fresh.state.topology_dirty)
+        self.routes[0].attached_object=self.sources[0]
+        for track in lanes:track.available_input_routing_types=list(self.routes)+['Ext. In','No Input']
+        self.ticks(60)
+        self.assertEqual(fresh.audio_inputs.available,3)
+        self.assertTrue(fresh.monitoring.owned(first))
+        self.assertIs(fresh.reserves[0].track,first)
+        audible=[track for track in fresh.state.groups[0].tracks
+                 if track.arm and track.current_monitoring_state==1]
+        self.assertEqual(audible,[first])
+        self.assertTrue(manual.arm and manual.current_monitoring_state==2)
+        self.assertFalse(fresh.monitoring.owned(manual))
+        self.assertFalse(any(call[0]=='create_track' for call in self.song.calls))
+        self.assertFalse(fresh.failures)
+
+    def test_seven_audio_sources_prepare_and_record_one_shared_take_without_helpers(self):
+        b=self.make(initial=127,groups=1,source_count=7,lanes=8)
+        self.ticks(200)
+        self.assertEqual(b.audio_inputs.available,127)
+        self.assertEqual(b.audio_inputs.desired[0],127)
+        reserve=b.reserves[0]
+        self.assertEqual(len(reserve.members),7)
+        self.assertEqual([m.source.track for m in reserve.members],self.sources)
+        self.assertEqual(b.audio_inputs.routing_fact(0),127|(127<<7))
+        self.assertFalse(any(c[0]=='create_track' for c in self.song.calls))
+        self.assertFalse(any(track.name.startswith('[Input ') for track in self.song._tracks))
+        take=self.start()
+        self.assertEqual(len(self.members(take)),7)
+        self.assertEqual({m.anchor for m in self.members(take)},{take.anchor})
+        self.assertEqual([m.clip.name for m in self.members(take)],
+                         ['T-Bone','SM-58']+['Source %d'%i for i in range(3,8)])
+        self.assertTrue(all(m.track.input_routing_type.attached_object is source
+                            and m.track.input_routing_channel is self.post
+                            for m,source in zip(self.members(take),self.sources)))
+        self.song.advance(take.anchor+2.)
+        self.assertEqual(b.dispatch(65,take.token),0)
+        self.song.advance(take.finish_target);self.ticks(2)
+        self.assertEqual(take.state,'completed')
+        self.assertTrue(all(m.clip.is_playing and not m.clip.is_recording and not m.track.arm
+                            for m in self.members(take)))
+
+    def test_reordering_all_selected_sources_rebuilds_ready_bundle_by_track_identity(self):
+        b=self.make(initial=3,groups=1);self.ticks(90)
+        old=b.reserves[0]
+        for source in self.sources:self.song._tracks.remove(source)
+        ordered=list(reversed(self.sources));self.song._tracks.extend(ordered)
+        b.state.topology_dirty=True;self.ticks(35)
+        self.assertEqual(b.audio_inputs.desired[0],3,'the bit mask alone cannot detect this reorder')
+        self.assertIsNot(b.reserves[0],old)
+        self.assertFalse(b.audio_inputs.validate(old,0,old.row),'old source-index matches must not pass')
+        self.assertEqual([m.source.track for m in b.reserves[0].members],ordered)
+        take=self.start()
+        self.assertEqual([m.source.track for m in self.members(take)],ordered)
+        for member in self.members(take):
+            self.assertIs(member.track.input_routing_type.attached_object,member.source.track)
+            self.assertEqual(member.clip.name,member.source.name)
+
+    def test_catalog_reorder_keeps_admitted_take_sources_and_rebuilds_only_following(self):
+        b=self.make(initial=3,groups=1);self.ticks(90);take=self.start();self.ticks(30)
+        captured=tuple((m.source.track,m.track,m.clip,m.anchor) for m in self.members(take))
+        for source in self.sources:self.song._tracks.remove(source)
+        ordered=list(reversed(self.sources));self.song._tracks.extend(ordered)
+        b.state.topology_dirty=True;self.ticks(40)
+        self.assertEqual(tuple((m.source.track,m.track,m.clip,m.anchor) for m in self.members(take)),captured)
+        self.assertTrue(all(m.clip.is_recording for m in self.members(take)))
+        self.assertEqual([m.source.track for m in b.reserves[0].members],ordered)
+        self.song.advance(take.anchor+2.)
+        self.assertEqual(b.dispatch(67,1|(2<<7)),0)
+        following=take.following
+        self.assertEqual([m.source.track for m in self.members(following)],ordered)
+        for member in self.members(following):
+            self.assertIs(member.track.input_routing_type.attached_object,member.source.track)
+
+    def test_same_ready_patch_finalizes_intent_before_later_source_failure(self):
+        b=self.make(initial=1,groups=2);self.ticks(80)
+        self.assertEqual(b.dispatch(49,1),1);self.ticks(50)
+        self.assertEqual(b.audio_inputs.monitor_owner,1)
+        self.assertEqual(b.dispatch(48,1),1);self.ticks(12)
+        a=b.audio_inputs
+        self.assertEqual(a.monitor_owner,0)
+        self.assertNotIn(0,a.busy)
+        self.assertNotIn(0,a._intents,'a no-op ready reserve still completes the explicit patch action')
+        self.assertIs(a.last_ready[0],b.reserves[0])
+        self.assertEqual(a.confirmed[0],1)
+        self.sources[0].is_frozen=True;a.observe_sources(force=True);self.ticks(15)
+        self.assertEqual(a.monitor_owner,0,'a completed patch must not roll monitoring back later')
+
+    def test_removed_busy_group_does_not_block_other_group_metadata(self):
+        b=self.make(initial=1,groups=2);self.ticks(80)
+        self.assertEqual(b.dispatch(49,3),3)
+        removed=b.state.groups[1].group
+        def belongs(track):
+            for unused in range(8):
+                if track is removed:return True
+                track=getattr(track,'group_track',None)
+                if track is None:return False
+            return False
+        self.song._tracks=[track for track in self.song._tracks if not belongs(track)]
+        b.state.topology_dirty=True;self.ticks(10)
+        self.assertEqual(set(b.state.groups),{0})
+        self.assertIsNone(b.audio_inputs.monitor_owner,'the removed monitor target must not be guessed')
+        self.assertEqual(b.dispatch(48,2),2);self.ticks(80)
+        a=b.audio_inputs
+        for mapping in (a.desired,a.revisions,a.confirmed,a.last_ready,a._intents,
+                        a.jobs,a.prepared_masks,b.reserves,b.failures):
+            self.assertNotIn(1,mapping)
+        self.assertNotIn(1,a.busy);self.assertNotIn(1,a.failed)
+        self.assertEqual(a.state_store.pending,0)
+        saved=json.loads(b.state.groups[0].group.get_data(PATCH_KEY,''))
+        self.assertEqual(saved['sources'],[a.state_store.source_ids[1]])
+        self.assertEqual(json.loads(self.input_root.get_data(OWNER_KEY,''))['group'],0)
+        self.assertEqual(a.desired[0],2)
+
+    def test_catalog_order_and_renamed_sources_restore_by_saved_ids(self):
+        b=self.make(initial=2,groups=1,source_count=7,lanes=8);self.ticks(100)
+        chosen=self.sources[1];old_ids=b.audio_inputs.state_store.source_ids
+        chosen.name='T-Bone'  # Same name as another actual source, and existing music lanes.
+        self.assertEqual(b.dispatch(57,0),0);self.ticks(10)
+        b.close()
+        for source in self.sources:self.song._tracks.remove(source)
+        ordered=list(reversed(self.sources));self.song._tracks.extend(ordered)
+        self.backend=Backend(self.song,Q,now=lambda:self.clock);self.addCleanup(self.backend.close)
+        self.ticks(150);a=self.backend.audio_inputs
+        self.assertEqual(a.catalog_tracks,tuple(ordered))
+        self.assertEqual(a.state_store.source_ids,tuple(reversed(old_ids)))
+        new_index=ordered.index(chosen)
+        self.assertEqual(a.desired[0],1<<new_index)
+        self.assertEqual(a.monitor_owner,0)
+        self.assertIs(self.backend.reserves[0].members[0].source.track,chosen)
+        self.assertIs(self.backend.reserves[0].track.input_routing_type.attached_object,chosen)
+
+    def test_legacy_helper_like_tracks_do_not_infer_a_fresh_group_source(self):
+        b=self.make(initial=0,groups=1);parent=b.state.groups[0].group
+        anchor=b.state.anchors[0]
+        for index,source in enumerate(self.sources):
+            decoy=Track(self.song,'[Input %d]'%(index+1),anchor)
+            decoy.mute=False;decoy.current_monitoring_state=0
+            decoy.input_routing_type=self.routes[index];decoy.input_routing_channel=self.post
+            self.song._tracks.append(decoy)
+        b.state.topology_dirty=True;self.ticks(80)
+        self.assertEqual(b.audio_inputs.available,3)
+        self.assertEqual(b.audio_inputs.desired[0],0)
+        self.assertNotIn(0,b.reserves)
+        self.assertEqual(b.dispatch(64,1),REJECT)
+        self.assertFalse(any(t.group_track is anchor for t in b.state.groups[0].tracks))
+
+    def test_source_effects_stay_once_on_originals_and_ready_lanes_tap_post_fx(self):
+        b=self.make(initial=3,groups=1)
+        effects=[object(),object()]
+        for source,effect in zip(self.sources,effects):source.devices=[effect]
+        self.ticks(80)
+        self.assertEqual([source.devices for source in self.sources],[[effects[0]],[effects[1]]])
+        for member,source in zip(b.reserves[0].members,self.sources):
+            self.assertIs(member.track.input_routing_type.attached_object,source)
+            self.assertEqual(member.track.input_routing_channel.display_name,'Post FX')
+            self.assertEqual(member.track.devices,[])
+        self.assertEqual(sum(len(t.devices) for t in self.song._tracks),2)
 
     def test_no_source_rejects_begin_without_native_work(self):
         b=self.make(initial=0);self.ticks();self.song.calls.clear();self.song.track_reads=0
@@ -528,5 +788,13 @@ class AudioInputChecks(unittest.TestCase):
         self.assertEqual(fresh.clip.name,'SM-58')
         self.assertEqual((old.name,old.color),(old_name,old_color))
         self.assertIs(take.slot.clip,old)
+
+    def test_partial_set_seeds_absent_group_patch_contexts_explicitly(self):
+        b=self.make(groups=2)
+        b.reseed()
+        facts={(kind,a):value for kind,a,value in b.drain_facts(512)}
+        for group in range(2,8):
+            self.assertEqual(facts[1,48+group],0)
+            self.assertEqual(facts[6,8+group],0)
 
 if __name__=='__main__':unittest.main()

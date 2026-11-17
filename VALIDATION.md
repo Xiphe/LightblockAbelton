@@ -4,6 +4,11 @@ The functional baseline passed 842 offline checks and bounded physical trials on
 
 ## Current Audio controller
 
+The direct-monitoring candidate passed user USB and Bluetooth checks in the cheap eight-group Set: patch selection, local names, mute/mixer controls and recording handoffs remained responsive. Native probes also verified seven-source aligned capture/cancel, two-source Accept/Next/Retry/Cancel/Clear, and saved group selections/monitoring ownership after reopening. Saved arm restoration is reconciled through validated lane metadata without adopting unmarked manual arms.
+
+Current checks pass149 controller tests,740 legacy Live tests,52 compiled performance-pad checks,12 joined client/bridge/backend paths,17 installer tests and seven native CTests. Main remains7192/7200 bytes; patch uses3883/7200. These tests do not establish heavy-Set or endurance behavior for the new direct-monitoring version. Temple of Loops migration and its physical check are the next gate.
+
+
 The responsive Audio baseline passed complete USB and Bluetooth trials in a cheap Set and Temple of Loops. Those covered mute chords, volume/pan/white controls, recording, Retry, Cancel, same-bar Accept-and-next and metronome switching. At 256 samples, the fixed eight-lane R3 test also completed without the insertion distortion.
 
 The later two-microphone extension passed 95 host checks, 12 joined compiled-device/C++/Python path checks and 153 compiled-device checks before packaging. The user accepted the repaired dual-source USB countdown/Accept timing and manual deletion recovery in Temple of Loops. These are bounded functional observations, not optical latency measurements or a dedicated dual-source Bluetooth/endurance test.

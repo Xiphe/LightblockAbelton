@@ -211,7 +211,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
               handshakeCC=performanceModel.liveReady?79:78; performanceHandshakeAt=now();
           }
           command=performanceModel.takeDispatch(now());
-          if(!statusActive() && now()>=performanceFeedbackRetryAt) feedback=performanceModel.takeFeedback(now()); }
+          if(!statusActive() && now()>=performanceFeedbackRetryAt) feedback=performanceModel.takeFeedback(now(),patchActive()); }
         // Commands always leave before graphics; no MIDI/SDK calls under the model mutex.
         if(handshakeCC) hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,handshakeCC,performanceGeneration));
         if(command) {

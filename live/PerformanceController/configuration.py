@@ -11,13 +11,12 @@ INPUT_TYPE = 'Ext. In'
 # Fixed trial source, copied from the prepared Temple of Loops input track.
 INPUT_NAME = 'T-Bone'
 INPUT_COLOR_INDEX = 64
-# Empty keeps the accepted fixed-source path. Audio patch mode requires two
-# explicitly prepared helpers inside every group's rightmost [Remote].
-# Example: ({'name':'T-Bone','helper_name':'[Input 1]'},
-#           {'name':'SM-58','helper_name':'[Input 2]'})
+# Nonempty enables the Audio source catalog. Slots follow Audio descendants of
+# the unique [Inputs] group in Live order; no helper track/name mapping is used.
+# This Audio rollout supports seven sources. MIDI selection is a later step.
 AUDIO_SOURCES = ()
 # False selects a prepared-only trial: no new Audio tracks or phrase scenes,
-# and no background input/output routing configuration. Choose before startup.
+# while existing free lanes may still be prepared for the selected source.
 ALLOW_AUDIO_TRACK_CREATION = True
 PREPARATION_TIMEOUT = 8.0
 TRACE_PATH = None

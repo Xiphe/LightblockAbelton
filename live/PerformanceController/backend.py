@@ -14,7 +14,8 @@ from . import configuration as config, protocol as p
 from .model import ClipState, GroupState, LoopReference, read_grid, same
 from .recording_core import LiveRecording
 from .selection_restore import SelectionRestoration
-from .audio_inputs import AudioInputs
+from .audio_inputs import AudioInputs, MAX_SOURCES
+from .direct_monitoring import DirectMonitoring, DirectMonitoringError
 from .bundle_recording import BundleRecording
 
 MARKER = re.compile(r'^\[R([1-8])\]')
@@ -351,7 +352,21 @@ class PreparedRecording(LiveRecording):
 
 
 class AudioPreparedRecording(BundleRecording, PreparedRecording):
-    pass
+    def _make(self, *args, **kwargs):
+        take = super()._make(*args, **kwargs)
+        self.monitoring.claim_take(take)
+        return take
+
+    def accept(self, group, next_take=False):
+        result = super().accept(group, next_take)
+        take = self.take
+        if take is not None and take.group == group and take.state == 'finish_queued':
+            if take.following is not None:
+                self.monitoring.claim_take(take.following)
+            else:
+                spare = self.reserves.get(group)
+                if spare is not None:self.monitoring.claim_reserve(spare)
+        return result
 
 
 class Backend:
@@ -368,6 +383,8 @@ class Backend:
         recording_class=AudioPreparedRecording if specs else PreparedRecording
         self.recording = recording_class(song, self.state, quantizations, self.reserves, monotonic=self.now,emit=self.events.append)
         self.recording.validate = self._compatible
+        self.monitoring=DirectMonitoring(self) if specs else None
+        if self.monitoring:self.recording.monitoring=self.monitoring
         self.audio_inputs=AudioInputs(self,specs) if specs else None
         if self.audio_inputs:self.recording.inputs=self.audio_inputs
         self.pending_begin = None
@@ -407,6 +424,7 @@ class Backend:
 
     def close(self):
         self._closed = True
+        if self.monitoring:self.monitoring.close()
         if self.restoration:
             self.restoration.close()
         self.state.close()
@@ -468,15 +486,23 @@ class Backend:
                    | (bool(self.song.is_playing)<<14) | (bool(self.song.metronome)<<15)
                    | (available<<16) | ((owner+1 if owner is not None else 0)<<24))
         if self.audio_inputs:
-            for group in self.state.groups:
+            for group in range(8):
                 self._fact(1,48+group,self.audio_inputs.desired.get(group,0))
                 self._fact(6,8+group,self.audio_inputs.routing_fact(group))
-            for index in range(2):
+            for index in range(MAX_SOURCES):
                 source=self.audio_inputs.sources.get(index)
                 color=source.color if source else 0
                 rgb=((color>>17)&127)|(((color>>9)&127)<<7)|(((color>>1)&127)<<14)
                 self._fact(6,24+index,rgb | (bool(self.audio_inputs.available&(1<<index))<<21))
             self._fact(1,57,owner if owner is not None else 8)
+            # Catalog labels are lower-priority than control readiness.
+            for index in range(MAX_SOURCES):
+                source=self.audio_inputs.sources.get(index)
+                name=source.name if source else ''
+                encoded=name.encode('ascii','replace')[:32].ljust(32,b'\0')
+                for chunk in range(8):
+                    word=sum(encoded[chunk*4+offset]<<(offset*7) for offset in range(4))
+                    self._fact(6,40+index*8+chunk,word)
 
     def _clock(self, group, grid):
         reference = self.state.reference(group) if group < 8 else None
@@ -550,7 +576,7 @@ class Backend:
             if key < 48:
                 return self._parameter(key,value)
             if 48<=key<=55 and self.audio_inputs:
-                if value&~3:return REJECT
+                if value&~127:return REJECT
                 group=key-48
                 result=self.audio_inputs.set_patch(group,value)
                 self.failures.pop(group,None)
@@ -623,7 +649,7 @@ class Backend:
                 return REJECT
             if self.audio_inputs:
                 mask=self.audio_inputs.desired.get(group,0)
-                if not mask or mask&~self.audio_inputs.available:return REJECT
+                if not (self.audio_inputs.group_mask & (1 << group)):return REJECT
             self.failed_take=None
             self.closed_following=None
             self.pending_begin=(group,token,self.now())
@@ -721,6 +747,8 @@ class Backend:
             if alias is not None and alias[0]==group and alias[2]==token and alias[3] is None:
                 self.handoff_alias=(group,alias[1],token,self.recording.take)
             admitted=True
+        except DirectMonitoringError as exc:
+            self._monitoring_failed(exc)
         except (RuntimeError,ValueError,AttributeError,IndexError) as exc:
             # Invalidate the stale prepared target once; maintenance can repair.
             self.reserves.pop(group,None)
@@ -728,6 +756,23 @@ class Backend:
         finally:
             self.recording.request_token=None
         if admitted:self.recording.enqueue_ready()
+
+    def _monitoring_failed(self, error):
+        # A refused Native arm is not a reason to repeat that setter forever.
+        # A fresh explicit record/patch action may retry this group's preparation.
+        for group in error.groups:
+            self.reserves.pop(group, None)
+            if self.audio_inputs:
+                self.audio_inputs.jobs.pop(group, None)
+                self.audio_inputs.prepared_masks.pop(group, None)
+                self.audio_inputs.busy.discard(group)
+                self.audio_inputs.failed.add(group)
+            self.failures[group] = str(error)
+        if self.pending_begin and self.pending_begin[0] in error.groups:
+            group, token, unused = self.pending_begin
+            self.pending_begin = None
+            self._failed_take(group, token, str(error))
+        self.events.append(dict(event='monitor_preparation_failed', groups=error.groups, reason=str(error)))
 
     def tick(self,before_maintenance=None):
         if self._closed:
@@ -805,11 +850,6 @@ class Backend:
             # one shared output budget across this hook and the final flush.
             self._take_fact()
             before_maintenance()
-        if self.audio_inputs and self.audio_inputs.monitor_dirty:
-            try:self.audio_inputs.reconcile_helpers()
-            except (RuntimeError,ValueError,AttributeError) as exc:
-                self.events.append(dict(event='monitor_preparation_failed',reason=str(exc)))
-                self.audio_inputs.monitor_dirty=False
         if self.restoration:
             self.restoration.tick()
             if self.restoration.done:self.restoration=None
@@ -827,9 +867,13 @@ class Backend:
             if priority is not None and priority not in self.reserves and priority not in self.failures:
                 group=priority
             self.state.scan_occupancy(group,64)
-            if self.audio_inputs and group in self.failures:
-                self.audio_inputs.observe_helpers(group)
             self._maintenance(group)
+        if self.monitoring:
+            try:self.monitoring.tick()
+            except DirectMonitoringError as error:self._monitoring_failed(error)
+            except (RuntimeError,ValueError,AttributeError) as error:
+                self.events.append(dict(event='monitor_preparation_failed',reason=str(error)))
+        if self.audio_inputs:self.audio_inputs.flush_state()
 
     def _row(self, group):
         item=self.state.groups[group]

@@ -8,6 +8,7 @@ int main() {
     performance::Reconciler model;
     performance::IntentFrame device;
     std::string line;
+    bool patchNames=false;
     while(std::getline(std::cin,line)) {
         std::istringstream input(line);
         std::string command;
@@ -37,12 +38,14 @@ int main() {
         } else if(command=="fact") {
             performance::Observation fact;double at;
             if(input>>fact.generation>>fact.seq>>fact.kind>>fact.a>>fact.b>>at) model.receiveObservation(fact,at);else ok=false;
+        } else if(command=="patch-names") {
+            int enabled;if(input>>enabled) patchNames=enabled!=0;else ok=false;
         } else if(command=="pump") {
             double at;
             if(input>>at) {
                 if(auto d=model.takeDispatch(at))
                     std::cout<<"D "<<d->generation<<' '<<d->seq<<' '<<d->key<<' '<<d->value<<' '<<d->deviceSeq<<'\n';
-                if(auto f=model.takeFeedback(at))
+                if(auto f=model.takeFeedback(at,patchNames))
                     std::cout<<"F "<<f->kind<<' '<<f->a<<' '<<f->b<<' '<<f->header()<<'\n';
             } else ok=false;
         } else ok=false;

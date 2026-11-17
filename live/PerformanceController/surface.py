@@ -170,7 +170,10 @@ class PerformanceController(ControlSurface):
                     desired=dict(inputs.desired),prepared=dict(inputs.prepared_masks),
                     available=inputs.available,monitor_owner=inputs.monitor_owner,
                     busy=sorted(inputs.busy),failed=sorted(inputs.failed),
-                    helper_updates=len(inputs._helper_plan),
+                    catalog_size=len(inputs.catalog_tracks),
+                    storage_pending=inputs.state_store.pending,
+                    storage_errors=list(inputs.state_store.errors),
+                    catalog_issues=dict(inputs.issues),
                     tasks=[dict(group=g,stage=job.get('stage'),row=job.get('row'),
                                 revision=job.get('revision')) for g,job in sorted(inputs.jobs.items())])
                 if take is not None:

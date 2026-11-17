@@ -82,6 +82,12 @@ class Track:
         self.mixer_device = NS(volume=Parameter(.75), panning=Parameter(0, -1, 1),
                                sends=[Parameter(.1*i) for i in range(4)])
         self.stop_pending = False
+        self._data = {}
+
+    def get_data(self,key,default):return self._data.get(key,default)
+    def set_data(self,key,value):
+        self.song.calls.append(('set_data',self,key,value))
+        self._data[key]=value
 
     def stop_all_clips(self, quantized):
         self.song.calls.append(('stop', self, quantized))

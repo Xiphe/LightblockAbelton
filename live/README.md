@@ -14,13 +14,13 @@ Open a prepared Set whose absolute path appears in the installed `configuration.
 
 - Give Group Tracks unique `[R1]` through `[R8]` prefixes. Unused numbers are allowed.
 - Each usable group needs an existing rightmost direct subgroup named `[Remote]`.
-- In each `[Remote]`, prepare `[Input 1]` and `[Input 2]` Audio helpers for the two configured sources.
-- Place source tracks named `T-Bone` and `SM-58` inside a uniquely named `[Inputs]` hierarchy. Its subgroups are organizational. Effects remain on each source; helpers take its Post FX signal.
+- Keep at least one silent No Input child in `[Remote]` so Live preserves the subgroup when saving. Source monitoring uses the music lanes, not technical helpers.
+- Place up to seven original Audio sources inside one `[Inputs]` hierarchy. Its subgroups are organizational; source slots follow Live track order. Set each source to Monitor In, Sends Only, with all sends at minimum. Effects remain on the original; recording lanes take its Post FX signal.
 - Keep prepared music Audio tracks directly inside each remote group, before `[Remote]`. Four per group is the current starting inventory, not a hard limit. Two selected sources consume two lanes per take.
 
-The existing Temple of Loops installation already has this structure. Its source hardware inputs are deliberately preserved. Both currently use hardware input 1; change the original source tracks in Live when connecting your actual microphones.
+Source hardware inputs remain Live configuration. Change the original source tracks when connecting your microphones or audio interface; no instrument or input-effect copies are needed.
 
-Only one group monitors live input at a time. Source selection or a horizontal swipe selects that group. Group mute, volume and effects apply to its monitored signal as well as its loops.
+Only one group monitors live input at a time. Source selection or a horizontal swipe selects that group. Group mute, volume and effects apply to its monitored signal as well as its loops. A group with no selected sources stays silent when selected for monitoring; assign sources in Patch first.
 
 New recordings use the first available direct Audio track from left to right with an empty slot in the current phrase. Names and existing input routing do not give a later track priority. Effects and mixer settings stay intact; preparation adapts the chosen track's recording input and monitoring. Every subgroup's children stay outside this pool. Earlier clips keep their own source name and color. When `ALLOW_AUDIO_TRACK_CREATION = True`, maintenance may add tracks before `[Remote]`; insertion can interrupt audio under heavy load. No instruments or source effect racks are cloned.
 
@@ -32,10 +32,7 @@ Required Audio settings include:
 
 ```python
 TARGET_SETS = ('/absolute/path/Your Project/Your Set.als',)
-AUDIO_SOURCES = (
-    {'name': 'T-Bone', 'helper_name': '[Input 1]'},
-    {'name': 'SM-58', 'helper_name': '[Input 2]'},
-)
+AUDIO_SOURCES = 'catalog'
 ALLOW_AUDIO_TRACK_CREATION = True
 ```
 
@@ -61,4 +58,4 @@ See the [adapter documentation](PerformanceController/README.md) for transaction
 python3 -m unittest discover -s live/PerformanceController -p 'test_*.py' -v
 ```
 
-The legacy `LightpadController` package and `templates/Lightpad Remote.als` use a different protocol and setup. Keep them paired with a legacy app; that template does not supply Audio-mode source helpers or configuration.
+The legacy `LightpadController` package and `templates/Lightpad Remote.als` use a different protocol and setup. Keep them paired with a legacy app; that template does not supply the Audio-mode source catalog or configuration.

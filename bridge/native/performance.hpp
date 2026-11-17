@@ -21,7 +21,7 @@ inline bool parameter(int key) { return (key>=0 && key<56) || key==57 || key==11
 inline bool valid(Intent v) {
     if(!byte(v.seq)||!byte(v.key)||v.value<0||v.value>16383) return false;
     if(v.key<48) return v.value<=127;
-    if(v.key<56) return v.value<=3;
+    if(v.key<56) return v.value<=127;
     if(v.key==56) return v.value>0 && v.value<=255;
     if(v.key==57) return v.value<8;
     if(v.key>=64 && v.key<=103) {
@@ -94,7 +94,7 @@ class Reconciler {
     struct Fact { bool known=false,dirty=false; int kind=0; uint32_t a=0,b=0; };
     struct Seen { bool known=false; Intent intent; bool completed=false; int actual=0; };
     std::array<Parameter,128> parameters{};
-    std::array<Fact,97> facts{};
+    std::array<Fact,158> facts{};
     // Availability is a presentation gate, separate from confirmed Native
     // group state. A fresh program receives all6 field facts before it can act.
     std::array<uint8_t,8> initializedFields{};
@@ -124,7 +124,7 @@ class Reconciler {
         if(kind==1) {
             if(a<48) return int(a);
             if(a<56) return 78+int(a)-48;
-            if(a==57) return 96;
+            if(a==57) return 101;
             if(a==114||a==115) return int(a)-66;
         }
         if(kind==3 && a<8) return 50+int(a);
@@ -132,7 +132,8 @@ class Reconciler {
         if(kind==5 && a<(1u<<26) && ((a>>10)&7)<=5) return 67+int(a&7);
         if(kind==6 && a<=2) return 75+int(a);
         if(kind==6 && a>=8 && a<16) return 86+int(a)-8;
-        if(kind==6 && a>=24 && a<26) return 94+int(a)-24;
+        if(kind==6 && a>=24 && a<31) return 94+int(a)-24;
+        if(kind==6 && a>=40 && a<96) return 102+int(a)-40;
         return -1;
     }
     bool setFact(int kind,uint32_t a,uint32_t b,bool force=false) {
@@ -374,7 +375,7 @@ public:
         facts[size_t(index)].dirty=true;
         return true;
     }
-    std::optional<Feedback> takeFeedback(double at=0) {
+    std::optional<Feedback> takeFeedback(double at=0,bool patchNames=false) {
         expire(at);
         if(seedPending) { seedPending=false;return stamp(Feedback{0,uint32_t(lastDeviceSeq<0?127:lastDeviceSeq),0,epoch,0}); }
         if(retryTerminal) {auto value=*retryTerminal;retryTerminal.reset();return stamp(value);}
@@ -386,7 +387,9 @@ public:
         }
         for(size_t n=0;n<facts.size();++n) {
             auto index=(size_t(factCursor)+n)%facts.size();auto& f=facts[index];
-            if(f.dirty) {f.dirty=false;factCursor=int((index+1)%facts.size());return stamp(Feedback{f.kind,f.a,f.b,epoch,0});}
+            // Source labels stay cached while main/metronome are active. They
+            // are sent only to the patch client and do not block other facts.
+            if(f.dirty && (patchNames || f.kind!=6 || f.a<40 || f.a>=96)) {f.dirty=false;factCursor=int((index+1)%facts.size());return stamp(Feedback{f.kind,f.a,f.b,epoch,0});}
         }
         return {};
     }
