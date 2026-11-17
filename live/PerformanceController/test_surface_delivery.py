@@ -66,6 +66,7 @@ class SurfaceDeliveryChecks(unittest.TestCase):
         ticket=backend.allocation_ticket;self.assertIsNotNone(ticket)
         self.assertIn((6,3,ticket),[(kind,a,b) for at,kind,a,b in frames])
         first_display_count=len(frames)
+        initial_clears=sum((kind,a,b)==(6,3,0) for at,kind,a,b in frames)
         # The real MIDI receiver, rather than a direct backend call, admits the
         # device/bridge grant only in this protocol generation.
         self.fixture.command(seq=7,key=58,value=ticket,generation=3)
@@ -75,8 +76,19 @@ class SurfaceDeliveryChecks(unittest.TestCase):
         self.assertEqual(native,[],'grant dispatch performs no Native mutation')
         self.clock+=.101;self.surface.update_display()
         self.assertEqual([event for event,at in native],['enter','return'])
-        self.assertIn((6,3,0),[(kind,a,b) for at,kind,a,b in frames])
+        self.assertEqual(backend.allocation_ticket,ticket)
+        self.assertNotIn((6,3,0),[(kind,a,b) for at,kind,a,b in frames[first_display_count:]])
         self.assertLessEqual(len(frames)-first_display_count,6)
+        # Routing and final validation stay inside the same Busy interval.
+        for unused in range(30):
+            if 0 in backend.reserves:break
+            self.assertEqual(backend.allocation_ticket,ticket)
+            before_display=len(frames)
+            self.clock+=.101;self.surface.update_display()
+            self.assertLessEqual(len(frames)-before_display,6)
+        self.assertIn(0,backend.reserves)
+        self.assertIsNone(backend.allocation_ticket)
+        self.assertEqual(sum((kind,a,b)==(6,3,0) for at,kind,a,b in frames),initial_clears+1)
         actual=[frame for frame in frames if frame[1]==5 and ((frame[2]>>10)&7)==3]
         self.assertTrue(actual,'actual recording phase must reach the MIDI callback')
         self.assertEqual((actual[0][2]>>3)&127,1)

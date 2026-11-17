@@ -986,9 +986,8 @@ class Backend:
             target=active.finish_target if active.state=='finish_queued' else active.target
             if target is not None and 0 <= target-self.song.current_song_time <= self.song.tempo/60.*.3:
                 return
-        self.allocations.begin_maintenance()
-        try:self._prepare_maintenance(group,active)
-        finally:self.allocations.end_maintenance(group)
+        self._prepare_maintenance(group,active)
+        if group in self.failures:self.allocations.release(group)
 
     def _prepare_maintenance(self,group,active):
         item=self.state.groups[group]
@@ -1016,6 +1015,7 @@ class Backend:
         if reserve is not None:
             if reserve.row==row and self._compatible(reserve.track,item.group,row):
                 self.pool_unavailable.pop(group,None)
+                self.allocations.release(group)
                 return
             self.reserves.pop(group,None)
         if not self.allow_audio_track_creation:
@@ -1032,6 +1032,7 @@ class Backend:
                 else:
                     self._prepare_appearance(candidate)
                     self.reserves[group]=Reserve(group,item.group,candidate,candidate.clip_slots[row],row)
+                    self.allocations.release(group)
                     self.pool_unavailable.pop(group,None)
             except (RuntimeError,ValueError,AttributeError,IndexError):
                 self.pool_unavailable[group]='prepared Audio pool changed'
@@ -1052,6 +1053,7 @@ class Backend:
                 if candidate:
                     self._prepare_appearance(candidate)
                     self.reserves[group]=Reserve(group,item.group,candidate,candidate.clip_slots[row],row)
+                    self.allocations.release(group)
                     return
                 # Keep one bounded repair lifecycle; a second creation must
                 # not replace a still-observing restoration and leak listeners.
@@ -1108,6 +1110,7 @@ class Backend:
                 self._prepare_appearance(track)
                 self.reserves[group]=Reserve(group,task['parent'],track,track.clip_slots[task['row']],task['row'])
                 del self.tasks[group]
+                self.allocations.release(group)
             elif self.now()-task['at'] > config.PREPARATION_TIMEOUT:
                 raise ValueError('prepared target verification timeout')
         except (RuntimeError,ValueError,AttributeError,IndexError,StopIteration) as exc:

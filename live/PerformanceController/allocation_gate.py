@@ -1,4 +1,4 @@
-"""Announce one synchronous allocation before entering Live's structural API.
+"""Announce overflow preparation before entering Live's structural API.
 
 A matching device/bridge grant is permission to try, never an allocation result.
 Expired or changed requests clear without performing or replaying Native work.
@@ -31,6 +31,7 @@ class Request:
     context: AllocationContext
     announced_at: float
     callback: int
+    published_at: float
     granted_callback: object = None
     started: bool = False
 
@@ -42,7 +43,6 @@ class AllocationGate:
         self.callback = 0
         self._next_ticket = 0
         self._cleared_callback = -1
-        self._visited = False
 
     @property
     def ticket(self):
@@ -73,6 +73,14 @@ class AllocationGate:
     def begin_callback(self):
         self.callback += 1
         self.expire()
+        request = self.pending
+        if request is not None and self.clock() - request.published_at >= .5:
+            request.published_at = self.clock()
+            self.emit(BUSY_KIND, BUSY_SLOT, request.ticket, True)
+
+    def release(self, group):
+        if self.group == group:
+            self.clear()
 
     def grant(self, ticket):
         # This is called from MIDI dispatch; read no Native object or graph.
@@ -88,17 +96,8 @@ class AllocationGate:
         if self.pending is not None and not self.pending.context.matches(context):
             self.clear()
 
-    def begin_maintenance(self):
-        self._visited = False
-
-    def end_maintenance(self, group):
-        # A new free lane or changed plan can make the announced create unused.
-        if self.pending is not None and self.group == group and not self._visited:
-            self.clear()
-
     @contextmanager
     def operation(self, context):
-        self._visited = True
         self.expire()
         request = self.pending
         if request is not None and not request.context.matches(context):
@@ -114,11 +113,11 @@ class AllocationGate:
                 yield False
                 return
             self._next_ticket = self._next_ticket % 16382 + 1
-            self.pending = Request(self._next_ticket, context, self.clock(), self.callback)
+            self.pending = Request(self._next_ticket, context, self.clock(), self.callback, self.clock())
             self.emit(BUSY_KIND, BUSY_SLOT, self.pending.ticket, True)
             yield False
             return
-        allowed = (not request.started and request.granted_callback is not None
+        allowed = (request.granted_callback is not None
                    and self.callback > request.callback
                    and self.callback > request.granted_callback)
         if not allowed:
@@ -127,5 +126,8 @@ class AllocationGate:
         request.started = True
         try:
             yield True
-        finally:
+        except BaseException:
+            # Permission spans the complete ready bundle, but any uncertain
+            # Native attempt terminates it instead of replaying the operation.
             self.clear()
+            raise

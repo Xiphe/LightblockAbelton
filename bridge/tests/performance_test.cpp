@@ -426,7 +426,7 @@ static void allocation_busy_capacity_reseed_and_stale_receipts() {
 static void allocation_busy_lease_is_bounded_and_fail_closed() {
     Reconciler r;ready(r);r.receiveObservation({1,0,6,3,22},100);
     assert(r.allocationProtectsHealth(10099));assert(!r.allocationProtectsHealth(10100));
-    r.receiveObservation({1,1,6,3,22},10099); // repeated current facts never extend the lease
+    r.receiveObservation({1,1,6,3,22},10099); // ungranted repeated requests never extend the initial wait
     assert(!r.intent(intent(0,58,22),10100));assert(!r.takeDispatch(10101));
     assert(r.allocationAdmissionClosed(10101));assert(!r.intent(intent(1,56,1),10102));
     r.receiveObservation({1,2,6,3,0},10103);assert(!r.allocationAdmissionClosed(10104));
@@ -439,7 +439,39 @@ static void allocation_busy_lease_is_bounded_and_fail_closed() {
     pending.receiveObservation({1,1,6,3,16383},10101);assert(pending.allocationRequested());
 }
 
+
+static void allocation_busy_bundle_heartbeats_preserve_one_grant() {
+    Reconciler r;ready(r);r.receiveObservation({1,0,6,3,88},100);
+    assert(r.intent(intent(0,58,88),101));
+    auto grant=r.takeDispatch(102);assert(grant&&grant->key==58&&grant->value==88);
+    r.receiveAck(ack(*grant,88),103);drain(r,104);
+    assert(!r.intent(intent(1,56,1),105));drain(r,106);
+    assert(r.intent(intent(0,58,88),107));drain(r,108); // duplicate receipt cannot allocate again
+    for(int sequence=1;sequence<=30;++sequence) {
+        const double at=100+sequence*500;
+        r.receiveObservation({1,sequence,6,3,88},at);
+        assert(r.allocationAdmissionClosed(at)&&r.allocationProtectsHealth(at));
+        assert(!r.takeDispatch(at));
+        assert(!r.takeFeedback(at)); // liveness refresh is not a repeated device overlay packet
+    }
+    assert(r.dispatched==1&&r.allocationRequested());
+    const double last=15100;
+    assert(r.allocationProtectsHealth(last+9999));
+    // Neither stale session/revision nor unrelated host health can refresh it.
+    r.receiveObservation({2,31,6,3,88},last+9900);
+    r.receiveObservation({1,30,6,3,88},last+9901);
+    r.receiveObservation({1,29,6,3,88},last+9902);
+    assert(r.allocationExpired(last+10000));
+    r.receiveObservation({1,31,6,3,88},last+10001); // too late: no resurrection
+    assert(r.allocationExpired(last+10002)&&!r.allocationProtectsHealth(last+10002));
+    assert(!r.takeDispatch(last+10002));
+    assert(!r.intent(intent(2,0,70),last+10003));
+    r.receiveObservation({1,32,6,3,0},last+10004);
+    assert(!r.allocationRequested()&&!r.allocationAdmissionClosed(last+10004));
+}
+
 int main() {
+    allocation_busy_bundle_heartbeats_preserve_one_grant();
     allocation_busy_admission_and_drain();allocation_busy_capacity_reseed_and_stale_receipts();allocation_busy_lease_is_bounded_and_fail_closed();
     parsers();seven_source_metadata_and_patch_only_names();superseding_parameters();discrete_order_and_deduplication();bounded_overflow();patch_intents_keep_latest_and_precede_recording();
     timeout_no_replay_and_quarantine();reset_and_reseed();observations_and_priorities();acknowledged_state_updates_already_dirty_snapshots();prehandshake_facts_cannot_poison_a_new_session();group_availability_waits_for_field_delivery();failed_sdk_feedback_is_retained_without_native_replay();

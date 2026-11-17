@@ -349,8 +349,14 @@ public:
         int distance=observationRevision<0?1:(value.seq-observationRevision)&127;
         if(observationRevision>=0 && (distance==0||distance>=64)) { ++ignoredReplies;return; }
         observationRevision=value.seq;lastLiveAt=at;
-        if(value.kind==6 && value.a==3 && int(value.b)!=allocationTicket) {
-            cancelAllocationGrant();allocationTicket=int(value.b);allocationGate=false;allocationAt=at;
+        if(value.kind==6 && value.a==3) {
+            if(int(value.b)!=allocationTicket) {
+                cancelAllocationGrant();allocationTicket=int(value.b);allocationGate=false;allocationAt=at;
+            } else if(allocationTicket && allocationGate && at>=allocationAt && !allocationExpired(at)) {
+                // Progress from the same bounded bundle extends liveness only.
+                // Never unlock, grant again, or revive an expired operation.
+                allocationAt=at;
+            }
         }
         if(value.kind==1) { auto& p=parameters[size_t(value.a)];p.confirmed=int(value.b);p.known=true; }
         setFact(value.kind,value.a,value.b);

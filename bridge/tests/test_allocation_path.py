@@ -113,7 +113,7 @@ class AllocationPathTests(unittest.TestCase):
         self.until(lambda: 0 in self.backend.reserves and len(created) == 2)
         self.assertFalse(violations, '; '.join(violations))
         self.advance(200)
-        self.assertEqual(len(set(created)), 2, 'each Native insertion needs its own permission')
+        self.assertEqual(len(set(created)), 1, 'one Busy permission covers the complete next bundle')
         self.assertIs(self.backend.recording.take, first)
         self.assertEqual(first.state, 'recording')
         self.assertFalse(any(key == 68 for key, value, actual in self.commands))
@@ -127,6 +127,39 @@ class AllocationPathTests(unittest.TestCase):
         self.advance(200)
         self.button(3, 3)
         self.until(lambda: not self.backend.busy)
+
+    def test_busy_bar_stays_until_both_sources_are_ready(self):
+        original_advance = self.advance
+        original_create = self.song.create_audio_track
+        created = []
+        intermediate_frames = []
+
+        def create(index):
+            created.append(self.backend.allocation_ticket)
+            return original_create(index)
+
+        def advance(ms):
+            original_advance(ms)
+            if created and 0 not in self.backend.reserves:
+                intermediate_frames.append(self.vm.time_ms)
+                self.assertEqual(self.backend.allocation_ticket, created[0],
+                                 'Busy cleared before the complete source bundle was ready')
+                self.assertEqual(self.vm.leds[7][7], 0xffc000,
+                                 'the compiled pad hid Busy during routing or the next source')
+
+        self.song.create_audio_track = create
+        self.advance = advance
+        self.begin()
+        self.until(lambda: 0 in self.backend.reserves)
+        self.advance(200)
+        self.assertEqual(len(created), 2)
+        self.assertGreater(len(intermediate_frames), 2,
+                           'exercise intermediate routing callbacks, not just creation')
+        self.assertEqual(len({ticket for ticket in created}), 1)
+        self.assertEqual(sum(key == 58 for key, value, actual in self.commands), 1)
+        self.assertIsNone(self.backend.allocation_ticket)
+        self.assertNotEqual(self.vm.leds[7][7], 0xffc000)
+        self.assertEqual(len(self.backend.reserves[0].members), 2)
 
 
 if __name__ == '__main__':

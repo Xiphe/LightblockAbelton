@@ -45,9 +45,91 @@ class AllocationChecks(unittest.TestCase):
         self.assertEqual(self.creates(fixture),0,'even a granted request cannot create in its announcing callback')
         self.step(fixture)
         self.assertEqual(self.creates(fixture),1)
-        self.assertIsNone(backend.allocation_ticket)
-        self.assertIn((6,3,0),backend.drain_facts(300))
+        self.assertEqual(backend.allocation_ticket,ticket)
+        self.assertNotIn((6,3,0),backend.drain_facts(300))
+        # Further Native creations belong to this same preparation, not a new
+        # permission handshake. An already-started ticket cannot be re-granted.
         self.assertEqual(backend.dispatch(58,ticket),REJECT)
+
+    def test_one_busy_ticket_covers_two_source_allocation_routing_and_ready_bundle(self):
+        fixture,backend=self.audio();ticket=backend.allocation_ticket
+        facts=backend.drain_facts(300)
+        self.assertEqual(backend.dispatch(58,ticket),ticket)
+        self.step(fixture)
+        self.assertEqual(self.creates(fixture),1)
+        self.assertEqual(backend.allocation_ticket,ticket,
+                         'first creation must not unlock while routing and the second lane are missing')
+        self.assertNotIn(0,backend.reserves)
+        for unused in range(80):
+            facts+=backend.drain_facts(300)
+            if 0 in backend.reserves:break
+            self.assertEqual(backend.allocation_ticket,ticket,
+                             'one granted ticket owns all preparation callbacks')
+            self.step(fixture)
+        facts+=backend.drain_facts(300)
+        self.assertIn(0,backend.reserves)
+        reserve=backend.reserves[0]
+        self.assertEqual(len(reserve.members),2)
+        self.assertTrue(backend.audio_inputs.validate(reserve,0,reserve.row))
+        self.assertEqual(self.creates(fixture),2)
+        self.assertIsNone(backend.allocation_ticket)
+        self.assertEqual({b for kind,a,b in facts if kind==6 and a==3 and b}, {ticket})
+        self.assertEqual(sum(f==(6,3,0) for f in facts),1)
+
+    def test_started_bundle_keeps_busy_and_heartbeats_beyond_initial_grant_timeout(self):
+        fixture,backend=self.audio();ticket=backend.allocation_ticket
+        self.assertEqual(backend.dispatch(58,ticket),ticket)
+        facts=backend.drain_facts(300)
+        started=fixture.clock
+        for unused in range(30):
+            self.step(fixture,1.5)
+            facts+=backend.drain_facts(300)
+            if 0 in backend.reserves:break
+            self.assertEqual(backend.allocation_ticket,ticket)
+        self.assertGreater(fixture.clock-started,10)
+        self.assertEqual(self.creates(fixture),2)
+        self.assertIn(0,backend.reserves)
+        self.assertIsNone(backend.allocation_ticket)
+        self.assertGreater(sum(f==(6,3,ticket) for f in facts),5)
+        self.assertEqual(sum(f==(6,3,0) for f in facts),1)
+
+    def test_existing_stock_preparation_never_locks_the_device(self):
+        fixture=audio_fixtures.AudioInputChecks();self.addCleanup(fixture.doCleanups)
+        backend=fixture.make(initial=3,groups=1,lanes=4)
+        fixture.ticks(80);backend.drain_facts(300)
+        self.assertEqual(backend.dispatch(64,1),0)
+        take=backend.recording.take;fixture.song.advance(take.target+.001)
+        facts=[]
+        for unused in range(30):
+            self.step(fixture);facts+=backend.drain_facts(300)
+            self.assertIsNone(backend.allocation_ticket)
+        self.assertIn(0,backend.reserves)
+        self.assertEqual(self.creates(fixture),0)
+        self.assertFalse(any(kind==6 and a==3 and b for kind,a,b in facts))
+
+    def test_reseed_mid_overflow_routing_reacquires_busy_before_further_native_work(self):
+        fixture,backend=self.audio();old=backend.allocation_ticket
+        self.assertEqual(backend.dispatch(58,old),old)
+        self.step(fixture);self.assertEqual(self.creates(fixture),1)
+        job=backend.audio_inputs.jobs[0]
+        self.assertIsNotNone(job['track'])
+        backend.reseed();self.assertIsNone(backend.allocation_ticket)
+        calls=list(fixture.song.calls);stage=job['stage']
+        for unused in range(5):self.step(fixture)
+        fresh=backend.allocation_ticket
+        self.assertIsNotNone(fresh);self.assertNotEqual(fresh,old)
+        self.assertEqual(fixture.song.calls,calls,
+                         'reconnected peer must paint Busy before retained routing work resumes')
+        self.assertEqual(job['stage'],stage)
+        self.assertEqual(backend.dispatch(58,old),REJECT)
+        self.assertEqual(backend.dispatch(58,fresh),fresh)
+        for unused in range(50):
+            self.step(fixture)
+            if 0 in backend.reserves:break
+            self.assertEqual(backend.allocation_ticket,fresh)
+        self.assertIn(0,backend.reserves)
+        self.assertEqual(self.creates(fixture),2)
+        self.assertIsNone(backend.allocation_ticket)
 
     def test_missing_or_wrong_grant_never_becomes_a_native_timeout_fallback(self):
         fixture,backend=self.audio();ticket=backend.allocation_ticket
@@ -96,6 +178,24 @@ class AllocationChecks(unittest.TestCase):
         for unused in range(20):self.step(fixture)
         self.assertEqual(self.creates(fixture),1)
 
+    def test_later_bundle_creation_failure_clears_once_and_never_replays(self):
+        fixture,backend=self.audio();ticket=backend.allocation_ticket
+        self.assertEqual(backend.dispatch(58,ticket),ticket)
+        self.step(fixture);self.assertEqual(self.creates(fixture),1)
+        self.assertEqual(backend.allocation_ticket,ticket)
+        fixture.song.create_error=True
+        for unused in range(40):
+            self.step(fixture)
+            if 0 in backend.failures:break
+            self.assertEqual(backend.allocation_ticket,ticket)
+        self.assertIn(0,backend.failures)
+        self.assertEqual(self.creates(fixture),2)
+        self.assertIsNone(backend.allocation_ticket)
+        self.assertNotIn(0,backend.reserves)
+        for unused in range(40):self.step(fixture)
+        self.assertEqual(self.creates(fixture),2,
+                         'the failed second allocation must not replay under the shared grant')
+
     def test_invalid_native_context_clears_and_rediscovers_without_creating(self):
         class ArgumentError(TypeError):pass
         fixture,backend=self.audio();ticket=backend.allocation_ticket
@@ -129,6 +229,12 @@ class AllocationChecks(unittest.TestCase):
         self.assertEqual(self.creates(fixture),0)
         self.assertEqual(backend.dispatch(58,ticket),ticket);self.step(fixture)
         self.assertEqual(self.creates(fixture),1)
+        self.assertEqual(backend.allocation_ticket,ticket)
+        for unused in range(30):
+            if 0 in backend.reserves:break
+            self.assertEqual(backend.allocation_ticket,ticket)
+            self.step(fixture)
+        self.assertIn(0,backend.reserves)
         self.assertIsNone(backend.allocation_ticket)
 
 

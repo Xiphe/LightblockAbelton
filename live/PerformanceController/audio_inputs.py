@@ -346,6 +346,7 @@ class AudioInputs:
         self.busy.discard(group)
         self.failed.discard(group)
         self.backend.pool_unavailable.pop(group,None)
+        self.backend.allocations.release(group)
 
     def maintenance(self,group,row,active):
         b=self.backend;item=b.state.groups[group]
@@ -357,8 +358,16 @@ class AudioInputs:
                 self.confirmed[group]=0;self.last_ready.pop(group,None);self._intents.pop(group,None)
                 self.busy.discard(group);self.failed.discard(group)
                 b.pool_unavailable.pop(group,None)
+                b.allocations.release(group)
                 return
             selected=self.selected(group)
+            job=self.jobs.get(group)
+            if (job is not None and job.get('overflow')
+                    and job['revision']==attempted_revision and job['row']==row):
+                # Reseeding cancels protocol permission, not already created
+                # lanes. Reacquire Busy before resuming that job's routing.
+                with b.allocations.operation(b._allocation_context(group)) as allowed:
+                    if not allowed:return
             reserve=b.reserves.get(group)
             if reserve is not None and self.validate(reserve,group,row):
                 # A cancelled/deleted earlier slot can become free while a later
@@ -398,6 +407,7 @@ class AudioInputs:
                             b.pool_unavailable[group]='prepared Audio pool unavailable'
                             self.busy.discard(group)
                             return
+                        job['overflow']=True
                         track=b._create_audio_lane(group,row)
                         if track is None:return
                     job['track']=track;job['created']=created
@@ -463,6 +473,7 @@ class AudioInputs:
         current=self.revisions.get(group,0)
         if revision is not None and revision!=current:return
         if job is not None and job['revision']!=current:return
+        b.allocations.release(group)
         self.jobs.pop(group,None);b.reserves.pop(group,None)
         wanted=self.confirmed.get(group,self.desired.get(group,0))
         if intent is not None and intent['revision']==current:

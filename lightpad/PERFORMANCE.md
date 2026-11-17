@@ -12,7 +12,7 @@ The separate patch program retains the compact group/input geometry. It owns con
 
 The separate metronome retains colored meter fields and visible digits, two-LED detents with quarter-LED return hysteresis, held target raster, the green/red click switch, plain monochrome tempo button and independent double-tap-to4. Controls are local and optimistic; actual values reconcile after ownership and pending intent end.
 
-All three clients support the allocation ticket described in the semantic wire contract. Existing contacts finish normally before the yellow center bar appears. A later repaint sends the matching grant, so Live cannot start allocation before a complete busy frame. New contacts are ignored until the ticket clears, including orphaned moves/releases from touches begun while blocked. Busy does not change views, take tokens or local clock animation.
+All three clients support the allocation ticket described in the semantic wire contract. Existing contacts finish normally before the yellow center bar appears. A later repaint sends the matching grant, so Live cannot start allocation before a complete busy frame. The host retains that ticket through every track and routing step until the complete next take is ready or preparation fails. New contacts are ignored until the ticket clears, including orphaned moves/releases from touches begun while blocked. Busy does not change views, take tokens or local clock animation.
 
 ## Measured build budget
 

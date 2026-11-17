@@ -74,7 +74,7 @@ PERFORMANCE_REPLAY=/absolute/build/performance_replay \
 
 These exercise the compiled clients, actual C++ reconciler and Python backend with fake Native IO. They do not measure hardware latency or audible routing changes.
 
-Automatic Audio overflow announces each insertion before calling Live. The active pad program waits for existing contacts to finish, draws a small yellow bar, then confirms on a later repaint. The bridge drains admitted commands before granting the insertion. New pad touches are ignored while the bar is present and never replay afterward. The current view and recording clocks keep running locally. A missing or expired grant cannot trigger creation. Live's synchronous allocation may still interrupt audio and delay Live feedback; a prepared inventory avoids this work during performance.
+Automatic Audio overflow announces preparation of the complete next take before calling Live. The active pad program waits for existing contacts to finish, draws a small yellow bar, then confirms on a later repaint. The bridge drains admitted commands before granting preparation. One Busy phase covers every needed track and its routing until the complete next take is ready; a failure also releases it. New pad touches are ignored while the bar is present and never replay afterward. The current view and recording clocks keep running locally. A missing or expired grant cannot trigger creation. Live's synchronous allocation may still interrupt audio and delay Live feedback; a prepared inventory avoids this work during performance.
 
 ## Install
 
