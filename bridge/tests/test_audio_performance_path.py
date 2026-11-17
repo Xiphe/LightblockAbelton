@@ -16,7 +16,7 @@ sys.path.insert(0,str(ROOT/'live'))
 from littlefoot_harness import Harness
 from test_performance_main import read_state
 from PerformanceController.backend import Backend
-from PerformanceController.fake_native import PerformanceSong
+from PerformanceController.fake_native import PerformanceSong, Track
 
 QS=dict(q_bar=4,q_half=5,q_quarter=7,q_eight=9,q_sixtenth=11)
 
@@ -35,6 +35,17 @@ class PathTests(unittest.TestCase):
     def setUp(self):
         self.vm=Harness(self.program);self.vm.call('initialise/v');self.midi_cursor=0
         self.song=PerformanceSong(groups=8,compatible=True)
+        # The performance setup preallocates four compatible Audio lanes per
+        # group. Rapid Next must use that pool, not rely on a background track
+        # insertion during the preceding Native count-in or handoff window.
+        for group in tuple(t for t in self.song.tracks
+                           if t.is_foldable and t.name.startswith('[R') and t.name!='[Remote]'):
+            anchor=next(t for t in self.song.tracks
+                        if t.is_foldable and t.name=='[Remote]' and t.group_track is group)
+            for index in range(3):
+                lane=Track(self.song,'Prepared Audio %d'%(index+1),group)
+                self.song.routes(lane,group,compatible=True)
+                self.song._tracks.insert(self.song._tracks.index(anchor),lane)
         self.backend=Backend(self.song,QS,now=lambda:self.vm.time_ms/1000.)
         self.addCleanup(self.backend.close)
         self.pipe=subprocess.Popen([self.replay],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)

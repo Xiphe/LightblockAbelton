@@ -943,6 +943,11 @@ class Backend:
             return
         active=self.recording.take
         if active is not None and active.state in ('queued','finish_queued'):
+            issued=active.finish_issued if active.state=='finish_queued' else active.start_issued
+            # Once Native owns the queued transition, observe its actual start
+            # or handoff before another synchronous create/routing call. A
+            # narrow time margin cannot bound Live's allocator duration.
+            if issued:return
             target=active.finish_target if active.state=='finish_queued' else active.target
             if target is not None and 0 <= target-self.song.current_song_time <= self.song.tempo/60.*.3:
                 return
@@ -992,6 +997,11 @@ class Backend:
                 self.pool_unavailable[group]='prepared Audio pool changed'
             return
         task=self.tasks.get(group)
+        if task is not None and (task['row']!=row or not same(task['parent'],item.group)):
+            # Clear or a replaced group invalidates the old phrase target.
+            # Keep any already created Track in the Set, but choose again from
+            # existing compatible lanes instead of publishing a stale reserve.
+            self.tasks.pop(group,None);task=None
         try:
             if task is None:
                 exclude=[active.track] if active is not None and active.state!='completed' else []
