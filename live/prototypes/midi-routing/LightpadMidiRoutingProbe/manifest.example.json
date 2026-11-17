@@ -1,0 +1,23 @@
+{
+  "scratch_set_path": "/absolute/path/to/Midi Routing Trial Project/Midi Routing Trial.als",
+  "mailbox_directory": "/absolute/path/to/midi-routing-mailbox",
+  "allowed_existing_tracks": [
+    "[Inputs]",
+    "Probe Synth",
+    "Probe Audio",
+    "4-MIDI",
+    "[R1] Probe",
+    "6-Audio",
+    "[R2] Probe",
+    "8-Audio",
+    "A-Reverb",
+    "B-Delay",
+    "Main",
+    "__MIDI85__ MIDI A",
+    "__MIDI85__ MIDI B",
+    "__MIDI85__ Audio B",
+    "__MIDI85__ Audio C",
+    "__MIDI85__ Bus R1",
+    "C-__MIDI85__ Bus R1"
+  ]
+}

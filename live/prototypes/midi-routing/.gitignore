@@ -1,0 +1,7 @@
+LightpadMidiRoutingProbe/manifest.json
+mailbox/
+*.als
+*.wav
+*.aif
+midi-input
+host-steps.jsonl
