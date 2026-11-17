@@ -16,10 +16,30 @@ DENOMINATORS = (1, 2, 4, 8, 16)
 TICK = 1.0 / 240.0
 
 
+# Boost.Python raises ArgumentError, a TypeError subclass, when a retained
+# Live object outlives its Native handle. Ordinary Python TypeErrors are bugs.
+NATIVE_ERRORS = (RuntimeError, AttributeError, ReferenceError, TypeError)
+
+
+def native_error(error):
+    if isinstance(error, TypeError) and type(error).__name__ != 'ArgumentError':
+        raise error
+
+
+def live_valid(value):
+    """Ableton's Native wrappers compare equal to None after deletion."""
+    try:
+        return value is not None and value != None
+    except NATIVE_ERRORS as error:
+        native_error(error)
+        return False
+
+
 def same(a, b):
     try:
         return a is b or a == b
-    except Exception:
+    except NATIVE_ERRORS as error:
+        native_error(error)
         return False
 
 

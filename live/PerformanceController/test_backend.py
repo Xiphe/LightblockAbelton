@@ -741,4 +741,33 @@ class FixedPoolChecks(unittest.TestCase):
         self.assertFalse(second.slot.has_clip)
         self.assertFalse(replacement.slot.has_clip)
 
+    def test_discovery_filters_invalid_native_snapshot_and_retries_next_topology(self):
+        class ArgumentError(TypeError):pass
+        class RemovedTrack(Track):
+            def __eq__(self,other):raise ArgumentError('None.None(Track) invalid handle')
+            def __ne__(self,other):return not self.__eq__(other)
+        b=self.make();self.ticks(30)
+        removed=b.state.groups[0].tracks[0]
+        removed.__class__=RemovedTrack
+        b.state.topology_dirty=True
+        b.state.discover()
+        self.assertTrue(b.state.topology_dirty,'a snapshot with expired Native wrappers needs another discovery')
+        self.assertTrue(all(track is not removed for track in b.state.groups[0].tracks))
+        self.song._tracks=[track for track in self.song._tracks if track is not removed]
+        b.state.discover()
+        self.assertFalse(b.state.topology_dirty)
+        self.assertEqual(b.dispatch(1,2),2)
+
+    def test_unexpected_listener_type_error_keeps_topology_dirty_and_propagates(self):
+        b=self.make();self.ticks(30)
+        track=b.state.groups[0].tracks[0]
+        def broken(callback):raise TypeError('incorrect Python listener invocation')
+        track.remove_name_listener=broken
+        b.state._names.append((track,lambda:None))
+        try:
+            with self.assertRaisesRegex(TypeError,'incorrect Python listener'):
+                b.state.discover()
+            self.assertTrue(b.state.topology_dirty)
+        finally:b.state._names=[]
+
 if __name__=='__main__':unittest.main()

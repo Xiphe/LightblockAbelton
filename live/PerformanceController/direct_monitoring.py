@@ -6,10 +6,10 @@ Call tick after recording cleanup and reserve preparation. No Track discovery,
 source routing, device copying or parameter scanning happens in this module.
 """
 from .bundle_recording import members
-from .model import same
+from .model import same, NATIVE_ERRORS, native_error
 
 AUTO, OFF = 1, 2
-_NATIVE_ERRORS = (RuntimeError, AttributeError, ReferenceError)
+_NATIVE_ERRORS = NATIVE_ERRORS
 
 
 class DirectMonitoringError(ValueError):
@@ -44,7 +44,8 @@ class DirectMonitoring:
                     or track.is_frozen or self._recording(track)
                     or getattr(track, 'fired_slot_index', -1) != -1):
                 return False
-        except _NATIVE_ERRORS:
+        except _NATIVE_ERRORS as error:
+            native_error(error)
             self._forget(track)
             return False
         existing = next((old_group for old, old_group in self._owned if same(track, old)), None)
@@ -61,7 +62,8 @@ class DirectMonitoring:
     def _event(self, name, track, **fields):
         try:
             label = str(track.name)
-        except _NATIVE_ERRORS:
+        except _NATIVE_ERRORS as error:
+            native_error(error)
             label = 'unavailable'
         self.backend.events.append(dict(event=name, track=label, **fields))
 
@@ -85,7 +87,8 @@ class DirectMonitoring:
                 raise ValueError('monitor destination armed externally')
             # Read both setters' current values before claiming any ownership.
             track.current_monitoring_state
-        except _NATIVE_ERRORS:
+        except _NATIVE_ERRORS as error:
+            native_error(error)
             self._forget(track)
             self._event('direct_monitor_stale', track)
             return False
@@ -106,11 +109,13 @@ class DirectMonitoring:
             if not track.arm:
                 raise ValueError('Live did not retain the recording arm')
         except _NATIVE_ERRORS as error:
+            native_error(error)
             # Keep a live destination owned after an uncertain arm/mode write
             # so the next cleanup can still silence/disarm that destination.
             try:
                 track.arm
-            except _NATIVE_ERRORS:
+            except _NATIVE_ERRORS as stale_error:
+                native_error(stale_error)
                 self._forget(track)
             self._event('direct_monitor_unavailable', track, reason=str(error))
             raise ValueError('monitor destination unavailable') from error
@@ -136,9 +141,11 @@ class DirectMonitoring:
                 if track.current_monitoring_state != OFF:
                     track.current_monitoring_state = OFF
             except _NATIVE_ERRORS as error:
+                native_error(error)
                 try:
                     track.arm
-                except _NATIVE_ERRORS:
+                except _NATIVE_ERRORS as error:
+                    native_error(error)
                     self._forget(track)
                     self._event('direct_monitor_stale', track)
                     continue
@@ -161,7 +168,8 @@ class DirectMonitoring:
                 if (track.playing_slot_index not in (-1, -2)
                         or getattr(track, 'fired_slot_index', -1) != -1):
                     continue
-            except _NATIVE_ERRORS:
+            except _NATIVE_ERRORS as error:
+                native_error(error)
                 self._forget(track)
                 continue
             for name, wanted in (('current_monitoring_state', OFF), ('arm', False)):
@@ -169,12 +177,14 @@ class DirectMonitoring:
                     if getattr(track, name) != wanted:
                         setattr(track, name, wanted)
                 except _NATIVE_ERRORS as error:
+                    native_error(error)
                     self._event('direct_monitor_cleanup_unavailable', track,
                                 field=name, reason=str(error))
             try:
                 if track.current_monitoring_state == OFF and not track.arm:
                     self._forget(track)
-            except _NATIVE_ERRORS:
+            except _NATIVE_ERRORS as error:
+                native_error(error)
                 self._forget(track)
 
     def _claim_targets(self, targets, complete=False):
@@ -188,6 +198,7 @@ class DirectMonitoring:
             for track, audible, group in targets:
                 self._claim(track, audible, group)
         except (ValueError,) + _NATIVE_ERRORS as error:
+            native_error(error)
             self._contain_failed_targets(targets)
             self._event('direct_monitor_bundle_failed', targets[0][0] if targets else None,
                         groups=sorted({group for unused, audible, group in targets}),
@@ -246,12 +257,14 @@ class DirectMonitoring:
                     continue
                 if track.arm:
                     track.arm = False
-            except _NATIVE_ERRORS:
+            except _NATIVE_ERRORS as error:
+                native_error(error)
                 try:
                     if track.arm:
                         self._event('direct_monitor_disarm_unavailable', track)
                         continue
-                except _NATIVE_ERRORS:
+                except _NATIVE_ERRORS as error:
+                    native_error(error)
                     pass
                 self._event('direct_monitor_stale', track)
             self._forget(track)
@@ -261,6 +274,7 @@ class DirectMonitoring:
             try:
                 if not self._recording(track) and track.arm:
                     track.arm = False
-            except _NATIVE_ERRORS:
+            except _NATIVE_ERRORS as error:
+                native_error(error)
                 pass
         self._owned = []

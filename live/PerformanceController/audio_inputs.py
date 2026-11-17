@@ -5,7 +5,7 @@ cached intent only; actual recording lanes provide monitoring without helpers.
 """
 from dataclasses import dataclass
 import json
-from .model import same
+from .model import same, live_valid, NATIVE_ERRORS, native_error
 from .audio_patch_state import AudioPatchState
 
 OFF, IN, AUTO = 2, 0, 1
@@ -100,8 +100,28 @@ class AudioInputs:
         for intent in self._intents.values():
             if intent['previous_owner'] not in live_groups:intent['previous_owner'] = None
 
+    def _prune_destinations(self):
+        # A topology callback may remove an owned spare or a partially routed
+        # lane. Retire those cached plans, never replay their Native writes.
+        for group, item in self.backend.state.groups.items():
+            def present(track):
+                return live_valid(track) and any(same(track, current) for current in item.tracks)
+            plans = [reserve for reserve in (self.backend.reserves.get(group),
+                                             self.last_ready.get(group)) if reserve is not None]
+            stale = any(not present(member.track) for plan in plans for member in plan.members)
+            job = self.jobs.get(group)
+            if job is not None:
+                stale = stale or any(not present(member.track) for member in job['members'])
+                stale = stale or job['track'] is not None and not present(job['track'])
+            if not stale:continue
+            self.backend.reserves.pop(group,None);self.last_ready.pop(group,None)
+            self.jobs.pop(group,None);self.prepared_masks.pop(group,None)
+            self.backend.failures.pop(group,None);self.failed.discard(group)
+            self.busy.add(group)
+
     def discover(self):
         self._prune_groups()
+        self._prune_destinations()
         tracks = self.backend.state.tracks
         roots = [t for t in tracks if t.is_foldable and str(t.name).split(' ', 1)[0] == '[Inputs]']
         self.root = roots[0] if len(roots) == 1 else None
@@ -209,7 +229,9 @@ class AudioInputs:
                 index = int(getattr(source.track, 'color_index', 0))
                 if (name, color, index) != (source.name, source.color, source.color_index):
                     self.sources[i] = Source(i, source.track, name, color, index, source.route)
-            except (RuntimeError, AttributeError): pass
+            except NATIVE_ERRORS as error:
+                native_error(error)
+                self.backend.state.topology_dirty=True
         self._available = available
         # Saved arm/routing properties may settle after constructor discovery.
         # Reconcile only our marked retained lanes on the slow source cadence.
@@ -273,18 +295,26 @@ class AudioInputs:
                 | (int(group in self.busy) << 14) | (int(group in self.failed) << 15))
 
     def available_lane(self, track, parent, row):
-        return (same(getattr(track, 'group_track', None), parent)
+        try:
+            return (same(getattr(track, 'group_track', None), parent)
                 and not track.is_foldable and track.has_audio_input and not track.is_frozen
                 and (not track.arm or self.backend.monitoring.owned(track))
                 and self.backend.recording._quiet(track)
                 and 0 <= row < len(track.clip_slots)
                 and not track.clip_slots[row].has_clip and not track.clip_slots[row].is_triggered)
 
+        except NATIVE_ERRORS as error:
+            native_error(error);self.backend.state.topology_dirty=True;return False
+
     def compatible(self, track, parent, row, source):
-        return (self.available_lane(track, parent, row)
+        try:
+            return (self.available_lane(track, parent, row)
                 and (track.current_monitoring_state == OFF or
                      track.current_monitoring_state == AUTO and self.backend.monitoring.owned(track))
                 and source_route(track.input_routing_type, source) and post_fx(track.input_routing_channel))
+
+        except NATIVE_ERRORS as error:
+            native_error(error);self.backend.state.topology_dirty=True;return False
 
     def validate(self,reserve,group,row):
         item=self.backend.state.groups[group]
@@ -294,9 +324,12 @@ class AudioInputs:
         if (len(selected)!=len(reserve.members) or any(
                 source.index!=member.source.index or not same(source.track,member.source.track)
                 for source,member in zip(selected,reserve.members))):return False
-        return all(any(same(m.track,t) for t in item.tracks)
+        try:
+            return all(any(same(m.track,t) for t in item.tracks)
                    and same(m.slot,m.track.clip_slots[row])
                    and self.compatible(m.track,item.group,row,m.source) for m in reserve.members)
+        except NATIVE_ERRORS as error:
+            native_error(error);self.backend.state.topology_dirty=True;return False
 
     def excluded(self,active):
         result=[]
@@ -410,7 +443,8 @@ class AudioInputs:
                 self._mark_prepared_ownership(group,reserve)
                 b.reserves[group]=reserve
                 self._confirm_reserve(group,reserve)
-        except (RuntimeError,ValueError,AttributeError,IndexError,TypeError) as exc:
+        except NATIVE_ERRORS + (ValueError,IndexError) as exc:
+            native_error(exc)
             self.fail_preparation(group,str(exc),attempted_revision)
             b.events.append(dict(event='input_preparation_failed',group=group,reason=str(exc)))
 
@@ -440,7 +474,7 @@ class AudioInputs:
                     # The old ready destination remains usable immediately.
                     b.failures.pop(group,None)
                     return
-            except (RuntimeError,ValueError,AttributeError):pass
+            except NATIVE_ERRORS + (ValueError,) as error:native_error(error)
         # Uncertain mutations stay latched; source-readiness failures alone may
         # clear when a retained source becomes available again.
         b.failures[group]=reason

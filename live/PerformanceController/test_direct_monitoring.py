@@ -403,5 +403,30 @@ class MonitoringChecks(unittest.TestCase):
         self.assertEqual(self.tracks[0].current_monitoring_state, OFF)
 
 
+class DeletedHandleChecks(unittest.TestCase):
+    def test_boost_argument_error_retires_owned_deleted_handle(self):
+        class ArgumentError(TypeError):pass
+        class DeletedTrack(Track):
+            def _check(self):
+                if self.deleted:raise ArgumentError('None.None(Track) invalid Native handle')
+        trace=[];old=DeletedTrack('removed',trace);new=Track('replacement',trace)
+        backend=NS(recording=NS(take=None),reserves={0:reserve(0,old)},
+                   audio_inputs=NS(monitor_owner=0),events=[])
+        monitoring=DirectMonitoring(backend);monitoring.tick()
+        old.deleted=True;backend.reserves[0]=reserve(0,new)
+        monitoring.tick()
+        self.assertFalse(monitoring.owned(old))
+        self.assertTrue(new.arm);self.assertEqual(new.current_monitoring_state,AUTO)
+        monitoring.close()
+
+    def test_plain_type_error_is_not_reported_as_a_deleted_native_handle(self):
+        class ProgrammingBug(Track):
+            def _check(self):raise TypeError('wrong Python argument type')
+        backend=NS(recording=NS(take=None),reserves={0:reserve(0,ProgrammingBug('bug',[]))},
+                   audio_inputs=NS(monitor_owner=0),events=[])
+        with self.assertRaisesRegex(TypeError,'wrong Python argument'):
+            DirectMonitoring(backend).tick()
+
+
 if __name__ == '__main__':
     unittest.main()

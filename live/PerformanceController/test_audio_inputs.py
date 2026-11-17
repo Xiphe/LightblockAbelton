@@ -797,4 +797,43 @@ class AudioInputChecks(unittest.TestCase):
             self.assertEqual(facts[1,48+group],0)
             self.assertEqual(facts[6,8+group],0)
 
+    def test_deleted_native_destinations_rebuild_without_replaying_or_touching_other_groups(self):
+        class ArgumentError(TypeError):pass
+        class DeletedTrack(Track):
+            def __getattribute__(self,name):
+                if not name.startswith('_') and object.__getattribute__(self,'_deleted'):
+                    raise ArgumentError('None.None(Track) did not match TTrackPyHandle')
+                return super().__getattribute__(name)
+            def __eq__(self,other):
+                if self._deleted:raise ArgumentError('None.None(Track) invalid handle')
+                return self is other
+        for phase in ('ready','preparing'):
+            with self.subTest(phase=phase):
+                b=self.make(groups=2);self.ticks(80)
+                if phase=='preparing':
+                    b.audio_inputs.set_patch(0,3)
+                    for unused in range(25):
+                        self.ticks(1)
+                        job=b.audio_inputs.jobs.get(0)
+                        if job and (job['track'] is not None or job['members']):break
+                    self.assertIsNotNone(job)
+                    doomed=job['track'] or job['members'][0].track
+                else:doomed=b.reserves[0].track
+                # A Native listener remains retained after the Track is deleted.
+                b.state._names.append((doomed,lambda:None))
+                self.song._tracks.remove(doomed)
+                doomed._deleted=False;doomed.__class__=DeletedTrack;doomed._deleted=True
+                b.state.topology_dirty=True
+                self.song.calls.clear();self.ticks(100)
+                reserve=b.reserves[0]
+                self.assertTrue(all(member.track is not doomed for member in reserve.members))
+                self.assertTrue(all(track is not doomed for track,group in b.monitoring._owned))
+                self.assertTrue(all(track is not doomed for track,callback in b.state._names))
+                self.assertTrue(all(track is not doomed for track in b.state.groups[0].tracks))
+                self.assertFalse(b.state.topology_dirty)
+                self.assertNotIn(0,b.failures)
+                self.assertFalse(any(call[0] in ('create_track','fire') for call in self.song.calls))
+                self.assertEqual(b.dispatch(1,2),2,'unaffected group mute remains usable')
+                b.close()
+
 if __name__=='__main__':unittest.main()

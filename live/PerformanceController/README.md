@@ -24,6 +24,8 @@ Native user data is included in an actual Live Set save. Metadata-only changes n
 
 Prepared lanes receive a namespaced ownership marker containing their group and source UUID. Reopening recovers an armed lane only when that marker, its actual direct group parent, source identity, Post FX routing and monitoring state agree. Arm state alone is insufficient. Unmarked manual arms and active manual recordings are not adopted. Stale or invalid saved ownership never permits touching a different track.
 
+Manually deleted tracks invalidate Native handles, including their listener and monitoring references. Discovery retires these handles and affected prepared reservations, then rebuilds from surviving direct Audio lanes. Boost.Python `ArgumentError` is handled at these Native boundaries; ordinary Python type errors still surface. A removed lane is never a reason to replay an earlier recording command.
+
 ## Performance and preparation
 
 Mute, volume, pan and mapped FX use retained Native targets. Begin, Accept and Accept+Next enqueue already prepared launches directly when their timing window is ready. Recording admission performs no allocation, routing, structural work or full backend tick. The bridge dispatches commands before device feedback, and the device draws gestures and optimistic values locally.

@@ -11,7 +11,7 @@ import time
 from types import SimpleNamespace
 
 from . import configuration as config, protocol as p
-from .model import ClipState, GroupState, LoopReference, read_grid, same
+from .model import ClipState, GroupState, LoopReference, read_grid, same, live_valid, NATIVE_ERRORS, native_error
 from .recording_core import LiveRecording
 from .selection_restore import SelectionRestoration
 from .audio_inputs import AudioInputs, MAX_SOURCES
@@ -54,7 +54,9 @@ class RetainedState:
         return self
 
     def discover(self):
-        tracks = tuple(self.song.tracks)
+        self.topology_dirty = True
+        current = tuple(self.song.tracks)
+        tracks = tuple(track for track in current if live_valid(track))
         candidates = {}
         for track in tracks:
             match = MARKER.match(str(track.name))
@@ -92,8 +94,8 @@ class RetainedState:
             if old is None or len(old.tracks)!=len(item.tracks) or any(not same(a,b) for a,b in zip(old.tracks,item.tracks)):
                 self.occupancy_known.discard(index);self._scans.pop(index,None)
         self.parameters, self.bindings, self.issues = parameters, bindings, issues
-        self.topology_dirty = False
         self._listen_names(tracks)
+        self.topology_dirty = len(current) != len(tracks)
         for index in tuple(groups):
             self.observe(index)
         return self
@@ -101,22 +103,24 @@ class RetainedState:
     def _listen_names(self,tracks):
         for track,callback in self._names:
             try:track.remove_name_listener(callback)
-            except (AttributeError,RuntimeError):pass
+            except NATIVE_ERRORS as error:native_error(error)
         self._names=[]
         for track in tracks:
             previous=str(track.name)
             def callback(track=track,previous=previous):
+                if not live_valid(track):
+                    self.topology_dirty=True;return
                 current=str(track.name)
                 if MARKER.match(previous) or MARKER.match(current) or previous=='[Remote]' or current=='[Remote]':
                     self.topology_dirty=True
             try:
                 track.add_name_listener(callback);self._names.append((track,callback))
-            except (AttributeError,RuntimeError):pass
+            except NATIVE_ERRORS as error:native_error(error)
 
     def close(self):
         for track,callback in self._names:
             try:track.remove_name_listener(callback)
-            except (AttributeError,RuntimeError):pass
+            except NATIVE_ERRORS as error:native_error(error)
         self._names=[]
 
     def _target(self,index,slot,group,mix,target):
@@ -127,7 +131,8 @@ class RetainedState:
                 if old['invalid'] or not all(same(getter(),obj) for getter,obj in old['checks']):
                     old['invalid']=True;return None
                 return old['parameter']
-            except (RuntimeError,AttributeError,IndexError):
+            except NATIVE_ERRORS + (IndexError,) as error:
+                native_error(error)
                 old['invalid']=True;return None
         checks=[];parameter=None
         try:
@@ -190,7 +195,8 @@ class RetainedState:
                     recording.append(item)
                 if clip.is_playing:
                     playing.append(item)
-            except (RuntimeError, AttributeError, IndexError):
+            except NATIVE_ERRORS + (IndexError,) as error:
+                native_error(error)
                 self.topology_dirty = True
         updated = GroupState(index, group.group, group.tracks, tuple(playing), tuple(recording))
         # Active observation only reads each track's current slot. Reuse the
@@ -198,7 +204,6 @@ class RetainedState:
         updated.__dict__['occupied_rows']=self.occupancy.get(index,frozenset())
         self.groups[index] = updated
         # Binding verification belongs to maintenance, never a parameter write.
-        mix=group.group.mixer_device
         bound=list(self.parameters.get(index,()))
         if len(bound)==6:
             for control in range(4):
@@ -207,7 +212,8 @@ class RetainedState:
                     try:
                         if not all(same(getter(),obj) for getter,obj in retained['checks']):
                             retained['invalid']=True;bound[control+2]=None
-                    except (RuntimeError,AttributeError,IndexError):
+                    except NATIVE_ERRORS + (IndexError,) as error:
+                        native_error(error)
                         retained['invalid']=True;bound[control+2]=None
             self.parameters[index]=tuple(bound)
 
@@ -221,11 +227,18 @@ class RetainedState:
             self._scans[index]=scan
         while budget>0 and scan['track']<len(item.tracks):
             if not scan['slots']:
-                scan['slots']=tuple(item.tracks[scan['track']].clip_slots)
+                try:scan['slots']=tuple(item.tracks[scan['track']].clip_slots)
+                except NATIVE_ERRORS as error:
+                    native_error(error);self.topology_dirty=True
+                    self._scans.pop(index,None);return
             slots=scan['slots']
             while budget>0 and scan['row']<len(slots):
                 row=scan['row']
-                if slots[row].has_clip:scan['occupied'].add(row)
+                try:
+                    if slots[row].has_clip:scan['occupied'].add(row)
+                except NATIVE_ERRORS as error:
+                    native_error(error);self.topology_dirty=True
+                    self._scans.pop(index,None);return
                 scan['row']+=1;budget-=1
             if scan['row']>=len(slots):
                 scan['track']+=1;scan['row']=0;scan['slots']=()
@@ -239,7 +252,10 @@ class RetainedState:
         item=self.groups.get(index)
         if item is None:return
         occupied=set(self.occupancy.get(index,()))
-        present=any(row<len(t.clip_slots) and t.clip_slots[row].has_clip for t in item.tracks)
+        try:present=any(row<len(t.clip_slots) and t.clip_slots[row].has_clip for t in item.tracks)
+        except NATIVE_ERRORS as error:
+            native_error(error);self.topology_dirty=True
+            self._scans.pop(index,None);return
         if present:occupied.add(row)
         else:occupied.discard(row)
         self.occupancy[index]=frozenset(occupied)
@@ -263,7 +279,8 @@ class RetainedState:
                     # Native launch origin avoids song_time-position float drift.
                     anchor = float(clip.start_time + clip.loop_start)
                     return LoopReference(clip, length, phase, anchor)
-                except (RuntimeError, AttributeError, ValueError):
+                except NATIVE_ERRORS + (ValueError,) as error:
+                    native_error(error)
                     continue
         return None
 
