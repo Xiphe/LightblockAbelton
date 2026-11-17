@@ -53,6 +53,8 @@ class TransitionMaintenanceChecks(unittest.TestCase):
             self.assertIs(backend.recording.take, following)
             self.assertEqual(following.state, 'recording')
             self.assertTrue(prepare.called)
+            self.assertIsNotNone(backend.allocation_ticket)
+            fixture.ticks(1)  # a painted Busy grant permits the later callback
             self.assertGreater(self.creates(fixture), before,
                                'lookahead may resume once the new capture is actually observed')
 
@@ -73,6 +75,8 @@ class TransitionMaintenanceChecks(unittest.TestCase):
         fixture.song.advance(take.target + .001)
         fixture.ticks(1)
         self.assertEqual(take.state, 'recording')
+        self.assertIsNotNone(backend.allocation_ticket)
+        fixture.ticks(1)
         self.assertGreater(self.creates(fixture), before)
 
     def test_long_unissued_reference_countdown_keeps_lookahead_preparation(self):
@@ -92,6 +96,8 @@ class TransitionMaintenanceChecks(unittest.TestCase):
         fixture.ticks(1)
         self.assertEqual(take.state, 'queued')
         self.assertFalse(take.start_issued)
+        self.assertIsNotNone(backend.allocation_ticket)
+        fixture.ticks(1)
         self.assertGreater(self.creates(fixture), before,
                            'a long unissued count-in remains useful preparation time')
 

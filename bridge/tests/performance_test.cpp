@@ -371,7 +371,76 @@ static void seven_source_metadata_and_patch_only_names() {
     assert(r.feedbackFailed(name));assert(drain(r,9).empty());
     auto retry=drain(r,9,true);assert(retry.size()==1&&retry[0].a==95&&retry[0].b==99999);
 }
+
+static void allocation_busy_admission_and_drain() {
+    assert(valid(intent(0,58,1)));assert(valid(intent(0,58,16382)));
+    assert(!valid(intent(0,58,0)));assert(!valid(intent(0,58,16383)));
+    Reconciler r;ready(r);
+    assert(r.intent(intent(0,0,20),2));auto first=r.takeDispatch(3);assert(first&&first->key==0);
+    r.receiveObservation({1,0,6,3,777},4);
+    assert(r.allocationRequested()&&!r.allocationAdmissionClosed(4)&&r.allocationProtectsHealth(4));
+    // Work from a gesture already in progress remains admitted until the pad's
+    // actual painted/no-contact receipt arrives, not merely until host send.
+    assert(r.intent(intent(1,0,90),5));assert(r.intent(intent(2,56,3),6));
+    assert(r.intent(intent(3,58,777),7));assert(r.allocationAdmissionClosed(7));
+    assert(!r.intent(intent(4,0,110),8));assert(!r.intent(intent(5,64,22),8));
+    assert(r.desired(0)==90&&r.queuedDiscrete()==1);
+    assert(!r.takeDispatch(9));r.receiveAck(ack(*first,20),10);
+    auto mute=r.takeDispatch(11);assert(mute&&mute->key==56);r.receiveAck(ack(*mute,3),12);
+    auto value=r.takeDispatch(13);assert(value&&value->key==0&&value->value==90);r.receiveAck(ack(*value,90),14);
+    auto grant=r.takeDispatch(15);assert(grant&&grant->key==58&&grant->value==777&&grant->deviceSeq==3);
+    r.receiveAck(ack(*grant,777),16);assert(!r.takeDispatch(17));
+    assert(r.intent(intent(3,58,777),18));assert(!r.takeDispatch(18)); // replay ACK, never another allocation
+    assert(!r.intent(intent(6,58,777),19)); // another device sequence is not another grant
+    auto feedback=r.takeFeedback(20);assert(feedback&&feedback->kind==6&&feedback->a==3&&feedback->b==777);
+    int rejectedCount=0;
+    for(auto f:drain(r,20)) if(f.kind==7&&f.b==16383) ++rejectedCount;
+    assert(rejectedCount==3);
+    r.receiveObservation({1,1,6,3,0},21);
+    assert(!r.allocationRequested()&&!r.allocationAdmissionClosed(21));
+    auto clear=r.takeFeedback(21);assert(clear&&clear->kind==6&&clear->a==3&&clear->b==0);
+    assert(r.intent(intent(7,1,80),22));auto next=r.takeDispatch(23);assert(next&&next->key==1);
+}
+static void allocation_busy_capacity_reseed_and_stale_receipts() {
+    Reconciler r;ready(r);
+    r.receiveObservation({2,0,6,3,999},2);assert(!r.allocationRequested());
+    r.receiveObservation({1,0,6,3,999},3);
+    assert(!r.intent(intent(0,58,998),4));assert(!r.allocationAdmissionClosed(4));
+    assert(!r.intent(intent(1,58,999,2),5));assert(!r.allocationAdmissionClosed(5));
+    // Its dedicated slot is available even when the ordinary command queue is full.
+    for(int n=1;n<=16;++n) assert(r.intent(intent(n,56,1),6+n));
+    assert(r.intent(intent(17,58,999),23));assert(r.queuedDiscrete()==16);
+    r.reseed(24);auto seed=r.takeFeedback(24);assert(seed&&seed->kind==0);
+    auto busy=r.takeFeedback(24);assert(busy&&busy->kind==6&&busy->a==3&&busy->b==999);
+    assert(r.feedbackFailed(*busy));auto retry=r.takeFeedback(25);assert(retry&&retry->kind==6&&retry->b==999);
+    // A Native cancellation unlocks the pad and cancels only the internal grant.
+    r.receiveObservation({1,1,6,3,0},26);
+    assert(r.feedbackFailed(*retry));auto clear=r.takeFeedback(27);assert(clear&&clear->kind==6&&clear->a==3&&clear->b==0);
+    for(int n=0;n<16;++n) {auto d=r.takeDispatch(28+n);assert(d&&d->key==56);r.receiveAck(ack(*d,1),28+n);}
+    assert(!r.takeDispatch(50));assert(!r.allocationRequested());
+    r.receiveObservation({1,2,6,3,777},51);
+    r.reset(2,52);r.handshake(2,53);
+    for(auto f:drain(r,54)) assert(f.kind!=6||f.a!=3); // no historical grant request in a fresh session
+    assert(!r.allocationRequested());assert(!r.intent(intent(0,58,777,2),55));
+}
+static void allocation_busy_lease_is_bounded_and_fail_closed() {
+    Reconciler r;ready(r);r.receiveObservation({1,0,6,3,22},100);
+    assert(r.allocationProtectsHealth(10099));assert(!r.allocationProtectsHealth(10100));
+    r.receiveObservation({1,1,6,3,22},10099); // repeated current facts never extend the lease
+    assert(!r.intent(intent(0,58,22),10100));assert(!r.takeDispatch(10101));
+    assert(r.allocationAdmissionClosed(10101));assert(!r.intent(intent(1,56,1),10102));
+    r.receiveObservation({1,2,6,3,0},10103);assert(!r.allocationAdmissionClosed(10104));
+    assert(r.intent(intent(2,56,1),10105));auto d=r.takeDispatch(10106);assert(d&&d->key==56);
+    Reconciler pending;ready(pending);pending.receiveObservation({1,0,6,3,33},100);
+    assert(pending.intent(intent(0,56,1),101));assert(pending.intent(intent(1,58,33),102));
+    auto command=pending.takeDispatch(103);assert(command&&command->key==56);
+    pending.receiveAck(ack(*command,1),104);
+    assert(!pending.takeDispatch(10100)); // never forward a late grant after expiry
+    pending.receiveObservation({1,1,6,3,16383},10101);assert(pending.allocationRequested());
+}
+
 int main() {
+    allocation_busy_admission_and_drain();allocation_busy_capacity_reseed_and_stale_receipts();allocation_busy_lease_is_bounded_and_fail_closed();
     parsers();seven_source_metadata_and_patch_only_names();superseding_parameters();discrete_order_and_deduplication();bounded_overflow();patch_intents_keep_latest_and_precede_recording();
     timeout_no_replay_and_quarantine();reset_and_reseed();observations_and_priorities();acknowledged_state_updates_already_dirty_snapshots();prehandshake_facts_cannot_poison_a_new_session();group_availability_waits_for_field_delivery();failed_sdk_feedback_is_retained_without_native_replay();
     std::cout<<"performance: parser, coalescing, ordering, timeout, reconnect and bounded-model checks passed\n";

@@ -40,6 +40,10 @@ class BackendChecks(unittest.TestCase):
     def ticks(self,n=12):
         for unused in range(n):
             self.clock+=.101;self.backend.tick()
+            # Fake peer has painted Busy and has no held contacts. Its grant
+            # arrives after this callback; creation waits for a later callback.
+            ticket=self.backend.allocation_ticket
+            if ticket is not None:self.backend.dispatch(58,ticket)
     def warm(self):self.ticks(16)
     def named_macros(self):
         b=self.make(groups=1);group=b.state.groups[0].group

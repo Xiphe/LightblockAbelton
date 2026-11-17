@@ -12,17 +12,19 @@ The separate patch program retains the compact group/input geometry. It owns con
 
 The separate metronome retains colored meter fields and visible digits, two-LED detents with quarter-LED return hysteresis, held target raster, the green/red click switch, plain monochrome tempo button and independent double-tap-to4. Controls are local and optimistic; actual values reconcile after ownership and pending intent end.
 
+All three clients support the allocation ticket described in the semantic wire contract. Existing contacts finish normally before the yellow center bar appears. A later repaint sends the matching grant, so Live cannot start allocation before a complete busy frame. New contacts are ignored until the ticket clears, including orphaned moves/releases from touches begun while blocked. Busy does not change views, take tokens or local clock animation.
+
 ## Measured build budget
 
 With the installed `blocksctl` compiler used by the existing harness:
 
 | Program | Code | Heap | Total /7200 | Globals | Observed VM stack |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Main | 6828 | 364 | 7192 | 196 bytes | 152 bytes |
-| Audio patch | 2680 | 96 | 2776 | 68 bytes | 108 bytes |
-| Metronome | 3207 | 252 | 3459 | 72 bytes | 148 bytes |
+| Main | 6826 | 364 | 7190 | 204 bytes | 160 bytes |
+| Audio patch | 3662 | 372 | 4034 | 76 bytes | 124 bytes |
+| Metronome | 3306 | 252 | 3558 | 80 bytes | 160 bytes |
 
-Main has only eight bytes of code-plus-heap margin. This proves the current client fits; it is not a future-feature headroom claim. VM stack measurements cover the exercised paths and do not prove hardware timing or every firmware execution path. Debug-only getter functions were removed from the production program to fit, without changing controls or transport messages. The tests read canonical compiled VM memory and check its source-declaration/global-count layout rather than compile a transformed diagnostic program.
+Main has only ten bytes of code-plus-heap margin. This proves the current client fits; it is not a future-feature headroom claim. Checked VM execution covers the exercised paths and does not prove hardware timing or every firmware execution path. Debug-only getter functions were removed from the production program to fit, without changing controls or transport messages. The tests read canonical compiled VM memory and check its source-declaration/global-count layout rather than compile a transformed diagnostic program.
 
 Main heap holds48 desired values,48 confirmed values with128 marking an unavailable target,48 last parameter sequences, eight packed group models, nine clock records and sixteen five-byte contacts. A desired byte's high bit marks a dirty value and a sequence byte's high bit marks a pending acknowledgement; value reads mask these flags. Contacts pack a role/target byte, full11-bit origin coordinates and a saved value/token byte. Only the group anchor needs retained current coordinates, held in globals; relative control callbacks use their current coordinates directly. This removes redundant per-contact storage without reducing precision. Single-use helpers are inlined, and pan rendering uses exact integer rounding for the same127-value mapping. The group word's unused high byte retains Clear's sequence and last actual populated bit; it does not travel to Live. All arithmetic remains on the device callback path. No Native object or saved Set metadata is stored here.
 

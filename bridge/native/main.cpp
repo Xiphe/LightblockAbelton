@@ -187,7 +187,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             ++units; ++sent;
         }
     }
-    std::mutex performanceMutex;
+    mutable std::mutex performanceMutex;
     performance::IntentFrame performanceInput;
     performance::AckFrame performanceAcks;
     performance::ObservationFrame performanceObservations;
@@ -196,6 +196,18 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     double performanceHandshakeAt=-10000, performanceFeedbackRetryAt=0;
     std::atomic<bool> performanceDeviceBusy{false};
     std::atomic<double> performanceLastLiveAt{-10000};
+    bool allocationRequested() const {
+        if(!options.audioPerformance) return false;
+        std::lock_guard<std::mutex> lock(performanceMutex);return performanceModel.allocationRequested();
+    }
+    bool allocationProtectsHealth() const {
+        if(!options.audioPerformance) return false;
+        std::lock_guard<std::mutex> lock(performanceMutex);return performanceModel.allocationProtectsHealth(now());
+    }
+    bool allocationExpired() const {
+        if(!options.audioPerformance) return false;
+        std::lock_guard<std::mutex> lock(performanceMutex);return performanceModel.allocationExpired(now());
+    }
     void performancePump() {
         if(!loaded || fault || !block || !block->isConnected()
             || block->getProgram()!=expected || detector.active.load()!=loadedTransport
@@ -285,7 +297,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         }
         if(held) { ++longPresses; event("long_press"); }
         else { ++singleClicks; event("single_click"); }
-        if(!loaded || fault || heldTouches.load()!=0 || pendingNonce>=0
+        if(!loaded || fault || heldTouches.load()!=0 || pendingNonce>=0 || allocationRequested()
             || (options.audioPerformance && (performanceDeviceBusy.load() || healthMonitor.busy()))) {
             event("switch_ignored","not idle, not loaded, or permission pending"); return;
         }
@@ -297,7 +309,7 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     void requestModal(health::Program target) {
         if(statusActive() || (target==health::Program::metronome && modalSource.isEmpty())
             || (target==health::Program::patch && patchSource.isEmpty())
-            || !loaded || heldTouches.load()!=0 || pendingNonce>=0) return;
+            || !loaded || heldTouches.load()!=0 || pendingNonce>=0 || allocationRequested()) return;
         requestedModal=target;
         pendingNonce=(++permissionNonce)&127;
         permissionEpoch=inputEpoch.load(); permissionAt=now(); permissionReply=-1;
@@ -305,6 +317,10 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,109,pendingNonce));
     }
     void switchProgram(health::Program target,bool closeCancelsHeld=false) {
+        // The saved status program cannot acknowledge allocation. It must be
+        // allowed to load main during startup before the retained request seeds.
+        if(target!=health::Program::status && allocationRequested()
+            && !(statusActive() && target==health::Program::main)) return;
         if(!block || !block->isConnected() || !loaded || (target==health::Program::metronome && modalSource.isEmpty()) || (target==health::Program::patch && patchSource.isEmpty()) || (target==health::Program::status && !statusEnabled())) return;
         {
             std::lock_guard<std::mutex> touchLock(touchMutex);
@@ -331,12 +347,14 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         if(fault.load()) return health::State::failure;
         if(!block || !block->isConnected()) return health::State::bridgeUnavailable;
         if(!loaded.load() || (!statusActive() && !readyReported)) return health::State::connecting;
+        if(allocationExpired()) return health::State::failure;
         return healthMonitor.state(now());
     }
     uint8_t displayReason() const {
         if(fault.load()) return faultReason;
         if(!block || !block->isConnected()) return detector.locked?health::deviceBusy:health::deviceDisconnected;
         if(!loaded.load()) return health::starting;
+        if(allocationExpired()) return health::hostFailure;
         return healthMonitor.reason(now());
     }
     void processHealth() {
@@ -375,11 +393,12 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
     }
     void updateProgramForHealth() {
         if(!statusEnabled() || !loaded || fault || !block || !block->isConnected()) return;
+        const bool expiredAllocation=allocationExpired();
         auto target=health::transition(programKind.load(),loaded.load(),statusEnabled(),heldTouches.load(),
-            pendingNonce>=0,healthMonitor,now(),healthChangedAt);
+            pendingNonce>=0,healthMonitor,now(),healthChangedAt,allocationProtectsHealth(),expiredAllocation);
         if(target==health::Transition::main) { switchProgram(health::Program::main); return; }
         if(target==health::Transition::status) {
-            if(options.audioPerformance && performanceDeviceBusy.load()) return;
+            if(options.audioPerformance && performanceDeviceBusy.load() && !expiredAllocation) return;
             switchProgram(health::Program::status); return;
         }
         seedStatus();
@@ -720,6 +739,9 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
             object->setProperty("performance_max_command_queue_ms",performanceModel.maxIntentToDispatchMs);
             object->setProperty("performance_max_native_ack_ms",performanceModel.maxNativeAckMs);
             object->setProperty("performance_generation",performanceGeneration);
+            object->setProperty("performance_allocation_requested",performanceModel.allocationRequested());
+            object->setProperty("performance_allocation_gate",performanceModel.allocationAdmissionClosed(now()));
+            object->setProperty("performance_allocation_expired",performanceModel.allocationExpired(now()));
             object->setProperty("performance_device_busy",performanceDeviceBusy.load());
             object->setProperty("performance_live_age_ms",now()-performanceLastLiveAt.load());
         }

@@ -39,6 +39,13 @@ int main() {
     assert(health::transition(Program::status,true,true,1,false,m,6000,5900)==Transition::none);
     assert(health::transition(Program::main,true,true,0,false,m,6000,5900)==Transition::none);
     assert(health::transition(Program::main,true,true,0,false,m,9000,6000)==Transition::status);
+    // A pending allocation cannot strand the saved startup program. A capable
+    // client suppresses stale-heartbeat replacement only during its lease.
+    assert(health::transition(Program::status,true,true,0,false,m,6000,5900,true)==Transition::main);
+    assert(health::transition(Program::main,true,true,0,false,m,9000,6000,true)==Transition::none);
+    assert(health::transition(Program::patch,true,true,0,false,m,9000,6000,true)==Transition::none);
+    assert(health::transition(Program::metronome,true,true,0,false,m,9000,6000,true)==Transition::none);
+    assert(health::transition(Program::patch,true,true,0,false,m,9000,6000,false)==Transition::status);
     assert(health::transition(Program::main,true,false,0,false,m,9000,6000)==Transition::none);
     m.update(*frame(6,3,2,0),9000);
     assert(health::transition(Program::main,true,true,0,false,m,9249,9000)==Transition::none);
@@ -46,6 +53,13 @@ int main() {
     assert(health::transition(Program::main,true,true,0,true,m,9250,9000)==Transition::none);
     m.update(*frame(7,5,0,1),9300);
     assert(health::transition(Program::main,true,true,0,false,m,20000,9300)==Transition::none);
+    // Only an expired allocation overrides the unrelated rule above that a
+    // lost heartbeat cannot dismiss a recording view. No timeout grants work.
+    assert(health::transition(Program::main,true,true,0,false,m,20000,9300,false,true)==Transition::status);
+    assert(health::transition(Program::patch,true,true,0,false,m,20000,9300,false,true)==Transition::status);
+    assert(health::transition(Program::main,true,true,1,false,m,20000,9300,false,true)==Transition::none);
+    assert(health::transition(Program::status,true,true,0,false,m,9400,9300,false,true)==Transition::none);
+    assert(health::transition(Program::status,true,true,0,false,m,9400,9300,false,false)==Transition::main);
     // Replay Bluetooth's >3s main-program upload. Host health continues on its
     // own MIDI lane while device-loaded is false, including a blocked main loop.
     health::Inbox inbox;

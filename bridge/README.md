@@ -61,16 +61,20 @@ With patch enabled, short Mode opens patch from main and returns to main from ei
 
 Patch owns group/source contact context and optimistic feedback locally. Set `AUDIO_SOURCES = 'catalog'` in the private configuration to discover up to seven Audio tracks inside `[Inputs]`, in Live order across organizational subgroups. Selected sources create independently stored Audio clips within one logical take. The upper input row shows the desired assignment and the lower row pulses while preparation completes. Prepared recording lanes provide monitoring directly, retaining original source effects and accepted recordings. Set-local metadata records source identities and group selections; a source-by-group helper matrix is not needed. See the [semantic wire contract](native/performance_protocol.md) for command admission, readiness, source metadata and failure handling.
 
-Main currently uses7192of7200bytes. The separate patch program uses3883 and metronome3459; main's eight-byte margin is not spare capacity for further features. Run the [compiled-device checks](../lightpad/PERFORMANCE.md) and joined paths with `PERFORMANCE_REPLAY` pointing at the matching `performance_replay` executable:
+Main currently uses7190of7200bytes. The separate patch program uses4034 and metronome3558; main's ten-byte margin is not spare capacity for further features. Run the [compiled-device checks](../lightpad/PERFORMANCE.md) and joined paths with `PERFORMANCE_REPLAY` pointing at the matching `performance_replay` executable:
 
 ```sh
 PERFORMANCE_REPLAY=/absolute/build/performance_replay \
   python3 bridge/tests/test_audio_performance_path.py -v
 PERFORMANCE_REPLAY=/absolute/build/performance_replay \
   python3 bridge/tests/test_audio_input_path.py -v
+PERFORMANCE_REPLAY=/absolute/build/performance_replay \
+  python3 bridge/tests/test_allocation_path.py -v
 ```
 
 These exercise the compiled clients, actual C++ reconciler and Python backend with fake Native IO. They do not measure hardware latency or audible routing changes.
+
+Automatic Audio overflow announces each insertion before calling Live. The active pad program waits for existing contacts to finish, draws a small yellow bar, then confirms on a later repaint. The bridge drains admitted commands before granting the insertion. New pad touches are ignored while the bar is present and never replay afterward. The current view and recording clocks keep running locally. A missing or expired grant cannot trigger creation. Live's synchronous allocation may still interrupt audio and delay Live feedback; a prepared inventory avoids this work during performance.
 
 ## Install
 

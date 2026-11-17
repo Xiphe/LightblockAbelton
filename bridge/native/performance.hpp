@@ -24,6 +24,7 @@ inline bool valid(Intent v) {
     if(v.key<56) return v.value<=127;
     if(v.key==56) return v.value>0 && v.value<=255;
     if(v.key==57) return v.value<8;
+    if(v.key==58) return v.value>0 && v.value<rejected;
     if(v.key>=64 && v.key<=103) {
         int action=(v.key-64)%5;
         return (action!=0 && action!=1 && action!=4) || v.value<128;
@@ -94,7 +95,7 @@ class Reconciler {
     struct Fact { bool known=false,dirty=false; int kind=0; uint32_t a=0,b=0; };
     struct Seen { bool known=false; Intent intent; bool completed=false; int actual=0; };
     std::array<Parameter,128> parameters{};
-    std::array<Fact,158> facts{};
+    std::array<Fact,159> facts{};
     // Availability is a presentation gate, separate from confirmed Native
     // group state. A fresh program receives all6 field facts before it can act.
     std::array<uint8_t,8> initializedFields{};
@@ -111,6 +112,13 @@ class Reconciler {
     std::optional<Feedback> issuedFeedback;
     uint64_t issuedParameterSerial=0;
     std::optional<Flight> flight;
+    // One internal grant is separate from ordinary input capacity. Before it
+    // is dispatched all already-admitted commands and fader values must drain.
+    std::optional<Command> allocationGrant;
+    int allocationTicket=0;
+    bool allocationGate=false;
+    double allocationAt=0;
+    static constexpr double allocationLeaseMs=10000;
     std::array<bool,128> quarantined{};
     int commandHead=0,commandCount=0,terminalHead=0,terminalCount=0;
     int lastDeviceSeq=-1,nextDispatch=0,observationRevision=-1,modelRevision=0;
@@ -131,6 +139,7 @@ class Reconciler {
         if(kind==4 && (a&15)<=8 && (a>>4)<(1u<<21)) return 58+int(a&15);
         if(kind==5 && a<(1u<<26) && ((a>>10)&7)<=5) return 67+int(a&7);
         if(kind==6 && a<=2) return 75+int(a);
+        if(kind==6 && a==3) return 158;
         if(kind==6 && a>=8 && a<16) return 86+int(a)-8;
         if(kind==6 && a>=24 && a<31) return 94+int(a)-24;
         if(kind==6 && a>=40 && a<96) return 102+int(a)-40;
@@ -226,7 +235,19 @@ class Reconciler {
         issuedParameterSerial=value.kind==2&&parameter(key)?parameters[size_t(key)].serial:0;
         return value;
     }
-    int reservedTerminals() const { return terminalCount+commandCount+(retryTerminal?1:0)+(flight&&!parameter(flight->wire.key)?1:0); }
+    int reservedTerminals() const { return terminalCount+commandCount+(allocationGrant?1:0)+(retryTerminal?1:0)+(flight&&!parameter(flight->wire.key)?1:0); }
+    bool reject(Intent value) {
+        auto& history=seen[size_t(value.seq)];history.completed=true;history.actual=rejected;
+        ++rejectedIntents;terminal(reply(value,rejected,7));return false;
+    }
+    void cancelAllocationGrant() {
+        if(!allocationGrant) return;
+        reject(allocationGrant->intent);allocationGrant.reset();
+    }
+    void expireAllocation(double at) {
+        if(!allocationExpired(at)) return;
+        allocationGate=true;cancelAllocationGrant();
+    }
 public:
     int epoch=1;
     bool liveReady=false;
@@ -241,7 +262,9 @@ public:
         // Native writes. The device resends its latest safe desired parameter
         // after receiving the fresh seed. Discrete intent is never replayed.
         for(auto& p:parameters) p.dirty=false;
-        flight.reset();commandHead=commandCount=terminalHead=terminalCount=0;
+        flight.reset();allocationGrant.reset();allocationTicket=0;allocationGate=false;allocationAt=0;
+        facts[158]={};
+        commandHead=commandCount=terminalHead=terminalCount=0;
         parameterReplies={};overflowReply.reset();retryTerminal.reset();issuedFeedback.reset();seen={};quarantined={};
         epoch=generation;liveReady=false;lastLiveAt=at;
         lastDeviceSeq=-1;nextDispatch=0;observationRevision=-1;modelRevision=0;
@@ -257,6 +280,7 @@ public:
         else ++ignoredReplies;
     }
     bool intent(Intent value,double at=0) {
+        expireAllocation(at);
         if(value.generation!=epoch || !valid(value)) { ++rejectedIntents;return false; }
         auto& history=seen[size_t(value.seq)];
         int distance=lastDeviceSeq<0?1:(value.seq-lastDeviceSeq)&127;
@@ -264,7 +288,8 @@ public:
             if(history.known && same(history.intent,value)) {
                 ++duplicateIntents;
                 if(history.completed) {
-                    if(parameter(value.key)) {
+                    if(history.actual==rejected) terminal(reply(value,rejected,7));
+                    else if(parameter(value.key)) {
                         const auto& p=parameters[size_t(value.key)];
                         if(p.deviceSeq==value.seq && p.desired==value.value)
                             parameterReplies[size_t(value.key)]=reply(value,history.actual);
@@ -278,6 +303,11 @@ public:
         history={true,value,false,0};
         ++receivedIntents;lastIntentAt=at;
         uint64_t serial=++intentSerial;
+        if(value.key==58) {
+            if(!allocationTicket || value.value!=allocationTicket || allocationGate || allocationExpired(at)) return reject(value);
+            allocationGate=true;allocationGrant=Command{value,serial,at};return true;
+        }
+        if(allocationGate) return reject(value);
         if(parameter(value.key)) {
             auto& p=parameters[size_t(value.key)];
             p.desired=value.value;p.deviceSeq=value.seq;p.serial=serial;p.received=at;p.dirty=true;
@@ -311,6 +341,7 @@ public:
         // session-reset handshake has completed.
         if(!liveReady || value.generation!=epoch || value.seq<0||value.seq>127
            || factIndex(value.kind,value.a)<0 || value.b>0xfffffff
+           || (value.kind==6 && value.a==3 && value.b>=uint32_t(rejected))
            || (value.kind==1 && !(value.a<48?value.b<=128:value.a==57?value.b<=8:
                 parameter(int(value.a))&&valid(Intent{0,int(value.a),int(value.b)})))) {
             ++ignoredReplies;return;
@@ -318,11 +349,14 @@ public:
         int distance=observationRevision<0?1:(value.seq-observationRevision)&127;
         if(observationRevision>=0 && (distance==0||distance>=64)) { ++ignoredReplies;return; }
         observationRevision=value.seq;lastLiveAt=at;
+        if(value.kind==6 && value.a==3 && int(value.b)!=allocationTicket) {
+            cancelAllocationGrant();allocationTicket=int(value.b);allocationGate=false;allocationAt=at;
+        }
         if(value.kind==1) { auto& p=parameters[size_t(value.a)];p.confirmed=int(value.b);p.known=true; }
         setFact(value.kind,value.a,value.b);
     }
     std::optional<Dispatch> takeDispatch(double at=0) {
-        expire(at);
+        expire(at);expireAllocation(at);
         if(!liveReady || flight) return {};
         int key=-1,deviceSeq=0,value=0;uint64_t serial=0;double received=at;
         if(commandCount) {
@@ -342,9 +376,14 @@ public:
                 if(parameter(candidate) && p.dirty) {key=candidate;deviceSeq=p.deviceSeq;value=p.desired;serial=p.serial;received=p.received;break;}
             }
         }
+        if(key<0 && allocationGrant) {
+            key=58;deviceSeq=allocationGrant->intent.seq;value=allocationGrant->intent.value;
+            serial=allocationGrant->serial;received=allocationGrant->received;
+        }
         if(key<0) return {};
         auto seq=wireSequence();if(!seq) return {};
         if(parameter(key)) {parameters[size_t(key)].dirty=false;parameterCursor=(key+1)%128;}
+        else if(key==58) allocationGrant.reset();
         else {commandHead=(commandHead+1)%16;--commandCount;}
         Dispatch result{epoch,*seq,key,value,deviceSeq,serial};flight=Flight{result,at};
         ++dispatched;lastDispatchAt=at;maxIntentToDispatchMs=std::max(maxIntentToDispatchMs,at-received);
@@ -376,8 +415,12 @@ public:
         return true;
     }
     std::optional<Feedback> takeFeedback(double at=0,bool patchNames=false) {
-        expire(at);
+        expire(at);expireAllocation(at);
         if(seedPending) { seedPending=false;return stamp(Feedback{0,uint32_t(lastDeviceSeq<0?127:lastDeviceSeq),0,epoch,0}); }
+        // A known busy request/clear must reach the current program before
+        // ordinary model traffic. Its receipt is separate from this send.
+        auto& allocation=facts[158];
+        if(allocation.dirty) { allocation.dirty=false;return stamp(Feedback{6,3,allocation.b,epoch,0}); }
         if(retryTerminal) {auto value=*retryTerminal;retryTerminal.reset();return stamp(value);}
         if(terminalCount) {auto value=terminals[size_t(terminalHead)];terminalHead=(terminalHead+1)%64;--terminalCount;return stamp(value);}
         if(overflowReply) { auto value=*overflowReply;overflowReply.reset();return stamp(value); }
@@ -394,9 +437,13 @@ public:
         return {};
     }
     bool pending() const {
-        if(flight || commandCount) return true;
+        if(flight || commandCount || allocationGrant) return true;
         return std::any_of(parameters.begin(),parameters.end(),[](const Parameter& p){return p.dirty;});
     }
+    bool allocationRequested() const { return allocationTicket!=0; }
+    bool allocationExpired(double at) const { return allocationTicket && at>=allocationAt && at-allocationAt>=allocationLeaseMs; }
+    bool allocationProtectsHealth(double at) const { return allocationRequested() && !allocationExpired(at); }
+    bool allocationAdmissionClosed(double at) const { return allocationGate || allocationExpired(at); }
     int inflightSeq() const { return flight?flight->wire.seq:-1; }
     int queuedDiscrete() const { return commandCount; }
     int terminalResults() const { return terminalCount+(retryTerminal?1:0); }

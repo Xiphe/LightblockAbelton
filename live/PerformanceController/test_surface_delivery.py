@@ -39,7 +39,7 @@ class SurfaceDeliveryChecks(unittest.TestCase):
         frames=[];current=[];native=[]
         send=self.surface._send_midi
         def capture(message,optimized=False):
-            if message[0]==0xb0:
+            if message[0]==0xb0 and 89 <= message[1] <= 100:
                 current.append(message)
                 if message[1]==100:
                     self.assertEqual([m[1] for m in current],list(range(89,101)))
@@ -54,8 +54,29 @@ class SurfaceDeliveryChecks(unittest.TestCase):
             self.clock+=1.963;self.song.advance(self.song.current_song_time+3.926)
             create(index);native.append(('return',self.clock))
         self.song.create_audio_track=slow_create
-        self.surface.update_display()
+        for unused in range(4):
+            before_display=len(frames)
+            self.surface.update_display()
+            self.assertLessEqual(len(frames)-before_display,6)
+            ticket=backend.allocation_ticket
+            if ticket is not None and (6,3,ticket) in [(kind,a,b) for at,kind,a,b in frames]:break
+            # Reseeding first publishes the cleared lease before any new ticket.
+            self.clock+=.101
+        self.assertEqual(native,[], 'announcing Busy cannot enter Native creation')
+        ticket=backend.allocation_ticket;self.assertIsNotNone(ticket)
+        self.assertIn((6,3,ticket),[(kind,a,b) for at,kind,a,b in frames])
+        first_display_count=len(frames)
+        # The real MIDI receiver, rather than a direct backend call, admits the
+        # device/bridge grant only in this protocol generation.
+        self.fixture.command(seq=7,key=58,value=ticket,generation=3)
+        self.assertFalse(backend.allocation_granted)
+        self.fixture.command(seq=7,key=58,value=ticket)
+        self.assertTrue(backend.allocation_granted)
+        self.assertEqual(native,[],'grant dispatch performs no Native mutation')
+        self.clock+=.101;self.surface.update_display()
         self.assertEqual([event for event,at in native],['enter','return'])
+        self.assertIn((6,3,0),[(kind,a,b) for at,kind,a,b in frames])
+        self.assertLessEqual(len(frames)-first_display_count,6)
         actual=[frame for frame in frames if frame[1]==5 and ((frame[2]>>10)&7)==3]
         self.assertTrue(actual,'actual recording phase must reach the MIDI callback')
         self.assertEqual((actual[0][2]>>3)&127,1)
@@ -67,7 +88,7 @@ class SurfaceDeliveryChecks(unittest.TestCase):
         self.assertLessEqual(global_clock[0][0],native[0][1],
                              'known global bar clock waited behind Native maintenance')
         self.assertEqual(global_clock[0][3],0,'publish the current real bar phase before the block')
-        self.assertLessEqual(len(frames),6,'pre/post publication must share one display budget')
+        # Each callback's pre/post publication shares its six-frame budget.
         self.assertFalse(current)
 
     def test_known_start_is_published_before_slow_audio_creation(self):

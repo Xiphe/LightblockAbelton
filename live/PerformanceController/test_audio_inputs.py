@@ -56,7 +56,11 @@ class AudioInputChecks(unittest.TestCase):
         self.backend=Backend(self.song,Q,now=lambda:self.clock);self.addCleanup(self.backend.close)
         return self.backend
     def ticks(self,n=40):
-        for unused in range(n):self.clock+=.101;self.backend.tick()
+        for unused in range(n):
+            self.clock+=.101;self.backend.tick()
+            # Simulate a painted/no-contact peer grant after the callback.
+            ticket=self.backend.allocation_ticket
+            if ticket is not None:self.backend.dispatch(58,ticket)
     def start(self,token=1):
         b=self.backend;self.assertEqual(b.dispatch(64,token),0)
         self.ticks(1);take=b.recording.take;self.assertIsNotNone(take)

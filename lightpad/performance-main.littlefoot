@@ -4,6 +4,8 @@
 // origins in five bytes; only the trace anchor keeps current coordinates.
 #heapsize: 364
 int down;
+int preparation;
+int preparationPhase;
 int anchorAt;
 int anchor;
 int view;
@@ -54,6 +56,7 @@ int guideY;
 int monitor;
 
 int finger(int f, int offset) { return 284 + f * 5 + offset; }
+void contacts() { sendCC(15, 106, countBits(down)); }
 int role(int f) { return getHeapByte(finger(f, 0)) & 3; }
 
 int coordinate(int f, int axis) { return (getHeapInt(finger(f, 1)) >> (axis * 11)) & 2047; }
@@ -79,7 +82,7 @@ int groupAt(int x, int y) { return y < 896 && ((x >> 7) & 3) < 3 && ((y >> 7) & 
 
 bool owned(int key)
 {
-    for (int f = 0; f < 16; ++f) if ((down & (1 << f)) != 0) { int contact = getHeapByte(finger(f, 0)); if ((contact & 3) == 2 && (contact >> 2) == key) return true; }
+    for (int f = 0; f < 16; ++f) if ((down & (1 << f)) != 0 && getHeapByte(finger(f, 0)) == (2 | (key << 2))) return true;
     return false;
 }
 int sendIntent(int key, int value)
@@ -122,11 +125,10 @@ void updateHold()
 
 void touchEvent(int kind, int f, float x, float y)
 {
-    if (f < 0 || f >= 16) return;
+    if (preparationPhase > 0 || f < 0 || f >= 16) return;
     int px = int(clamp(0.0, 1919.0, x * 960.0)), py = int(clamp(0.0, 1919.0, y * 960.0));
     int bit = 1 << f;
     int contactOffset = finger(f, 0);
-    bool held = (down & bit) != 0;
     updateHold();
     if (kind == 1)
     {
@@ -168,26 +170,25 @@ void touchEvent(int kind, int f, float x, float y)
                     { setHeapByte(contactOffset, 3 | (action << 2)); setHeapByte(contactOffset + 4, token); }
             }
         }
-        sendCC(15, 106, countBits(down));
+        contacts();
     }
-    else if (!held) return;
+    else if ((down & bit) == 0) return;
     int r = role(f);
     int contactKey = getHeapByte(contactOffset) >> 2;
     if (r == 2)
     {
 
-        int key = contactKey;
-        int axis = int(key % 6 != 1);
+        int axis = int(contactKey % 6 != 1);
         int delta = (axis == 0 ? px : py) - coordinate(f, axis);
         if (axis == 1) delta = -delta;
         int value = int(clamp(0.0, 127.0, float(getHeapByte(contactOffset + 4)) + float(delta) * 127.0 / float(896 * (2 - axis))) + .5);
-        if (value != (getHeapByte(key) & 127))
+        if (value != (getHeapByte(contactKey) & 127))
         {
-            setHeapByte(key, value | 128);
+            setHeapByte(contactKey, value | 128);
             if (getMillisecondCounter() - sentAt >= 40) flushParameters();
         }
 
-        if (kind == 3 && getHeapByte(key) >= 128) sendParameter(key);
+        if (kind == 3 && getHeapByte(contactKey) >= 128) sendParameter(contactKey);
     }
     if (f == anchor && r == 1 && !chord)
     {
@@ -214,17 +215,17 @@ void touchEvent(int kind, int f, float x, float y)
         {
             setHeapByte(contactOffset, 0);
 
-            int groupMask = 0;
-            for (int f = 0; f < 16; ++f) if ((down & (1 << f)) != 0 && role(f) == 1) groupMask = groupMask | (1 << f);
+            bool groupHeld = false;
+            for (int f = 0; f < 16; ++f) if ((down & (1 << f)) != 0 && role(f) == 1) groupHeld = true;
 
-            if (groupMask == 0) { muteBatch(batch); clearContacts(); }
+            if (!groupHeld) { muteBatch(batch); clearContacts(); }
         }
         else if (f == anchor)
         {
             if (view == 1) { flushParameters(); view = 0; clearContacts(); }
             else if (guide == 1) {
                 clearContacts();
-                if ((meter & 16384) != 0 && hasSource(selected)) {
+                if ((meter & 16384) && hasSource(selected)) {
                     view = 2; recGroup = selected; tokenCounter = (tokenCounter + 1) & 127;
                     token = tokenCounter; nextToken = -1; recPhase = 1; recAction = 0; recMeasure = 0;
                     cancelledToken = -1; markerKey = -1;
@@ -258,10 +259,10 @@ void touchEvent(int kind, int f, float x, float y)
             recAction = action; recSequence = sendIntent(64 + recGroup * 5 + action, value);
             if (action == 4) { cancelledToken = token; view = 0; clearContacts(); busy(); }
             else if (action == 2) { recPhase = 1; markerKey = -1; }
-            else if ((action & 1) != 0) recPhase = 4;
+            else if ((action & 1)) recPhase = 4;
         }
     }
-    setHeapByte(contactOffset, 0); sendCC(15, 106, countBits(down));
+    setHeapByte(contactOffset, 0); contacts();
 }
 int countBits(int bits) { int count = 0; while (bits != 0) { bits = bits & (bits - 1); ++count; } return count; }
 void touchStart(int i, float x, float y, float z, float vz) { touchEvent(1, i, x, y); }
@@ -269,6 +270,7 @@ void touchMove(int i, float x, float y, float z, float vz) { touchEvent(2, i, x,
 void touchEnd(int i, float x, float y, float z, float vz) { touchEvent(3, i, x, y); }
 void initialise()
 {
+    preparation = 0; preparationPhase = 0;
     for (int i = 0; i < 364; ++i) setHeapByte(i, 0);
     for (int i = 0; i < 48; ++i) setHeapByte(48 + i, 128);
     monitor = -1; anchor = -1; selected = 0; recGroup = -1; nextToken = -1; cancelledToken = -1;
@@ -276,10 +278,11 @@ void initialise()
 }
 float clockPosition(int g)
 {
-    int span = getHeapInt(176 + g * 12);
+    int address = 176 + g * 12;
+    int span = getHeapInt(address);
     if (span <= 0) return 0.0;
-    float value = float(getHeapInt(180 + g * 12)) / 256.0;
-    if ((meter & 16384) != 0) value += float(getMillisecondCounter() - getHeapInt(184 + g * 12)) * float(tempo) / 7680000.0;
+    float value = float(getHeapInt(address + 4)) / 256.0;
+    if ((meter & 16384)) value += float(getMillisecondCounter() - getHeapInt(address + 8)) * float(tempo) / 7680000.0;
     float length = float(span) / 256.0;
     return value - float(int(value / length)) * length;
 }
@@ -295,11 +298,11 @@ void handleMessage(int a, int b, int header)
     revision = rev;
     if (kind == 0)
     {
-        if (gen != epoch) { sequence = a & 127; clearPending = 0; mutePending = 0; nextToken = -1; recSequence = -1; }
+        if (gen != epoch) { preparation = 0; preparationPhase = 0; sequence = a & 127; clearPending = 0; mutePending = 0; nextToken = -1; recSequence = -1; }
         epoch = gen; resync = 0;
         for (int key = 0; key < 48; ++key) if (pending(key)) sendParameter(key);
         if (monitor >= 0) monitor = (monitor & 7) | (sendIntent(57, monitor & 7) << 3);
-        sendCC(15, 108, 34); sendCC(15, 106, countBits(down)); busy(); return;
+        sendCC(15, 108, 34); contacts(); busy(); return;
     }
     if (kind == 1 && a < 48 && b <= 128)
     {
@@ -350,7 +353,8 @@ void handleMessage(int a, int b, int header)
         int g = a & 15, span = a >> 4;
         if (g > 8 || span <= 0 || span > 2097151 || b >= span) return;
         if (g == 8 && span != getHeapInt(272)) pulseReady = 0;
-        setHeapInt(176 + g * 12, span); setHeapInt(180 + g * 12, b); setHeapInt(184 + g * 12, getMillisecondCounter());
+        int address = 176 + g * 12;
+        setHeapInt(address, span); setHeapInt(address + 4, b); setHeapInt(address + 8, getMillisecondCounter());
     }
     if (kind == 5)
     {
@@ -374,7 +378,8 @@ void handleMessage(int a, int b, int header)
         recMeasure = b; recBar = bar; recAt = getMillisecondCounter();
     }
     if (kind == 6)
-        { if (a == 0 && b > 0) tempo = b; if (a == 1) meter = b; }
+        { if (a == 0 && b > 0) tempo = b; if (a == 1) meter = b;
+          if (a == 3 && b < 16383 && b != preparation) { preparation = b; preparationPhase = 0; } }
 }
 
 void ringPixel(int x, int y, int position, int colour)
@@ -393,10 +398,8 @@ void drawFader(int x, int width, int colour, float value)
 
 void markerPixel(int position, int colour)
 {
-    if (position < 15) blendPixel(colour, position, 0);
-    else if (position < 29) blendPixel(colour, 14, position - 14);
-    else if (position < 43) blendPixel(colour, 42 - position, 14);
-    else blendPixel(colour, 0, 56 - position);
+    blendPixel(colour, clamp(0, 14, min(position, 42 - position)),
+                      clamp(0, 14, min(position - 14, 56 - position)));
 }
 
 void drawMarkers(int count, int key)
@@ -448,12 +451,9 @@ void drawGroup(int g)
     int c = armed ? 0xffff0000 : colour(g);
     bool populated = (facts(g) & 4194304) != 0;
     bool mute = ((muted ^ batch) & (1 << g)) != 0;
-    float position;
-
-    int span = getHeapInt(176 + g * 12);
-    if (span > 0 && (facts(g) & 4194304) != 0) position = clockPosition(g) * 256.0 / float(span);
-    else { int bar = getHeapInt(272); position = bar > 0 ? clockPosition(8) * 256.0 / float(bar) : 0.0; }
-    position *= 8.0;
+    int reference = populated && getHeapInt(176 + g * 12) > 0 ? g : 8;
+    int span = getHeapInt(176 + reference * 12);
+    float position = span > 0 ? clockPosition(reference) * 2048.0 / float(span) : 0.0;
     for (int n = 0; n < 8; ++n)
     {
         float amount = clamp(0.0, 1.0, position - float(n));
@@ -471,7 +471,7 @@ void drawGroup(int g)
     else if (!mute) fillPixel(dim(c, .06), x + 1, y + 1);
 }
 
-void repaint()
+void drawScene()
 {
     if (resync && getMillisecondCounter() - resyncAt >= 1000)
         { resync = 0; resyncAt = getMillisecondCounter(); sendCC(15, 110, 19); }
@@ -538,7 +538,7 @@ void repaint()
         recordingButton(dim(nc, .15), nc, 8, 8, 0x8e28a8);
         if (recPhase < 2 || recBar <= 0) { markerKey = -1; return; }
         float measure = float(recMeasure) / 256.0;
-        float age = (meter & 16384) != 0 ? float(getMillisecondCounter() - recAt) * float(tempo) / 7680000.0 : 0.0;
+        float age = (meter & 16384) ? float(getMillisecondCounter() - recAt) * float(tempo) / 7680000.0 : 0.0;
         bool queued = recPhase == 2;
         measure = max(0.0, measure + (queued ? -age : age));
         float bar = float(recBar) / 16.0;
@@ -556,11 +556,24 @@ void repaint()
             for (int block = 0; block < completed / 8; ++block) fillPixel(0xffb0b0b0, 7, 13 - block);
         }
         int elapsed = getMillisecondCounter() - pulseAt;
-        if ((meter & 16384) != 0 && elapsed >= 0 && elapsed < 160)
+        if ((meter & 16384) && elapsed >= 0 && elapsed < 160)
         {
             int white = ((255 - elapsed * 255 / 160) << 24) | 0xffffff;
             blendRect(white, 0, 0, 15, 1); blendRect(white, 0, 14, 15, 1);
             blendRect(white, 0, 1, 1, 13); blendRect(white, 14, 1, 1, 13);
         }
+    }
+}
+
+// The first blocked frame precedes the grant by a complete repaint callback.
+// Original contacts finish before locking; later orphaned moves/ends own no role.
+void repaint()
+{
+    drawScene();
+    if (preparation != 0 && down == 0)
+    {
+        if (preparationPhase == 1) { flushParameters(); sendIntent(58, preparation); }
+        if (preparationPhase < 2) ++preparationPhase;
+        fillRect(0xffffc000, 4, 7, 7, 1);
     }
 }

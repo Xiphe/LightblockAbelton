@@ -16,6 +16,7 @@ from .recording_core import LiveRecording
 from .selection_restore import SelectionRestoration
 from .audio_inputs import AudioInputs, MAX_SOURCES
 from .direct_monitoring import DirectMonitoring, DirectMonitoringError
+from .allocation_gate import AllocationGate, AllocationContext
 from .bundle_recording import BundleRecording
 
 MARKER = re.compile(r'^\[R([1-8])\]')
@@ -396,6 +397,7 @@ class Backend:
         # A known lack of a lane/row is readiness, not a latched Native failure.
         self.pool_unavailable = {}
         self.events = deque(maxlen=256)
+        self.allocations = AllocationGate(self.now, self._fact)
         specs=getattr(config,'AUDIO_SOURCES',())
         recording_class=AudioPreparedRecording if specs else PreparedRecording
         self.recording = recording_class(song, self.state, quantizations, self.reserves, monotonic=self.now,emit=self.events.append)
@@ -440,6 +442,7 @@ class Backend:
         self.state.topology_dirty = True
 
     def close(self):
+        self.allocations.clear()
         self._closed = True
         if self.monitoring:self.monitoring.close()
         if self.restoration:
@@ -454,7 +457,7 @@ class Backend:
         value = (kind, int(a), int(b))
         if force or self._published.get(key) != value:
             self._facts[key] = value
-            if kind==5 or (kind==4 and (a&15)==8):
+            if kind==5 or (kind==4 and (a&15)==8) or (kind==6 and a==3):
                 self._facts.move_to_end(key,last=False)
             self._published[key] = value
 
@@ -470,6 +473,7 @@ class Backend:
         # active recording or prepared Native destinations.
         self._facts.clear()
         self._published.clear()
+        self.allocations.clear(publish=True)
         self._slow_at = self._clock_at = self._take_at = -10.
         for group in range(8):
             self._group_facts(group)
@@ -596,9 +600,12 @@ class Backend:
                 if value&~127:return REJECT
                 group=key-48
                 result=self.audio_inputs.set_patch(group,value)
+                if self.allocations.group==group:self.allocations.clear()
                 self.failures.pop(group,None)
                 self._global_facts()
                 return result
+            if key==58:
+                return value if self.allocations.grant(value) else REJECT
             if key==57 and self.audio_inputs and 0<=value<8:
                 result=self.audio_inputs.set_monitor(value);self._global_facts();return result
             if key == 56:
@@ -622,6 +629,7 @@ class Backend:
                 group=key-104
                 status=self.recording.advance(SimpleNamespace(group=group))
                 if status == p.APPLIED:
+                    if self.allocations.group==group:self.allocations.clear()
                     self.pool_unavailable.pop(group,None)
                     self.state.observe(group)
                     self._group_facts(group,parameters=False)
@@ -795,6 +803,7 @@ class Backend:
         if self._closed:
             return
         now=self.now()
+        self.allocations.begin_callback()
         # Musical transitions run before structural maintenance or publication.
         if self.state.topology_dirty:
             # Discovery runs only here, never in MIDI dispatch.
@@ -878,7 +887,9 @@ class Backend:
                 self.state.observe(group)
                 self._group_facts(group)
             self._global_facts()
-            priority=self.pending_begin[0] if self.pending_begin else (take.group if take is not None and take.state!='completed' else None)
+            priority=self.allocations.group
+            if priority is None:
+                priority=self.pending_begin[0] if self.pending_begin else (take.group if take is not None and take.state!='completed' else None)
             if priority is None and self.audio_inputs:
                 priority=next(iter(sorted(self.audio_inputs.busy)),None)
             if priority is not None and priority not in self.reserves and priority not in self.failures:
@@ -938,9 +949,33 @@ class Backend:
             # Cosmetic metadata must not disable a correctly routed destination.
             self.events.append(dict(event='source_appearance_unavailable',reason=str(exc)))
 
+    @property
+    def allocation_ticket(self):return self.allocations.ticket
+
+    @property
+    def allocation_granted(self):return self.allocations.granted
+
+    def _allocation_context(self,group):
+        item=self.state.groups.get(group)
+        anchor=self.state.anchors.get(group)
+        if item is None or anchor is None:return None
+        revision=self.audio_inputs.revisions.get(group,0) if self.audio_inputs else 0
+        return AllocationContext(group,item.group,anchor,self._row(group),revision)
+
     def _maintenance(self,group):
+        if self.allocations.pending is not None:
+            try:context=self._allocation_context(self.allocations.group)
+            except NATIVE_ERRORS + (ValueError,KeyError,IndexError) as error:
+                native_error(error)
+                self.allocations.clear()
+                self.state.topology_dirty=True
+                return
+            self.allocations.validate(context)
+            if context is None:return
         if group not in self.state.groups or group in self.failures:
+            if self.allocations.group==group:self.allocations.clear()
             return
+        if self.allocations.pending is not None and self.allocations.group!=group:return
         active=self.recording.take
         if active is not None and active.state in ('queued','finish_queued'):
             issued=active.finish_issued if active.state=='finish_queued' else active.start_issued
@@ -951,6 +986,11 @@ class Backend:
             target=active.finish_target if active.state=='finish_queued' else active.target
             if target is not None and 0 <= target-self.song.current_song_time <= self.song.tempo/60.*.3:
                 return
+        self.allocations.begin_maintenance()
+        try:self._prepare_maintenance(group,active)
+        finally:self.allocations.end_maintenance(group)
+
+    def _prepare_maintenance(self,group,active):
         item=self.state.groups[group]
         if group not in self.state.anchors:
             self.failures[group]='rightmost Remote subgroup unavailable';return
@@ -1017,34 +1057,36 @@ class Backend:
                 # not replace a still-observing restoration and leak listeners.
                 if self.restoration is not None and not self.restoration.done:
                     return
-                anchor=self.state.anchors[group]
-                before=tuple(self.song.tracks)
-                index=next(i for i,t in enumerate(before) if same(t,anchor))
-                restore=SelectionRestoration(self.song,now=self.now)
-                # Register the preparation attempt before Native effects, never retry a possible creation.
-                task=dict(parent=item.group,row=row,track=None,stage='created',at=self.now())
-                self.tasks[group]=task
-                started=time.monotonic_ns();creation_error=None
-                try:self.song.create_audio_track(index)
-                except Exception as exc:creation_error=exc
-                finally:self.events.append(dict(event='create_audio_track_native',group=group,elapsed_ns=time.monotonic_ns()-started))
-                after=tuple(self.song.tracks)
-                created=[t for t in after if not any(same(t,old) for old in before)]
-                if len(created)==1:
-                    restore.capture_created(created);self.restoration=restore
-                else:
-                    restore.close()
-                if len(created)!=1:raise ValueError('created track identity unavailable; not replayed')
-                track=created[0];task['track']=track
-                if not same(track.group_track,item.group):raise ValueError('created track outside remote group')
-                # Update retained known topology after our own insertion. Deferred
-                # tracks notifications do not force a whole-Set rediscovery.
-                self.state.tracks=after
-                self.state.groups[group]=GroupState(group,item.group,item.tracks+(track,),item.playing,item.recording)
-                self._known_created_topology=after
-                self.state.topology_dirty=True
-                if creation_error is not None:raise creation_error
-                return
+                with self.allocations.operation(self._allocation_context(group)) as allowed:
+                    if not allowed:return
+                    anchor=self.state.anchors[group]
+                    before=tuple(self.song.tracks)
+                    index=next(i for i,t in enumerate(before) if same(t,anchor))
+                    restore=SelectionRestoration(self.song,now=self.now)
+                    # Register the preparation attempt before Native effects, never retry a possible creation.
+                    task=dict(parent=item.group,row=row,track=None,stage='created',at=self.now())
+                    self.tasks[group]=task
+                    started=time.monotonic_ns();creation_error=None
+                    try:self.song.create_audio_track(index)
+                    except Exception as exc:creation_error=exc
+                    finally:self.events.append(dict(event='create_audio_track_native',group=group,elapsed_ns=time.monotonic_ns()-started))
+                    after=tuple(self.song.tracks)
+                    created=[t for t in after if not any(same(t,old) for old in before)]
+                    if len(created)==1:
+                        restore.capture_created(created);self.restoration=restore
+                    else:
+                        restore.close()
+                    if len(created)!=1:raise ValueError('created track identity unavailable; not replayed')
+                    track=created[0];task['track']=track
+                    if not same(track.group_track,item.group):raise ValueError('created track outside remote group')
+                    # Update retained known topology after our own insertion. Deferred
+                    # tracks notifications do not force a whole-Set rediscovery.
+                    self.state.tracks=after
+                    self.state.groups[group]=GroupState(group,item.group,item.tracks+(track,),item.playing,item.recording)
+                    self._known_created_topology=after
+                    self.state.topology_dirty=True
+                    if creation_error is not None:raise creation_error
+                    return
             track=task['track']
             if track is None:raise ValueError('ambiguous previous preparation')
             if task['stage']=='created':
@@ -1075,24 +1117,26 @@ class Backend:
 
     def _create_audio_lane(self,group,row):
         if self.restoration is not None and not self.restoration.done:return None
-        item=self.state.groups[group];anchor=self.state.anchors[group]
-        before=tuple(self.song.tracks)
-        index=next(i for i,t in enumerate(before) if same(t,anchor))
-        restore=SelectionRestoration(self.song,now=self.now)
-        started=time.monotonic_ns();error=None
-        try:self.song.create_audio_track(index)
-        except Exception as exc:error=exc
-        finally:self.events.append(dict(event='create_audio_track_native',group=group,elapsed_ns=time.monotonic_ns()-started))
-        after=tuple(self.song.tracks)
-        created=[t for t in after if not any(same(t,old) for old in before)]
-        if len(created)==1:
-            restore.capture_created(created);self.restoration=restore
-        else:restore.close()
-        if len(created)!=1:raise ValueError('created Audio identity unavailable; not replayed')
-        track=created[0]
-        if not same(track.group_track,item.group):raise ValueError('created Audio outside remote group')
-        self.state.tracks=after
-        self.state.groups[group]=GroupState(group,item.group,item.tracks+(track,),item.playing,item.recording)
-        self._known_created_topology=after;self.state.topology_dirty=True
-        if error is not None:raise error
-        return track
+        with self.allocations.operation(self._allocation_context(group)) as allowed:
+            if not allowed:return None
+            item=self.state.groups[group];anchor=self.state.anchors[group]
+            before=tuple(self.song.tracks)
+            index=next(i for i,t in enumerate(before) if same(t,anchor))
+            restore=SelectionRestoration(self.song,now=self.now)
+            started=time.monotonic_ns();error=None
+            try:self.song.create_audio_track(index)
+            except Exception as exc:error=exc
+            finally:self.events.append(dict(event='create_audio_track_native',group=group,elapsed_ns=time.monotonic_ns()-started))
+            after=tuple(self.song.tracks)
+            created=[t for t in after if not any(same(t,old) for old in before)]
+            if len(created)==1:
+                restore.capture_created(created);self.restoration=restore
+            else:restore.close()
+            if len(created)!=1:raise ValueError('created Audio identity unavailable; not replayed')
+            track=created[0]
+            if not same(track.group_track,item.group):raise ValueError('created Audio outside remote group')
+            self.state.tracks=after
+            self.state.groups[group]=GroupState(group,item.group,item.tracks+(track,),item.playing,item.recording)
+            self._known_created_topology=after;self.state.topology_dirty=True
+            if error is not None:raise error
+            return track

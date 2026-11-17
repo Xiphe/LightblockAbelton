@@ -112,6 +112,11 @@ class AudioInputPathTests(unittest.TestCase):
         self.advance(100)
         self.assertEqual(self.state('currentToken'),following.take_id)
         self.assertEqual({member.anchor for member in (following,)+following.members},{old.finish_target})
+        # This take exhausted the local pool. Wait for announced insertion to
+        # finish before a normal Cancel; ignored Busy touches are covered by
+        # the joined allocation path rather than silently replayed here.
+        self.until(lambda:0 in self.backend.reserves and self.backend.allocation_ticket is None)
+        self.advance(100)
         self.button(3,3);self.until(lambda:not self.backend.busy)
         self.assertEqual(self.state('currentView'),0)
         self.assertTrue(all(member.slot.has_clip and member.clip.is_playing

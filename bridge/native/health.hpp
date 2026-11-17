@@ -72,9 +72,11 @@ struct Monitor {
 };
 enum class Transition { none, main, status };
 inline Transition transition(Program current,bool loaded,bool hasStatus,uint16_t held,bool permissionPending,
-                             const Monitor& monitor,double now,double changedAt) {
+                             const Monitor& monitor,double now,double changedAt,bool allocationProtects=false,bool allocationExpired=false) {
     if(!hasStatus || !loaded || held!=0 || permissionPending) return Transition::none;
+    if(allocationExpired) return current==Program::status?Transition::none:Transition::status;
     if(current==Program::status) return monitor.usable(now)?Transition::main:Transition::none;
+    if(allocationProtects) return Transition::none;
     return monitor.needsStatus(current,now) && now-changedAt>=250?Transition::status:Transition::none;
 }
 inline const char* programName(Program p) { return p==Program::main?"main":p==Program::metronome?"metronome":p==Program::patch?"patch":"status"; }

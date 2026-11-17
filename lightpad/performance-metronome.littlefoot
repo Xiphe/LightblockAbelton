@@ -1,6 +1,8 @@
 // Local fullscreen metronome. Same F2 semantic protocol as performance-main.
 #heapsize: 204
 int down;
+int preparation;
+int preparationPhase;
 int epoch;
 int resync;
 int resyncAt;
@@ -32,11 +34,16 @@ int number(int f) { return getHeapByte(field(f, 1)); }
 int countBits(int bits) { int n = 0; while (bits != 0) { bits = bits & (bits - 1); ++n; } return n; }
 int denominatorIndex(int v) { int n = 0; while (v > 1) { v = v / 2; ++n; } return n; }
 int keyFor(int n) { return n < 2 ? 114 + n : 113; }
+int sendIntent(int key, int value)
+{
+    sequence = (sequence + 1) & 127;
+    sendCC(0, 69, epoch); sendCC(0, 70, sequence); sendCC(0, 71, key);
+    sendCC(0, 72, value & 127); sendCC(0, 73, value >> 7); sendCC(0, 74, sequence);
+    return sequence;
+}
 void sendValue(int n)
 {
-    sequence = (sequence + 1) & 127; setHeapByte(6 + n, sequence); setHeapByte(9 + n, 1);
-    sendCC(0, 69, epoch); sendCC(0, 70, sequence); sendCC(0, 71, keyFor(n));
-    sendCC(0, 72, getHeapByte(n)); sendCC(0, 73, 0); sendCC(0, 74, sequence);
+    setHeapByte(6 + n, sendIntent(keyFor(n), getHeapByte(n))); setHeapByte(9 + n, 1);
     sentAt = getMillisecondCounter();
 }
 void want(int n, int value)
@@ -56,6 +63,7 @@ void actual(int n, int value)
 }
 void initialise()
 {
+    preparation = 0; preparationPhase = 0;
     for (int i = 0; i < 204; ++i) setHeapByte(i, 0);
     for (int n = 0; n < 2; ++n) { owner[n] = -1; taps[n] = -1000; setHeapByte(n, 4); setHeapByte(3 + n, 4); }
     tempo = 15360; meter = 516;
@@ -78,7 +86,7 @@ void moveMeter(int f, int y)
 }
 void touchEvent(int kind, int f, float x, float y)
 {
-    if (f < 0 || f >= 16) return;
+    if (preparationPhase > 0 || f < 0 || f >= 16) return;
     int px = int(clamp(0.0, 1919.0, x * 960.0)), py = int(clamp(0.0, 1919.0, y * 960.0));
     int bit = 1 << f;
     if (kind == 1)
@@ -120,9 +128,7 @@ void touchEvent(int kind, int f, float x, float y)
     if (role(f) == 2) { want(2, getHeapByte(2) == 0 ? 127 : 0); if ((getHeapByte(11) & 2) != 0) sendValue(2); }
     if (role(f) == 3)
     {
-        sequence = (sequence + 1) & 127;
-        sendCC(0, 69, epoch); sendCC(0, 70, sequence); sendCC(0, 71, 112);
-        sendCC(0, 72, 0); sendCC(0, 73, 0); sendCC(0, 74, sequence);
+        sendIntent(112, 0);
     }
     setHeapByte(field(f, 0), 0); sendCC(15, 106, countBits(down));
 }
@@ -140,7 +146,7 @@ void handleMessage(int a, int b, int header)
     revision = rev; seen = 1;
     if (kind == 0)
     {
-        if (gen != epoch) sequence = a & 127;
+        if (gen != epoch) { preparation = 0; preparationPhase = 0; sequence = a & 127; }
         epoch = gen; resync = 0;
         for (int n = 0; n < 3; ++n) if (getHeapByte(9 + n) != 0) sendValue(n);
         sendCC(15, 108, 35); sendCC(15, 106, countBits(down)); sendCC(15, 107, 0); return;
@@ -163,6 +169,7 @@ void handleMessage(int a, int b, int header)
     }
     if (kind == 6)
     {
+        if (a == 3 && b < 16383 && b != preparation) { preparation = b; preparationPhase = 0; }
         if (a == 0 && b > 0) tempo = b;
         if (a == 1)
         {
@@ -203,7 +210,7 @@ void drawMeterField(int n)
     }
     drawMeterNumber(meterValue(n), x);
 }
-void repaint()
+void drawScene()
 {
     if (resync && getMillisecondCounter() - resyncAt >= 1000)
     { resync = 0; resyncAt = getMillisecondCounter(); sendCC(15, 110, 19); }
@@ -238,3 +245,16 @@ void repaint()
 int currentNumerator() { return getHeapByte(0); }
 int currentDenominator() { return getHeapByte(1); }
 int currentClick() { return getHeapByte(2); }
+
+// The first blocked frame precedes the grant by a complete repaint callback.
+// Original contacts finish before locking; later orphaned moves/ends own no role.
+void repaint()
+{
+    drawScene();
+    if (preparation != 0 && down == 0)
+    {
+        if (preparationPhase == 1) { flush(); sendIntent(58, preparation); }
+        if (preparationPhase < 2) ++preparationPhase;
+        fillRect(0xffffc000, 4, 7, 7, 1);
+    }
+}
