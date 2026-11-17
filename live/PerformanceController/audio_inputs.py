@@ -345,6 +345,7 @@ class AudioInputs:
         self.jobs.pop(group, None)
         self.busy.discard(group)
         self.failed.discard(group)
+        self.backend.pool_unavailable.pop(group,None)
 
     def maintenance(self,group,row,active):
         b=self.backend;item=b.state.groups[group]
@@ -355,6 +356,7 @@ class AudioInputs:
                 self.prepared_masks[group]=0
                 self.confirmed[group]=0;self.last_ready.pop(group,None);self._intents.pop(group,None)
                 self.busy.discard(group);self.failed.discard(group)
+                b.pool_unavailable.pop(group,None)
                 return
             selected=self.selected(group)
             reserve=b.reserves.get(group)
@@ -388,7 +390,14 @@ class AudioInputs:
                 else:
                     created=track is None
                     if created:
-                        if not b.allow_audio_track_creation:raise ValueError('prepared Audio pool unavailable')
+                        if not b.allow_audio_track_creation:
+                            # No Native mutation was attempted. Keep partial
+                            # work for bounded maintenance after a manual lane
+                            # addition or a freed slot. Commands never wait or
+                            # replay; another Next requires a fresh gesture.
+                            b.pool_unavailable[group]='prepared Audio pool unavailable'
+                            self.busy.discard(group)
+                            return
                         track=b._create_audio_lane(group,row)
                         if track is None:return
                     job['track']=track;job['created']=created

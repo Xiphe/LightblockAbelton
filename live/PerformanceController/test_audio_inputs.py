@@ -836,4 +836,94 @@ class AudioInputChecks(unittest.TestCase):
                 self.assertEqual(b.dispatch(1,2),2,'unaffected group mute remains usable')
                 b.close()
 
+    def test_fixed_capacity_recovers_next_on_manual_add_during_same_recording(self):
+        b=self.make(initial=3,groups=1,lanes=4);b.allow_audio_track_creation=False
+        self.ticks(80);first=self.start();self.ticks(50)
+        self.song.advance(first.anchor+2.)
+        self.assertEqual(b.dispatch(67,first.take_id|(2<<7)),0)
+        current=first.following
+        self.song.advance(first.finish_target);self.ticks(100)
+        self.assertIs(b.recording.take,current);self.assertEqual(current.state,'recording')
+        self.assertNotIn(0,b.failures,'known pool exhaustion must not latch a Native failure')
+        self.assertIn(0,b.pool_unavailable)
+        self.assertNotIn(0,b.audio_inputs.failed)
+        before_fires=sum(call[0]=='fire' for call in self.song.calls)
+        self.assertEqual(b.dispatch(67,current.take_id|(3<<7)),REJECT)
+        self.ticks(25)
+        self.assertIs(b.recording.take,current);self.assertIsNone(current.following)
+        self.assertEqual(current.state,'recording')
+        self.assertEqual(sum(call[0]=='fire' for call in self.song.calls),before_fires)
+        self.assertFalse(any(call[0] in ('create_track','create_scene') for call in self.song.calls))
+        before_tracks=len(self.song._tracks)
+        for unused in range(2):
+            # Explicit user edits are the only track creation in this test.
+            index=self.song._tracks.index(b.state.anchors[0])
+            self.song.create_audio_track(index)
+        b.state.topology_dirty=True;self.ticks(100)
+        self.assertEqual(len(self.song._tracks),before_tracks+2)
+        self.assertEqual(sum(call[0]=='create_track' for call in self.song.calls),2)
+        self.assertFalse(any(call[0]=='create_scene' for call in self.song.calls))
+        self.assertNotIn(0,b.pool_unavailable);self.assertNotIn(0,b.failures)
+        self.assertEqual(len(b.reserves[0].members),2)
+        self.assertIs(b.recording.take,current)
+        self.assertEqual(sum(call[0]=='fire' for call in self.song.calls),before_fires,
+                         'a rejected Next must never replay when capacity returns')
+        self.assertEqual(b.dispatch(67,current.take_id|(4<<7)),0)
+        following=current.following;self.assertIsNotNone(following)
+        self.song.advance(current.finish_target-.5);self.ticks(1)
+        self.assertEqual(sum(call[0]=='fire' for call in self.song.calls),before_fires+4)
+        self.song.advance(current.finish_target);self.ticks(1)
+        self.assertIs(b.recording.take,following)
+        self.assertEqual(following.state,'recording')
+
+    def test_fixed_capacity_recovers_when_older_clips_are_manually_cleared(self):
+        b=self.make(initial=3,groups=1,lanes=4);b.allow_audio_track_creation=False
+        self.ticks(80);first=self.start();self.ticks(50)
+        self.song.advance(first.anchor+2.)
+        self.assertEqual(b.dispatch(67,first.take_id|(2<<7)),0)
+        current=first.following
+        self.song.advance(first.finish_target);self.ticks(100)
+        self.assertIn(0,b.pool_unavailable);self.assertNotIn(0,b.failures)
+        for member in self.members(first):
+            member.slot.delete_clip();member.track.quiet()
+        self.ticks(100)
+        self.assertNotIn(0,b.pool_unavailable)
+        self.assertIs(b.recording.take,current)
+        self.assertEqual(tuple(m.track for m in b.reserves[0].members),
+                         tuple(m.track for m in self.members(first)))
+        self.assertFalse(any(call[0] in ('create_track','create_scene') for call in self.song.calls))
+
+    def test_fixed_capacity_does_not_retry_uncertain_native_routing_failure(self):
+        b=self.make(initial=0,groups=1,lanes=4);b.allow_audio_track_creation=False
+        self.ticks(30);attempts=[]
+        class RefusedRouting(Track):
+            def __setattr__(self,name,value):
+                if name=='input_routing_type':
+                    attempts.append(value)
+                    raise RuntimeError('Native routing refused')
+                super().__setattr__(name,value)
+        b.state.groups[0].tracks[0].__class__=RefusedRouting
+        b.audio_inputs.set_patch(0,1);self.ticks(100)
+        self.assertIn(0,b.failures)
+        self.assertIn('Native routing refused',b.failures[0])
+        self.assertNotIn(0,b.pool_unavailable)
+        failed_attempts=len(attempts);self.assertGreater(failed_attempts,0)
+        self.ticks(100)
+        self.assertEqual(len(attempts),failed_attempts)
+        self.assertFalse(any(call[0] in ('create_track','create_scene','fire') for call in self.song.calls))
+
+    def test_fixed_capacity_manual_deletion_to_zero_lanes_is_only_not_ready(self):
+        b=self.make(initial=3,groups=2,lanes=4);b.allow_audio_track_creation=False
+        self.ticks(80)
+        removed=b.state.groups[0].tracks
+        self.song._tracks=[track for track in self.song._tracks
+                           if all(track is not old for old in removed)]
+        b.state.topology_dirty=True;self.song.calls.clear();self.ticks(100)
+        self.assertIn(0,b.pool_unavailable)
+        self.assertNotIn(0,b.failures)
+        self.assertNotIn(0,b.audio_inputs.failed)
+        self.assertEqual(b.dispatch(64,1),REJECT)
+        self.assertEqual(b.dispatch(1,2),2)
+        self.assertFalse(any(call[0] in ('create_track','create_scene','fire') for call in self.song.calls))
+
 if __name__=='__main__':unittest.main()
