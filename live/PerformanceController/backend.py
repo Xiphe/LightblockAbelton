@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from . import configuration as config, protocol as p
 from .model import ClipState, GroupState, LoopReference, read_grid, same, live_valid, NATIVE_ERRORS, native_error
 from .recording_core import LiveRecording
-from .selection_restore import SelectionRestoration
+from .selection_restore import SelectionRestoration, single_inserted_track
 from .audio_inputs import AudioInputs, MAX_SOURCES
 from .input_contract import LOW_BITS, LOW_MASK, HIGH_MASK, SOURCE_NAME_BASE
 from .direct_monitoring import DirectMonitoring, DirectMonitoringError
@@ -1090,13 +1090,13 @@ class Backend:
                     except Exception as exc:creation_error=exc
                     finally:self.events.append(dict(event='create_audio_track_native',group=group,elapsed_ns=time.monotonic_ns()-started))
                     after=tuple(self.song.tracks)
-                    created=[t for t in after if not any(same(t,old) for old in before)]
-                    if len(created)==1:
-                        restore.capture_created(created);self.restoration=restore
-                    else:
+                    try:
+                        track=single_inserted_track(before,after,index)
+                    except BaseException:
                         restore.close()
-                    if len(created)!=1:raise ValueError('created track identity unavailable; not replayed')
-                    track=created[0];task['track']=track
+                        raise
+                    restore.capture_created((track,));self.restoration=restore
+                    task['track']=track
                     if not same(track.group_track,item.group):raise ValueError('created track outside remote group')
                     # Update retained known topology after our own insertion. Deferred
                     # tracks notifications do not force a whole-Set rediscovery.
@@ -1139,26 +1139,39 @@ class Backend:
         if self.restoration is not None and not self.restoration.done:return None
         with self.allocations.operation(self._allocation_context(group)) as allowed:
             if not allowed:return None
+            total_started=time.monotonic_ns()
             item=self.state.groups[group];anchor=self.state.anchors[group]
             before=tuple(self.song.tracks)
             index=next(i for i,t in enumerate(before) if same(t,anchor))
             restore=SelectionRestoration(self.song,now=self.now)
-            started=time.monotonic_ns();error=None
+            started=time.monotonic_ns();error=None;native_return=None
             try:
-                if midi:self.song.create_midi_track(index)
-                else:self.song.create_audio_track(index)
+                if midi:native_return=self.song.create_midi_track(index)
+                else:native_return=self.song.create_audio_track(index)
             except Exception as exc:error=exc
-            finally:self.events.append(dict(event='create_midi_track_native' if midi else 'create_audio_track_native',group=group,elapsed_ns=time.monotonic_ns()-started))
+            finally:
+                native_finished=time.monotonic_ns()
+                self.events.append(dict(event='create_midi_track_native' if midi else 'create_audio_track_native',
+                    group=group,elapsed_ns=native_finished-started,
+                    return_type=type(native_return).__name__ if error is None else None,
+                    error_type=type(error).__name__ if error is not None else None))
             after=tuple(self.song.tracks)
-            created=[t for t in after if not any(same(t,old) for old in before)]
-            if len(created)==1:
-                restore.capture_created(created);self.restoration=restore
-            else:restore.close()
-            if len(created)!=1:raise ValueError('created recording track identity unavailable; not replayed')
-            track=created[0]
+            snapshot_finished=time.monotonic_ns()
+            try:
+                track=single_inserted_track(before,after,index)
+            except BaseException:
+                restore.close()
+                raise
+            identity_finished=time.monotonic_ns()
+            restore.capture_created((track,));self.restoration=restore
+            selection_finished=time.monotonic_ns()
             if not same(track.group_track,item.group):raise ValueError('created recording track outside remote group')
             self.state.tracks=after
             self.state.groups[group]=GroupState(group,item.group,item.tracks+(track,),item.playing,item.recording)
             self._known_created_topology=after;self.state.topology_dirty=True
+            self.events.append(dict(event='track_creation_phases',group=group,kind='midi' if midi else 'audio',
+                tracks_before=len(before),before_native_ns=started-total_started,native_ns=native_finished-started,
+                snapshot_ns=snapshot_finished-native_finished,identity_ns=identity_finished-snapshot_finished,
+                selection_capture_ns=selection_finished-identity_finished,total_ns=time.monotonic_ns()-total_started))
             if error is not None:raise error
             return track

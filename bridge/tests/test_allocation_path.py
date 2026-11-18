@@ -59,7 +59,11 @@ class AllocationPathTests(unittest.TestCase):
         self.exchange('reset 1 %s' % self.vm.time_ms)
         self.backend.reseed()
         self.until(lambda: 0 in self.backend.reserves)
-        self.advance(200)
+        # Faster host preparation can finish before the bounded startup facts
+        # reach the compiled client. Start gestures only after its actual
+        # source/availability model is ready, not after an assumed delay.
+        self.until(lambda: self.vm.call('hasSource/bi', 0)['return']
+                   and self.vm.call('available/bi', 0)['return'])
 
     def advance(self, ms):
         self.vm.time_ms += ms

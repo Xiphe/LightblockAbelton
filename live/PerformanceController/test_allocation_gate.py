@@ -81,11 +81,20 @@ class AllocationChecks(unittest.TestCase):
         self.assertEqual(backend.dispatch(58,ticket),ticket)
         facts=backend.drain_facts(300)
         started=fixture.clock
-        for unused in range(30):
-            self.step(fixture,1.5)
-            facts+=backend.drain_facts(300)
-            if 0 in backend.reserves:break
-            self.assertEqual(backend.allocation_ticket,ticket)
+        first_seen={};prepare=backend.audio_inputs._prepare_audio
+        def delayed_target(*args,**kwargs):
+            track=args[1]
+            first_seen.setdefault(id(track),fixture.clock)
+            # Model a genuinely unsettled Native target, not a fixed number
+            # of implementation steps that faster batching can remove.
+            if fixture.clock-first_seen[id(track)]<4.5:return False
+            return prepare(*args,**kwargs)
+        with patch.object(backend.audio_inputs,'_prepare_audio',side_effect=delayed_target):
+            for unused in range(30):
+                self.step(fixture,1.5)
+                facts+=backend.drain_facts(300)
+                if 0 in backend.reserves:break
+                self.assertEqual(backend.allocation_ticket,ticket)
         self.assertGreater(fixture.clock-started,10)
         self.assertEqual(self.creates(fixture),2)
         self.assertIn(0,backend.reserves)

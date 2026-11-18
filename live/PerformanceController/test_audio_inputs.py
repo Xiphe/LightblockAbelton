@@ -816,10 +816,13 @@ class AudioInputChecks(unittest.TestCase):
                 b=self.make(groups=2);self.ticks(80)
                 if phase=='preparing':
                     b.audio_inputs.set_patch(0,3)
-                    for unused in range(25):
-                        self.ticks(1)
-                        job=b.audio_inputs.jobs.get(0)
-                        if job and (job['track'] is not None or job['members']):break
+                    # Hold actual preparation unconfirmed so deletion tests
+                    # an in-flight plan even when routing otherwise batches.
+                    with patch.object(b.audio_inputs,'_prepare_audio',return_value=False):
+                        for unused in range(25):
+                            self.ticks(1)
+                            job=b.audio_inputs.jobs.get(0)
+                            if job and (job['track'] is not None or job['members']):break
                     self.assertIsNotNone(job)
                     doomed=job['track'] or job['members'][0].track
                 else:doomed=b.reserves[0].track

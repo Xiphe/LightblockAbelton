@@ -17,6 +17,18 @@ def contains(values, obj):
     return any(same(value, obj) for value in values)
 
 
+def single_inserted_track(before, after, index):
+    """Validate one insertion and retained order with linear Native comparisons."""
+    if len(after) != len(before) + 1 or not 0 <= index <= len(before):
+        raise ValueError('created track identity unavailable; not replayed')
+    created = after[index]
+    if (contains(before, created)
+            or any(not same(old, new) for old, new in zip(before[:index], after[:index]))
+            or any(not same(old, new) for old, new in zip(before[index:], after[index+1:]))):
+        raise ValueError('creation changed existing track identity/order; not replayed')
+    return created
+
+
 class SelectionRestoration:
     """Capture before insertion; capture_created afterward; tick until done.
 
@@ -91,6 +103,18 @@ class SelectionRestoration:
             raise ValueError('capture_created may only be called once')
         self.created = tuple(created)
         current = tuple(self.song.tracks)
+        if len(self.created) == 1:
+            index = next((i for i, track in enumerate(current) if same(track, self.created[0])), None)
+            try:
+                if index is None:
+                    raise ValueError('created track missing')
+                single_inserted_track(self.before_tracks, current, index)
+            except ValueError:
+                self._finish('failed', 'created track identity/order mismatch')
+                return
+            self.deadline = self.now() + self.timeout
+            self.state = 'waiting'
+            return
         actual = tuple(track for track in current if not contains(self.before_tracks, track))
         if (not self.created or len(actual) != len(self.created)
                 or any(not contains(actual, track) for track in self.created)):

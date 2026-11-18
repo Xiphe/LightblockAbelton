@@ -5,6 +5,7 @@ cached intent only; actual recording lanes provide monitoring without helpers.
 """
 from dataclasses import dataclass, replace
 import json
+import time
 from .model import same, live_valid, NATIVE_ERRORS, native_error
 from .audio_patch_state import AudioPatchState
 from .input_contract import MAX_SOURCES
@@ -12,6 +13,20 @@ from .midi_routing import MidiRouting, midi_profile, midi_route_equal, endpoint
 
 OFF, IN, AUTO = 2, 0, 1
 PREPARED_KEY = 'net.xiphe.lightpad.audio.prepared-lane.v1'
+
+
+class RoutingBudget:
+    """At most four writes; check 4ms between writes, never preempt a call.
+
+    Native discovery may itself exceed 4ms. Permit the first necessary write
+    after discovery so a slow getter cannot starve this job indefinitely.
+    """
+    def __init__(self):
+        self.started=time.monotonic();self.writes=0
+    def available(self):
+        return self.writes<4 and (self.writes==0 or time.monotonic()-self.started<.004)
+    def more(self):
+        return self.writes<4 and time.monotonic()-self.started<.004
 
 
 def label(value):
@@ -416,20 +431,80 @@ class AudioInputs:
             if job['track'] is not None:retained.append(job['track'])
         self._midi_proofs=[p for p in self._midi_proofs if any(same(p['track'],t) for t in retained)]
 
-    def _prepare_midi(self,track,source):
-        if track.current_monitoring_state!=OFF:track.current_monitoring_state=OFF;return False
+    def _routing_write(self,group,job,source,track,prop,wanted,budget,confirmed=None):
+        check=confirmed or (lambda current:same(current,wanted))
+        pending=job.get('pending_route')
+        if pending is not None:
+            if pending['property']!=prop:
+                if check(getattr(track,prop)):return True
+                raise ValueError('pending route stage changed')
+            if not check(getattr(track,prop)):return False
+            job.pop('pending_route',None)
+            self.backend.events.append(dict(event='preparation_route_confirmed',group=group,
+                source=source.index,kind=source.kind,property=prop,at_ns=time.monotonic_ns()))
+            return True
+        if check(getattr(track,prop)):return True
+        if not budget.available():return False
+        # Record before Native effects. An unconfirmed assignment is observed,
+        # never blindly reissued by the following maintenance callback.
+        job['pending_route']=dict(property=prop,wanted=wanted)
+        budget.writes+=1;started=time.monotonic_ns()
+        setattr(track,prop,wanted)
+        returned=time.monotonic_ns()
+        ready=check(getattr(track,prop))
+        if ready:job.pop('pending_route',None)
+        self.backend.events.append(dict(event='preparation_route_write',group=group,source=source.index,
+            kind=source.kind,property=prop,elapsed_ns=returned-started,
+            readback_ns=time.monotonic_ns()-returned,confirmed=ready,at_ns=returned))
+        return ready
+
+    def _prepare_midi(self,group,track,source,job,budget):
+        if not self._routing_write(group,job,source,track,'current_monitoring_state',OFF,budget):return False
         for prop,wanted in (('input_routing_type',source.input_type),('input_routing_channel',source.input_channel)):
-            chosen=self._offered(track,prop,wanted)
-            if not same(getattr(track,prop),chosen):setattr(track,prop,chosen);return False
-        if not same(getattr(track.output_routing_type,'attached_object',None),source.track):
+            pending=job.get('pending_route')
+            chosen=pending['wanted'] if pending is not None and pending['property']==prop else self._offered(track,prop,wanted)
+            if not self._routing_write(group,job,source,track,prop,chosen,budget):return False
+        pending=job.get('pending_route')
+        if pending is not None and pending['property']=='output_routing_type':chosen=pending['wanted']
+        elif same(getattr(track.output_routing_type,'attached_object',None),source.track):chosen=track.output_routing_type
+        else:
             choices=[r for r in track.available_output_routing_types
                      if same(getattr(r,'attached_object',None),source.track)]
             if len(choices)!=1:raise ValueError('MIDI instrument destination unavailable or ambiguous')
-            track.output_routing_type=choices[0];return False
-        wanted=endpoint(track,source)
+            chosen=choices[0]
+        if not self._routing_write(group,job,source,track,'output_routing_type',chosen,budget):return False
+        pending=job.get('pending_route')
+        wanted=pending['wanted'] if pending is not None and pending['property']=='output_routing_channel' else endpoint(track,source)
         if label(wanted)!=source.endpoint_name:raise ValueError('instrument endpoint changed')
-        if not same(track.output_routing_channel,wanted):track.output_routing_channel=wanted;return False
-        return self._cache_midi_proof(track,source)
+        if not self._routing_write(group,job,source,track,'output_routing_channel',wanted,budget):return False
+        started=time.monotonic_ns()
+        valid=self._cache_midi_proof(track,source)
+        self.backend.events.append(dict(event='preparation_proof',group=group,source=source.index,
+            kind=source.kind,elapsed_ns=time.monotonic_ns()-started,confirmed=valid,at_ns=started))
+        return valid
+
+    def _prepare_audio(self,group,track,source,job,budget,parent):
+        # New Native tracks must finish their implicit parent setup. Existing
+        # Audio lanes retain output routing, effects and mixer settings.
+        if job.get('created') and not self.backend._parent_output(track,parent):return False
+        if not self._routing_write(group,job,source,track,'current_monitoring_state',OFF,budget):return False
+        pending=job.get('pending_route')
+        if pending is not None and pending['property']=='input_routing_type':chosen=pending['wanted']
+        elif source_route(track.input_routing_type,source):chosen=track.input_routing_type
+        else:
+            choices=[r for r in track.available_input_routing_types if source_route(r,source)]
+            if len(choices)!=1:raise ValueError('source route unavailable or ambiguous')
+            chosen=choices[0]
+        if not self._routing_write(group,job,source,track,'input_routing_type',chosen,budget,
+                                   lambda current:source_route(current,source)):return False
+        pending=job.get('pending_route')
+        if pending is not None and pending['property']=='input_routing_channel':chosen=pending['wanted']
+        else:
+            choices=[r for r in track.available_input_routing_channels if post_fx(r)]
+            if not choices:return False
+            if len(choices)!=1:raise ValueError('Post FX route ambiguous')
+            chosen=choices[0]
+        return self._routing_write(group,job,source,track,'input_routing_channel',chosen,budget,post_fx)
 
     def compatible(self, track, parent, row, source):
         try:
@@ -520,85 +595,72 @@ class AudioInputs:
                 job=dict(revision=self.revisions.get(group),row=row,stage='select',members=[],track=None,at=b.now())
                 self.jobs[group]=job
             self.busy.add(group)
-            excluded=self.excluded(active)+[m.track for m in job['members']]
-            source=selected[len(job['members'])]
-            if job['track'] is None:
-                track=next((t for t in item.tracks
-                            if not any(same(t,e) for e in excluded)
-                            and self.available_lane(t,item.group,row,source)),None)
-                if track is not None and self.compatible(track,item.group,row,source):
-                    job['members'].append(Destination(source,track,track.clip_slots[row]))
-                else:
-                    created=track is None
-                    if created:
-                        if not b.allow_audio_track_creation:
-                            # No Native mutation was attempted. Keep partial
-                            # work for bounded maintenance after a manual lane
-                            # addition or a freed slot. Commands never wait or
-                            # replay; another Next requires a fresh gesture.
-                            b.pool_unavailable[group]='prepared Audio pool unavailable'
-                            self.busy.discard(group)
+            budget=RoutingBudget();batch_started=time.monotonic_ns()
+            try:
+                for unused in range(MAX_SOURCES):
+                    excluded=self.excluded(active)+[m.track for m in job['members']]
+                    source=selected[len(job['members'])]
+                    if job['track'] is None:
+                        track=next((t for t in item.tracks
+                                    if not any(same(t,e) for e in excluded)
+                                    and self.available_lane(t,item.group,row,source)),None)
+                        if track is not None and self.compatible(track,item.group,row,source):
+                            job['members'].append(Destination(source,track,track.clip_slots[row]))
+                        else:
+                            created=track is None
+                            if created:
+                                if not b.allow_audio_track_creation:
+                                    b.pool_unavailable[group]='prepared Audio pool unavailable'
+                                    self.busy.discard(group)
+                                    return
+                                job['overflow']=True
+                                track=b._create_audio_lane(group,row,midi=source.kind=='midi')
+                                if track is None:return
+                            job['track']=track;job['created']=created
+                            job['stage']='routing';job['at']=b.now()
+                            # Structural Native work always yields, even when
+                            # the fake implementation completes immediately.
+                            if created:return
+                    if job['track'] is not None:
+                        track=job['track']
+                        if (not self.available_lane(track,item.group,row,source)
+                                or not any(same(track,t) for t in item.tracks)):
+                            raise ValueError('preparing recording destination changed')
+                        ready=(self._prepare_midi(group,track,source,job,budget) if source.kind=='midi'
+                               else self._prepare_audio(group,track,source,job,budget,item.group))
+                        if not ready:
+                            if b.now()-job['at']>8:raise ValueError('recording routing preparation timeout')
                             return
-                        job['overflow']=True
-                        track=b._create_audio_lane(group,row,midi=source.kind=='midi')
-                        if track is None:return
-                    job['track']=track;job['created']=created
-                    job['stage']='monitor';job['at']=b.now();return
-            else:
-                track=job['track']
-                if (not self.available_lane(track,item.group,row,source)
-                    or not any(same(track,t) for t in item.tracks)):
-                    raise ValueError('preparing Audio destination changed')
-                if source.kind=='midi':
-                    if not self._prepare_midi(track,source):
-                        if b.now()-job['at']>8:raise ValueError('MIDI routing preparation timeout')
-                        return
-                    job['stage']='midi_ready'
-                stage=job['stage']
-                if stage=='monitor':
-                    # New Native tracks must finish their implicit parent setup.
-                    # Existing lanes retain their output, effects and mixer state.
-                    if job.get('created') and not b._parent_output(track,item.group):
-                        if b.now()-job['at']>8:raise ValueError('parent routing preparation timeout')
-                        return
-                    job['stage']=stage='type'
-                    if track.current_monitoring_state!=OFF:
-                        track.current_monitoring_state=OFF;return
-                if source.kind=='audio' and stage=='type':
-                    job['stage']=stage='channel'
-                    if not source_route(track.input_routing_type,source):
-                        choices=[r for r in track.available_input_routing_types if source_route(r,source)]
-                        if len(choices)!=1:raise ValueError('source route unavailable or ambiguous')
-                        track.input_routing_type=choices[0];return
-                if source.kind=='audio' and stage=='channel':
-                    if not source_route(track.input_routing_type,source):
-                        if b.now()-job['at']>8:raise ValueError('source routing confirmation timeout')
-                        return
-                    choices=[r for r in track.available_input_routing_channels if label(r).casefold().replace(' ','')=='postfx']
-                    if not choices:
-                        if b.now()-job['at']>8:raise ValueError('Post FX route unavailable')
-                        return
-                    if len(choices)!=1:raise ValueError('Post FX route ambiguous')
-                    job['stage']='verify'
-                    if not route_equal(track.input_routing_channel,choices[0]):
-                        track.input_routing_channel=choices[0];return
-                if not self.compatible(track,item.group,row,source):
-                    if b.now()-job['at']>8:raise ValueError('source routing verification timeout')
-                    return
-                job['members'].append(Destination(source,track,track.clip_slots[row]));job['track']=None
-            self.prepared_masks[group]=sum(1<<m.source.index for m in job['members'])
+                        if not self.compatible(track,item.group,row,source):
+                            if b.now()-job['at']>8:raise ValueError('source routing verification timeout')
+                            return
+                        job['members'].append(Destination(source,track,track.clip_slots[row]));job['track']=None
+                    self.prepared_masks[group]=sum(1<<m.source.index for m in job['members'])
+                    if len(job['members'])==len(selected):break
+                    if not budget.more():return
+            finally:
+                b.events.append(dict(event='preparation_work_batch',group=group,writes=budget.writes,
+                    members=len(job['members']),stage=job['stage'],elapsed_ns=time.monotonic_ns()-batch_started,
+                    at_ns=batch_started))
             if len(job['members'])==len(selected):
+                appearance_started=time.monotonic_ns()
                 for m in job['members']:
                     try:
                         if str(m.track.name)!=m.source.name:m.track.name=m.source.name
                         if int(m.track.color_index)!=m.source.color_index:m.track.color_index=m.source.color_index
                     except (RuntimeError,ValueError,AttributeError) as error:
                         b.events.append(dict(event='source_appearance_unavailable',group=group,reason=str(error)))
+                b.events.append(dict(event='preparation_appearance',group=group,elapsed_ns=time.monotonic_ns()-appearance_started,at_ns=appearance_started))
                 if self.revisions.get(group,0)!=job['revision'] or self.jobs.get(group) is not job:return
                 reserve=BundleReserve(group,item.group,row,job['revision'],tuple(job['members']))
+                ownership_started=time.monotonic_ns()
                 self._mark_prepared_ownership(group,reserve)
+                b.events.append(dict(event='preparation_ownership_marker',group=group,elapsed_ns=time.monotonic_ns()-ownership_started,at_ns=ownership_started))
+                if self.revisions.get(group,0)!=job['revision'] or self.jobs.get(group) is not job:return
                 b.reserves[group]=reserve
+                confirm_started=time.monotonic_ns()
                 self._confirm_reserve(group,reserve)
+                b.events.append(dict(event='preparation_reserve_confirm',group=group,elapsed_ns=time.monotonic_ns()-confirm_started,at_ns=confirm_started))
         except NATIVE_ERRORS + (ValueError,IndexError) as exc:
             native_error(exc)
             self.fail_preparation(group,str(exc),attempted_revision)
