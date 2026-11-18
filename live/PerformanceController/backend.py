@@ -15,6 +15,7 @@ from .model import ClipState, GroupState, LoopReference, read_grid, same, live_v
 from .recording_core import LiveRecording
 from .selection_restore import SelectionRestoration
 from .audio_inputs import AudioInputs, MAX_SOURCES
+from .input_contract import LOW_BITS, LOW_MASK, HIGH_MASK, SOURCE_NAME_BASE
 from .direct_monitoring import DirectMonitoring, DirectMonitoringError
 from .allocation_gate import AllocationGate, AllocationContext
 from .bundle_recording import BundleRecording
@@ -514,7 +515,10 @@ class Backend:
                 source=self.audio_inputs.sources.get(index)
                 color=source.color if source else 0
                 rgb=((color>>17)&127)|(((color>>9)&127)<<7)|(((color>>1)&127)<<14)
-                self._fact(6,24+index,rgb | (bool(self.audio_inputs.available&(1<<index))<<21))
+                midi=source is not None and source.kind=='midi'
+                source_owner=self.audio_inputs.midi.owner(index) if midi else None
+                self._fact(6,24+index,rgb | (bool(self.audio_inputs.available&(1<<index))<<21)
+                           | (midi<<22) | ((source_owner or 0)<<23) | ((source_owner is not None)<<26))
             self._fact(1,57,owner if owner is not None else 8)
             # Catalog labels are lower-priority than control readiness.
             for index in range(MAX_SOURCES):
@@ -523,7 +527,7 @@ class Backend:
                 encoded=name.encode('ascii','replace')[:32].ljust(32,b'\0')
                 for chunk in range(8):
                     word=sum(encoded[chunk*4+offset]<<(offset*7) for offset in range(4))
-                    self._fact(6,40+index*8+chunk,word)
+                    self._fact(6,SOURCE_NAME_BASE+index*8+chunk,word)
 
     def _clock(self, group, grid):
         reference = self.state.reference(group) if group < 8 else None
@@ -596,14 +600,17 @@ class Backend:
                 return REJECT
             if key < 48:
                 return self._parameter(key,value)
-            if 48<=key<=55 and self.audio_inputs:
-                if value&~127:return REJECT
-                group=key-48
-                result=self.audio_inputs.set_patch(group,value)
+            if self.audio_inputs and (48<=key<=55 or 116<=key<=123):
+                high=key>=116;group=key-(116 if high else 48)
+                limit=HIGH_MASK if high else LOW_MASK;shift=LOW_BITS if high else 0
+                if value&~limit:return REJECT
+                old=self.audio_inputs.desired.get(group,0)
+                merged=(old&~(limit<<shift))|(value<<shift)
+                result=self.audio_inputs.set_patch(group,merged)
                 if self.allocations.group==group:self.allocations.clear()
                 self.failures.pop(group,None)
                 self._global_facts()
-                return result
+                return (result>>shift)&limit
             if key==58:
                 return value if self.allocations.grant(value) else REJECT
             if key==57 and self.audio_inputs and 0<=value<8:
@@ -629,6 +636,7 @@ class Backend:
                 group=key-104
                 status=self.recording.advance(SimpleNamespace(group=group))
                 if status == p.APPLIED:
+                    if self.audio_inputs:self.audio_inputs.midi.clear(group)
                     if self.allocations.group==group:self.allocations.clear()
                     self.pool_unavailable.pop(group,None)
                     self.state.observe(group)
@@ -674,7 +682,13 @@ class Backend:
                 return REJECT
             if self.audio_inputs:
                 mask=self.audio_inputs.desired.get(group,0)
+                if not mask or mask&~self.audio_inputs.available:return REJECT
+                reacquire=any(source.kind=='midi' and mask&(1<<i)
+                              and self.audio_inputs.midi.owner(i) is None
+                              for i,source in self.audio_inputs.sources.items())
+                self.audio_inputs.midi.request(group,mask)
                 if not (self.audio_inputs.group_mask & (1 << group)):return REJECT
+                if reacquire:self.audio_inputs.set_monitor(group)
             self.failed_take=None
             self.closed_following=None
             self.pending_begin=(group,token,self.now())
@@ -760,6 +774,8 @@ class Backend:
         if self.now()-started > config.PREPARATION_TIMEOUT:
             self.pending_begin=None;self._failed_take(group,token,'preparation timeout');return
         if self.state.topology_dirty or group not in self.reserves:
+            return
+        if self.audio_inputs and not self.audio_inputs.midi.admission_ready(group,self.audio_inputs.desired.get(group,0)):
             return
         admitted=False
         self.recording.request_token=token
@@ -892,7 +908,8 @@ class Backend:
                 priority=self.pending_begin[0] if self.pending_begin else (take.group if take is not None and take.state!='completed' else None)
             if priority is None and self.audio_inputs:
                 priority=next(iter(sorted(self.audio_inputs.busy)),None)
-            if priority is not None and priority not in self.reserves and priority not in self.failures:
+            if (priority is not None and priority not in self.failures and
+                    (priority not in self.reserves or self.audio_inputs and self.audio_inputs.midi.needs_work(priority))):
                 group=priority
             self.state.scan_occupancy(group,64)
             self._maintenance(group)
@@ -1118,7 +1135,7 @@ class Backend:
             self.events.append(dict(event='maintenance_failed',group=group,reason=str(exc)))
             if self.restoration and self.restoration.state=='captured':self.restoration.close();self.restoration=None
 
-    def _create_audio_lane(self,group,row):
+    def _create_audio_lane(self,group,row,midi=False):
         if self.restoration is not None and not self.restoration.done:return None
         with self.allocations.operation(self._allocation_context(group)) as allowed:
             if not allowed:return None
@@ -1127,17 +1144,19 @@ class Backend:
             index=next(i for i,t in enumerate(before) if same(t,anchor))
             restore=SelectionRestoration(self.song,now=self.now)
             started=time.monotonic_ns();error=None
-            try:self.song.create_audio_track(index)
+            try:
+                if midi:self.song.create_midi_track(index)
+                else:self.song.create_audio_track(index)
             except Exception as exc:error=exc
-            finally:self.events.append(dict(event='create_audio_track_native',group=group,elapsed_ns=time.monotonic_ns()-started))
+            finally:self.events.append(dict(event='create_midi_track_native' if midi else 'create_audio_track_native',group=group,elapsed_ns=time.monotonic_ns()-started))
             after=tuple(self.song.tracks)
             created=[t for t in after if not any(same(t,old) for old in before)]
             if len(created)==1:
                 restore.capture_created(created);self.restoration=restore
             else:restore.close()
-            if len(created)!=1:raise ValueError('created Audio identity unavailable; not replayed')
+            if len(created)!=1:raise ValueError('created recording track identity unavailable; not replayed')
             track=created[0]
-            if not same(track.group_track,item.group):raise ValueError('created Audio outside remote group')
+            if not same(track.group_track,item.group):raise ValueError('created recording track outside remote group')
             self.state.tracks=after
             self.state.groups[group]=GroupState(group,item.group,item.tracks+(track,),item.playing,item.recording)
             self._known_created_topology=after;self.state.topology_dirty=True

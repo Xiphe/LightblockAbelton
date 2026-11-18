@@ -1,18 +1,21 @@
 # Device programs
 
-The Lightpad renders and animates locally on a 15 by 15 LED grid. Live interprets gestures and owns musical state; the [bridge](../bridge/README.md) loads programs and keeps its MIDI ports stable. [UX.md](UX.md) records current interactions and pixel geometry.
+The Lightpad renders and animates locally on a 15 by 15 LED grid. The pad owns gestures and optimistic feedback; Live owns musical state, and the [bridge](../bridge/README.md) loads programs and keeps its MIDI ports stable. [UX.md](UX.md) records current interactions and pixel geometry.
 
 | Source | Role | Code + heap | Free of 7,200 bytes |
 | --- | --- | ---: | ---: |
-| `main.littlefoot` | Group overview, held mixer and recording controls | 7,110 | 90 |
-| `metronome.littlefoot` | Full-screen meter, click and tap tempo | 5,331 | 1,869 |
+| `performance-main.littlefoot` | Group overview, held mixer and recording controls | 7,190 | 10 |
+| `performance-patch.littlefoot` | 25-source Audio/MIDI patch selector | 5,084 | 2,116 |
+| `performance-metronome.littlefoot` | Full-screen meter, click and tap tempo | 3,558 | 3,642 |
 | `status.littlefoot` | Connection status and standalone idle | 5,889 | 1,311 |
 | `idle-animation.littlefoot` | Shared touchable tunnel, included by status | Included above | |
 | `idle-statements-prototype.littlefoot` | Shared hidden-message assets/interaction | Included above | |
 
 Only one entry program runs at a time. Each has its own memory budget. Separate modal programs leave room for local animation and immediate touch feedback; occasional screen uploads preserve Live playback and virtual ports.
 
-Status is saved as the pad's startup program. Main and metronome use temporary uploads. Follow the [startup installation steps](../bridge/README.md#install) rather than running an uploader alongside the helper. Keep both idle includes beside status; they are source dependencies, not separate programs to upload.
+Status is saved as the pad's startup program. Main, patch and metronome use temporary uploads. Follow the [startup installation steps](../bridge/README.md#install) rather than running an uploader alongside the helper. Keep both idle includes beside status; they are source dependencies, not separate programs to upload.
+
+The older `main.littlefoot` and `metronome.littlefoot` use the legacy host-owned view protocol and require the matching legacy Live adapter. They are separate from the current `performance-*` programs.
 
 ## Idle interaction
 
@@ -26,7 +29,13 @@ While untouched, the tunnel runs for 45 seconds, crossfades into FCK/AFD over tw
 
 ## Tests
 
-From the checkout root with the pinned source-built `blocksctl` on PATH:
+From the checkout root with the pinned source-built `blocksctl` on PATH, run the current performance-client checks:
+
+```sh
+python3 -m unittest discover -s lightpad/tests -p 'test_performance_*.py' -v
+```
+
+The legacy programs and shared status/idle retain their own checks:
 
 ```sh
 python3 lightpad/tests/test_current_device.py

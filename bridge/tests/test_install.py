@@ -165,6 +165,7 @@ class InstallationTests(unittest.TestCase):
         (self.app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         for module in ('surface', 'backend', 'health', 'protocol', 'model', 'audio_inputs',
                        'bundle_recording', 'audio_patch_state', 'direct_monitoring',
+                       'allocation_gate', 'input_contract', 'midi_routing',
                        'recording_core', 'recording_coverage', 'launch_admission',
                        'selection_restore', 'timing'):
             (self.script/(module+'.py')).write_text('# offline Audio module\n')
@@ -223,8 +224,9 @@ class InstallationTests(unittest.TestCase):
                           self.support, self.login, configuration=self.private_configuration)
         self.assertFalse(self.stage.exists())
 
-    def test_audio_stage_requires_state_and_direct_monitoring_modules(self):
-        for missing in ('audio_patch_state.py', 'direct_monitoring.py'):
+    def test_audio_stage_requires_state_monitoring_allocation_and_midi_modules(self):
+        for missing in ('audio_patch_state.py', 'direct_monitoring.py',
+                        'allocation_gate.py', 'input_contract.py', 'midi_routing.py'):
             with self.subTest(module=missing):
                 audio_target = self.audio_fixture()
                 (self.script/missing).unlink()

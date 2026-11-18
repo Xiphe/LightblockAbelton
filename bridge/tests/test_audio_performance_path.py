@@ -73,7 +73,7 @@ class PathTests(unittest.TestCase):
             self.exchange('fact 1 %d %d %d %d %d'%(self.obs,kind,a,b,self.vm.time_ms))
             self.obs=(self.obs+1)&127
     def pump(self):
-        for unused in range(300):
+        for unused in range(getattr(self,'pump_limit',300)):
             messages=self.vm.midi[self.midi_cursor:];self.midi_cursor=len(self.vm.midi)
             for status,cc,value in messages:
                 if status&0xf0==0xb0:

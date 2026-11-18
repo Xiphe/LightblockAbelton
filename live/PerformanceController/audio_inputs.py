@@ -1,15 +1,16 @@
-"""Original Audio sources, Set-local choices and prepared recording lanes.
+"""Original Audio/MIDI sources, Set-local choices and prepared recording lanes.
 
 Discovery and Native preparation are maintenance work. Touch commands change
 cached intent only; actual recording lanes provide monitoring without helpers.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from .model import same, live_valid, NATIVE_ERRORS, native_error
 from .audio_patch_state import AudioPatchState
+from .input_contract import MAX_SOURCES
+from .midi_routing import MidiRouting, midi_profile, midi_route_equal, endpoint
 
 OFF, IN, AUTO = 2, 0, 1
-MAX_SOURCES = 7
 PREPARED_KEY = 'net.xiphe.lightpad.audio.prepared-lane.v1'
 
 
@@ -38,6 +39,11 @@ class Source:
     color_index: int
     route: object
     channel: object = None
+    kind: str = 'audio'
+    input_type: object = None
+    input_channel: object = None
+    instrument: object = None
+    endpoint_name: object = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +83,8 @@ class AudioInputs:
         self._observe_at = -10.
         self.root = None
         self._storage_errors = ()
+        self._midi_proofs=[]
+        self.midi = MidiRouting(self)
         self.discover()
 
     @staticmethod
@@ -129,11 +137,13 @@ class AudioInputs:
             self.sources = {}; self._source_candidates = {}; self._available = 0
             self.catalog_tracks = (); self.monitor_owner = None
             self.issues = {'catalog': 'unique [Inputs] group unavailable'}
+            self.midi.discover()
             return
-        catalog = tuple(t for t in tracks if not t.is_foldable and t.has_audio_input
+        catalog = tuple(t for t in tracks if not t.is_foldable
+                        and (t.has_audio_input or getattr(t,'has_midi_input',False))
                         and self._within(t, self.root))
         if len(catalog) > MAX_SOURCES:
-            raise ValueError('Audio catalog exceeds seven supported sources')
+            raise ValueError('Input catalog exceeds 25 supported sources')
         catalog_changed = (len(catalog) != len(self.catalog_tracks) or
                            any(not same(a, b) for a, b in zip(catalog, self.catalog_tracks)))
         self.catalog_tracks = catalog
@@ -148,7 +158,21 @@ class AudioInputs:
         for i, track in enumerate(catalog):
             if i in self.state_store.duplicate_indices or i in self.state_store.invalid_indices: continue
             prior = next((s for s in previous if same(s.track, track)), None)
-            if prior is not None:
+            if not track.has_audio_input:
+                try:
+                    device,input_type,input_channel=midi_profile(track)
+                    self.sources[i]=Source(i,track,str(track.name),int(track.color),
+                        int(getattr(track,'color_index',0)),None,kind='midi',
+                        input_type=input_type,input_channel=input_channel,instrument=device,endpoint_name='1-'+str(device.name))
+                except ValueError as error:
+                    # Keep an unavailable profile candidate so a later manual
+                    # instrument-chain repair can heal on the slow cadence.
+                    self.sources[i]=Source(i,track,str(track.name),int(track.color),
+                        int(getattr(track,'color_index',0)),None,kind='midi')
+                    self.issues[i]=str(error)
+                except NATIVE_ERRORS as error:
+                    native_error(error);self.issues[i]=str(error)
+            elif prior is not None:
                 self.sources[i] = Source(i, track, str(track.name), int(track.color),
                                          int(getattr(track, 'color_index', 0)), prior.route)
             elif probes:
@@ -168,6 +192,7 @@ class AudioInputs:
                 self.prepared_masks.pop(group, None)
                 self.busy.add(group)
         self.monitor_owner = self.state_store.monitor_owner
+        self.midi.discover()
         self.observe_sources(force=True)
 
     def _recover_prepared_ownership(self):
@@ -176,7 +201,7 @@ class AudioInputs:
         for group, item in self.backend.state.groups.items():
             for track in item.tracks:
                 try:
-                    if not track.arm or track.is_foldable or not track.has_audio_input:continue
+                    if not track.arm or track.is_foldable:continue
                     raw=track.get_data(PREPARED_KEY,'')
                     if not raw:continue
                     marker=json.loads(raw)
@@ -184,7 +209,12 @@ class AudioInputs:
                     attached=getattr(track.input_routing_type,'attached_object',None)
                     matching=any(identifier==marker.get('source') and same(source,attached)
                                  for identifier,source in zip(self.state_store.source_ids,self.catalog_tracks))
-                    if (matching and same(track.group_track,item.group) and post_fx(track.input_routing_channel)):
+                    source=next((s for s in self.sources.values()
+                                 if self.state_store.source_ids[s.index]==marker.get('source')),None)
+                    midi_matching=(source is not None and source.kind=='midi'
+                        and self._cache_midi_proof(track,source) and self._midi_compatible(track,source))
+                    if (same(track.group_track,item.group) and
+                            (matching and post_fx(track.input_routing_channel) or midi_matching)):
                         self.backend.monitoring.recover_saved(track,group)
                 except (RuntimeError,AttributeError,ValueError,TypeError):continue
 
@@ -221,18 +251,40 @@ class AudioInputs:
         available = 0
         for i, source in tuple(self.sources.items()):
             try:
-                if (not source.track.is_frozen and source.track.current_monitoring_state == IN
+                if source.kind=='midi':
+                    device,input_type,input_channel=midi_profile(source.track)
+                    endpoint_name='1-'+str(device.name)
+                    if (not same(source.instrument,device) or not same(source.input_type,input_type)
+                            or not same(source.input_channel,input_channel) or source.endpoint_name!=endpoint_name):
+                        source=replace(source,instrument=device,input_type=input_type,input_channel=input_channel,
+                                       endpoint_name=endpoint_name)
+                        self.sources[i]=source
+                        for group,mask in self.desired.items():
+                            if not mask&(1<<i):continue
+                            self.revisions[group]=self.revisions.get(group,0)+1
+                            if group in self._intents:self._intents[group]['revision']=self.revisions[group]
+                            self.backend.reserves.pop(group,None);self.last_ready.pop(group,None)
+                            self.jobs.pop(group,None);self.prepared_masks.pop(group,None)
+                            self.busy.add(group)
+                        self._midi_proofs=[p for p in self._midi_proofs if not same(p['source'],source.track)]
+                    if self.midi.supported(source):
+                        available |= 1 << i;self.issues.pop(i,None)
+                elif (not source.track.is_frozen and source.track.current_monitoring_state == IN
                         and label(source.track.output_routing_type).casefold().replace(' ', '') == 'sendsonly'
                         and all(p.value == p.min for p in source.track.mixer_device.sends)):
                     available |= 1 << i
                 name, color = str(source.track.name), int(source.track.color)
                 index = int(getattr(source.track, 'color_index', 0))
                 if (name, color, index) != (source.name, source.color, source.color_index):
-                    self.sources[i] = Source(i, source.track, name, color, index, source.route)
+                    self.sources[i] = replace(source,name=name,color=color,color_index=index)
+            except ValueError as error:
+                self.issues[i]=str(error)
             except NATIVE_ERRORS as error:
                 native_error(error)
+                self.issues[i]=str(error)
                 self.backend.state.topology_dirty=True
         self._available = available
+        self.midi.observe()
         # Saved arm/routing properties may settle after constructor discovery.
         # Reconcile only our marked retained lanes on the slow source cadence.
         self._recover_prepared_ownership()
@@ -247,13 +299,15 @@ class AudioInputs:
         return sum(bool(self.desired.get(g, 0)) << g for g in self.backend.state.groups
                    if self.root is not None and not self.state_store.unresolved(g)
                    and self.state_store.selected_ids(g) is not None
-                   and not self.desired.get(g, 0) & ~self.available)
+                   and not self.desired.get(g, 0) & ~self.available
+                   and self.midi.recordable(g,self.desired.get(g,0)))
 
     def set_patch(self, group, mask):
         old = self.desired.get(group, 0)
         if self.root is None or group not in self.backend.state.groups or mask & ~((1 << MAX_SOURCES) - 1):
             raise ValueError('Audio group or selection unavailable')
         if (mask & ~old) & ~self.available: raise ValueError('input unavailable')
+        self.midi.request(group,mask)
         self.state_store.set_patch(group, mask)
         if old != mask:
             self.desired[group] = mask; self.revisions[group] = self.revisions.get(group, 0) + 1
@@ -269,6 +323,7 @@ class AudioInputs:
 
     def set_monitor(self, group):
         if self.root is None or group not in self.backend.state.groups: raise ValueError('monitor group unavailable')
+        self.midi.request(group,self.desired.get(group,0))
         self._owner_revision += 1; self.monitor_owner = group
         self.state_store.set_monitor(group)
         return group
@@ -291,13 +346,15 @@ class AudioInputs:
         return tuple(self.sources[i] for i in range(len(self.catalog_tracks)) if mask & (1 << i))
 
     def routing_fact(self, group):
-        return (self.desired.get(group, 0) | (self.prepared_masks.get(group, 0) << 7)
-                | (int(group in self.busy) << 14) | (int(group in self.failed) << 15))
+        return (self.prepared_masks.get(group, 0)
+                | (int(group in self.busy) << 25) | (int(group in self.failed) << 26))
 
-    def available_lane(self, track, parent, row):
+    def available_lane(self, track, parent, row, source=None):
         try:
             return (same(getattr(track, 'group_track', None), parent)
-                and not track.is_foldable and track.has_audio_input and not track.is_frozen
+                and not track.is_foldable and not track.is_frozen
+                and (getattr(track,'has_midi_input',False) and not track.has_audio_input
+                     if source is not None and source.kind=='midi' else track.has_audio_input)
                 and (not track.arm or self.backend.monitoring.owned(track))
                 and self.backend.recording._quiet(track)
                 and 0 <= row < len(track.clip_slots)
@@ -306,9 +363,79 @@ class AudioInputs:
         except NATIVE_ERRORS as error:
             native_error(error);self.backend.state.topology_dirty=True;return False
 
+    def _group_index(self,parent):
+        return next((g for g,item in self.backend.state.groups.items() if same(item.group,parent)),None)
+
+    def _midi_compatible(self,track,source):
+        # The slow preparation path proves offered-route uniqueness. Admission
+        # checks only those retained Native values, never enumerates ports.
+        proof=next((p for p in self._midi_proofs if same(p['track'],track)),None)
+        if proof is None:return False
+        return (same(proof['source'],source.track) and same(proof['instrument'],source.instrument)
+                and same(proof['wanted_type'],source.input_type)
+                and same(proof['wanted_channel'],source.input_channel)
+                and proof['endpoint']==source.endpoint_name
+                and track.current_monitoring_state==OFF
+                and all(same(getattr(track,prop),value) for prop,value in proof['routes'].items()))
+
+    @staticmethod
+    def _offered(track,property,wanted):
+        offered=tuple(getattr(track,'available_'+property+'s'))
+        exact=[r for r in offered if same(r,wanted)]
+        if len(exact)==1:return exact[0]
+        identifier=getattr(wanted,'identifier',None)
+        if identifier is not None:
+            exact=[r for r in offered if getattr(r,'identifier',None)==identifier]
+            if len(exact)==1:return exact[0]
+        # Cross-track external wrappers may lack equality/identifier. Only a
+        # unique actual offered label+attachment can prove that fallback.
+        choices=[r for r in offered if label(r)==label(wanted)
+                 and same(getattr(r,'attached_object',None),getattr(wanted,'attached_object',None))]
+        if len(choices)!=1:raise ValueError('configured MIDI '+property+' unavailable or ambiguous')
+        return choices[0]
+
+    def _cache_midi_proof(self,track,source):
+        routes={prop:self._offered(track,prop,wanted) for prop,wanted in
+                (('input_routing_type',source.input_type),('input_routing_channel',source.input_channel))}
+        choices=[r for r in track.available_output_routing_types
+                 if same(getattr(r,'attached_object',None),source.track)]
+        if len(choices)!=1:raise ValueError('MIDI instrument destination unavailable or ambiguous')
+        routes['output_routing_type']=choices[0];routes['output_routing_channel']=endpoint(track,source)
+        if (label(routes['output_routing_channel'])!=source.endpoint_name
+                or not all(same(getattr(track,prop),value) for prop,value in routes.items())):return False
+        self._midi_proofs=[p for p in self._midi_proofs if not same(p['track'],track)]
+        self._midi_proofs.append(dict(track=track,source=source.track,instrument=source.instrument,
+            wanted_type=source.input_type,wanted_channel=source.input_channel,
+            endpoint=source.endpoint_name,routes=routes))
+        return True
+
+    def _prune_midi_proofs(self):
+        retained=[m.track for reserve in self.backend.reserves.values() for m in reserve.members]
+        for job in self.jobs.values():
+            retained.extend(m.track for m in job['members'])
+            if job['track'] is not None:retained.append(job['track'])
+        self._midi_proofs=[p for p in self._midi_proofs if any(same(p['track'],t) for t in retained)]
+
+    def _prepare_midi(self,track,source):
+        if track.current_monitoring_state!=OFF:track.current_monitoring_state=OFF;return False
+        for prop,wanted in (('input_routing_type',source.input_type),('input_routing_channel',source.input_channel)):
+            chosen=self._offered(track,prop,wanted)
+            if not same(getattr(track,prop),chosen):setattr(track,prop,chosen);return False
+        if not same(getattr(track.output_routing_type,'attached_object',None),source.track):
+            choices=[r for r in track.available_output_routing_types
+                     if same(getattr(r,'attached_object',None),source.track)]
+            if len(choices)!=1:raise ValueError('MIDI instrument destination unavailable or ambiguous')
+            track.output_routing_type=choices[0];return False
+        wanted=endpoint(track,source)
+        if label(wanted)!=source.endpoint_name:raise ValueError('instrument endpoint changed')
+        if not same(track.output_routing_channel,wanted):track.output_routing_channel=wanted;return False
+        return self._cache_midi_proof(track,source)
+
     def compatible(self, track, parent, row, source):
         try:
-            return (self.available_lane(track, parent, row)
+            if source.kind=='midi':
+                return self.available_lane(track,parent,row,source) and self._midi_compatible(track,source)
+            return (self.available_lane(track, parent, row,source)
                 and (track.current_monitoring_state == OFF or
                      track.current_monitoring_state == AUTO and self.backend.monitoring.owned(track))
                 and source_route(track.input_routing_type, source) and post_fx(track.input_routing_channel))
@@ -316,7 +443,7 @@ class AudioInputs:
         except NATIVE_ERRORS as error:
             native_error(error);self.backend.state.topology_dirty=True;return False
 
-    def validate(self,reserve,group,row):
+    def validate(self,reserve,group,row,require_lease=True):
         item=self.backend.state.groups[group]
         if (reserve.row!=row or reserve.revision!=self.revisions.get(group)
             or not same(reserve.parent,item.group)):return False
@@ -324,6 +451,8 @@ class AudioInputs:
         if (len(selected)!=len(reserve.members) or any(
                 source.index!=member.source.index or not same(source.track,member.source.track)
                 for source,member in zip(selected,reserve.members))):return False
+        if require_lease and any(source.kind=='midi' and not self.midi.ready(group,source) for source in selected):
+            return False
         try:
             return all(any(same(m.track,t) for t in item.tracks)
                    and same(m.slot,m.track.clip_slots[row])
@@ -346,12 +475,22 @@ class AudioInputs:
         self.busy.discard(group)
         self.failed.discard(group)
         self.backend.pool_unavailable.pop(group,None)
+        self.midi.confirm(group)
+        self._prune_midi_proofs()
         self.backend.allocations.release(group)
 
     def maintenance(self,group,row,active):
         b=self.backend;item=b.state.groups[group]
         attempted_revision=self.revisions.get(group,0)
         try:
+            job=self.jobs.get(group)
+            if (job is not None and job.get('overflow')
+                    and job['revision']==attempted_revision and job['row']==row):
+                # Reseeding cancels protocol permission, not already created
+                # lanes. Reacquire Busy before resuming that job's routing.
+                with b.allocations.operation(b._allocation_context(group)) as allowed:
+                    if not allowed:return
+            if not self.midi.maintenance(group):return
             if not self.desired.get(group,0):
                 self.jobs.pop(group,None);b.reserves.pop(group,None)
                 self.prepared_masks[group]=0
@@ -361,24 +500,17 @@ class AudioInputs:
                 b.allocations.release(group)
                 return
             selected=self.selected(group)
-            job=self.jobs.get(group)
-            if (job is not None and job.get('overflow')
-                    and job['revision']==attempted_revision and job['row']==row):
-                # Reseeding cancels protocol permission, not already created
-                # lanes. Reacquire Busy before resuming that job's routing.
-                with b.allocations.operation(b._allocation_context(group)) as allowed:
-                    if not allowed:return
             reserve=b.reserves.get(group)
-            if reserve is not None and self.validate(reserve,group,row):
+            if reserve is not None and self.validate(reserve,group,row,require_lease=False):
                 # A cancelled/deleted earlier slot can become free while a later
                 # reserve is ready. Reorder only in maintenance, never dispatch.
                 excluded=self.excluded(active)
                 first=[]
-                for track in item.tracks:
-                    if (not any(same(track,t) for t in excluded)
-                            and self.available_lane(track,item.group,row)):
-                        first.append(track)
-                        if len(first)==len(selected):break
+                for source in selected:
+                    track=next((t for t in item.tracks if not any(same(t,e) for e in excluded+first)
+                                and self.available_lane(t,item.group,row,source)),None)
+                    if track is None:break
+                    first.append(track)
                 if len(first)==len(reserve.members) and all(
                         same(track,m.track) for track,m in zip(first,reserve.members)):
                     self._confirm_reserve(group,reserve);return
@@ -393,7 +525,7 @@ class AudioInputs:
             if job['track'] is None:
                 track=next((t for t in item.tracks
                             if not any(same(t,e) for e in excluded)
-                            and self.available_lane(t,item.group,row)),None)
+                            and self.available_lane(t,item.group,row,source)),None)
                 if track is not None and self.compatible(track,item.group,row,source):
                     job['members'].append(Destination(source,track,track.clip_slots[row]))
                 else:
@@ -408,15 +540,20 @@ class AudioInputs:
                             self.busy.discard(group)
                             return
                         job['overflow']=True
-                        track=b._create_audio_lane(group,row)
+                        track=b._create_audio_lane(group,row,midi=source.kind=='midi')
                         if track is None:return
                     job['track']=track;job['created']=created
                     job['stage']='monitor';job['at']=b.now();return
             else:
                 track=job['track']
-                if (not self.available_lane(track,item.group,row)
+                if (not self.available_lane(track,item.group,row,source)
                     or not any(same(track,t) for t in item.tracks)):
                     raise ValueError('preparing Audio destination changed')
+                if source.kind=='midi':
+                    if not self._prepare_midi(track,source):
+                        if b.now()-job['at']>8:raise ValueError('MIDI routing preparation timeout')
+                        return
+                    job['stage']='midi_ready'
                 stage=job['stage']
                 if stage=='monitor':
                     # New Native tracks must finish their implicit parent setup.
@@ -427,13 +564,13 @@ class AudioInputs:
                     job['stage']=stage='type'
                     if track.current_monitoring_state!=OFF:
                         track.current_monitoring_state=OFF;return
-                if stage=='type':
+                if source.kind=='audio' and stage=='type':
                     job['stage']=stage='channel'
                     if not source_route(track.input_routing_type,source):
                         choices=[r for r in track.available_input_routing_types if source_route(r,source)]
                         if len(choices)!=1:raise ValueError('source route unavailable or ambiguous')
                         track.input_routing_type=choices[0];return
-                if stage=='channel':
+                if source.kind=='audio' and stage=='channel':
                     if not source_route(track.input_routing_type,source):
                         if b.now()-job['at']>8:raise ValueError('source routing confirmation timeout')
                         return
@@ -474,6 +611,7 @@ class AudioInputs:
         if revision is not None and revision!=current:return
         if job is not None and job['revision']!=current:return
         b.allocations.release(group)
+        self.midi.cancel(group)
         self.jobs.pop(group,None);b.reserves.pop(group,None)
         wanted=self.confirmed.get(group,self.desired.get(group,0))
         if intent is not None and intent['revision']==current:
@@ -489,7 +627,7 @@ class AudioInputs:
         if prior is not None:
             restored=BundleReserve(group,prior.parent,prior.row,self.revisions.get(group,0),prior.members)
             try:
-                if self.validate(restored,group,prior.row):
+                if self.validate(restored,group,prior.row,require_lease=False):
                     b.reserves[group]=restored
                     # The old ready destination remains usable immediately.
                     b.failures.pop(group,None)

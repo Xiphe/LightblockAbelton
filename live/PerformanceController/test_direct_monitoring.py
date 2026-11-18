@@ -90,6 +90,75 @@ class MonitoringChecks(unittest.TestCase):
         self.monitor = DirectMonitoring(self.backend)
         self.tracks = [Track(str(i), self.trace) for i in range(10)]
 
+    def test_mixed_current_following_and_idle_reserves_never_forward_live_midi(self):
+        current = take(0, *self.tracks[:2])
+        current.source = NS(kind='audio')
+        current.members[0].source = NS(kind='midi')
+        self.monitor.claim_take(current)
+        for track in self.tracks[:2]:
+            track.play(recording=True)
+        self.backend.recording.take = current
+        following = take(0, *self.tracks[2:4], state='queued')
+        following.source = NS(kind='audio')
+        following.members[0].source = NS(kind='midi')
+        self.monitor.claim_take(following)
+        current.following, current.state = following, 'finish_queued'
+        self.monitor.tick()
+        self.assertTrue(all(track.arm for track in self.tracks[:4]))
+        self.assertEqual([track.current_monitoring_state for track in self.tracks[:4]],
+                         [AUTO, OFF, AUTO, OFF])
+        self.assertFalse(any(name in ('1', '3') and field == 'monitor' and value == AUTO
+                             for name, field, value in self.trace))
+        # After a canceled replacement, the retained idle reserve is still an
+        # armed MIDI capture, without relying on the current owner's audible flag.
+        for track in self.tracks[:2]:
+            track.clip_slots[0].clip.is_recording = False
+        following.state = 'canceling'
+        self.backend.recording.take = following
+        spare = reserve(0, self.tracks[4])
+        spare.members[0].source = NS(kind='midi')
+        self.backend.reserves[0] = spare
+        self.monitor.tick()
+        self.assertTrue(self.tracks[4].arm)
+        self.assertEqual(self.tracks[4].current_monitoring_state, OFF)
+        self.assertFalse(any(track.arm for track in self.tracks[:4]))
+        self.assertTrue(all(track.clip_slots[0].clip.is_playing for track in self.tracks[:2]))
+
+    def test_midi_owner_change_preserves_capture_and_disarms_retired_reserve(self):
+        current = take(0, self.tracks[0])
+        current.source = NS(kind='midi')
+        self.monitor.claim_take(current)
+        self.tracks[0].play(recording=True)
+        self.backend.recording.take = current
+        other = reserve(1, self.tracks[1])
+        other.members[0].source = NS(kind='midi')
+        self.backend.reserves[1] = other
+        self.backend.audio_inputs.monitor_owner = 1
+        self.monitor.tick()
+        self.assertTrue(self.tracks[0].arm and self.tracks[1].arm)
+        self.assertTrue(self.tracks[0].clip_slots[0].clip.is_recording)
+        self.assertEqual(self.tracks[0].current_monitoring_state, OFF)
+        self.assertEqual(self.tracks[1].current_monitoring_state, OFF)
+        self.backend.reserves.clear()
+        self.monitor.tick()
+        self.assertFalse(self.tracks[1].arm)
+        self.assertTrue(self.tracks[0].arm)
+
+    def test_saved_off_midi_capture_recovers_arm_cleanup_without_monitor_enable(self):
+        track = self.tracks[0]
+        track.arm = True
+        self.trace.clear()
+        self.assertTrue(self.monitor.recover_saved(track, 0))
+        spare = reserve(0, track)
+        spare.members[0].source = NS(kind='midi')
+        self.backend.reserves[0] = spare
+        self.monitor.tick()
+        self.assertEqual(self.trace, [])
+        self.assertTrue(self.monitor.owned(track))
+        self.monitor.close()
+        self.assertFalse(track.arm)
+        self.assertEqual(track.current_monitoring_state, OFF)
+
     def test_only_idle_owner_reserve_is_armed(self):
         self.backend.reserves = {0: reserve(0, *self.tracks[:2]), 1: reserve(1, *self.tracks[2:4])}
         self.monitor.tick()

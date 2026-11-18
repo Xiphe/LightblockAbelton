@@ -1,7 +1,7 @@
-"""One logical Audio take over preallocated, individually owned destinations.
+"""One logical Audio/MIDI take over preallocated, individually owned destinations.
 
 Native launch requests are consecutive, never atomic. Partial/uncertain launch
-is contained without replay, and only the new transaction's owned audio may be
+is contained without replay, and only the new transaction's owned clips may be
 deleted. The previous handoff take is always preserved.
 """
 from .recording_core import Take, EPSILON, LEAD, FIRE_LEAD

@@ -299,7 +299,7 @@ static void failed_sdk_feedback_is_retained_without_native_replay() {
 }
 static void patch_intents_keep_latest_and_precede_recording() {
     Reconciler r;ready(r);
-    assert(valid(intent(0,48,127)));assert(!valid(intent(0,48,128)));
+    assert(valid(intent(0,48,8191)));assert(!valid(intent(0,48,8192)));
     assert(valid(intent(0,57,7)));assert(!valid(intent(0,57,8)));
     assert(r.intent(intent(0,48,1),2));auto initial=r.takeDispatch(3);assert(initial&&initial->key==48);
     assert(r.intent(intent(1,48,3),4));assert(r.intent(intent(2,48,2),5));
@@ -342,34 +342,34 @@ static void seven_source_metadata_and_patch_only_names() {
     for(int source=0;source<7;++source)
         r.receiveObservation({1,sequence++,6,uint32_t(24+source),uint32_t(0x200000+source)},2);
     r.receiveObservation({1,sequence++,1,57,8},2);
-    r.receiveObservation({1,sequence++,6,8,127u|(65u<<7)|(1u<<14)},2);
+    r.receiveObservation({1,sequence++,6,8,65u|(1u<<25)},2);
     for(int chunk=0;chunk<56;++chunk)
-        r.receiveObservation({1,sequence++,6,uint32_t(40+chunk),uint32_t(1000+chunk)},2);
+        r.receiveObservation({1,sequence++,6,uint32_t(64+chunk),uint32_t(1000+chunk)},2);
     auto main=drain(r,3);
     assert(main.size()==9);assert(!r.pending());
     int colors=0;bool owner=false,readiness=false;
     for(auto f:main) {
-        assert(f.kind!=6 || f.a<40 || f.a>=96);
+        assert(f.kind!=6 || f.a<64 || f.a>=264);
         if(f.kind==6&&f.a>=24&&f.a<31) {++colors;assert(f.b==0x200000+f.a-24);}
         owner|=f.kind==1&&f.a==57&&f.b==8;
-        readiness|=f.kind==6&&f.a==8&&f.b==(127u|(65u<<7)|(1u<<14));
+        readiness|=f.kind==6&&f.a==8&&f.b==(65u|(1u<<25));
     }
     assert(colors==7&&owner&&readiness);
     // Coalesce while the modal is closed. New labels must neither keep main
     // busy nor obscure performance feedback, and deliver the latest word only.
-    r.receiveObservation({1,sequence++,6,95,99999},4);
+    r.receiveObservation({1,sequence++,6,119,99999},4);
     assert(drain(r,4).empty());assert(!r.pending());
     auto names=drain(r,5,true);assert(names.size()==56);
-    for(auto f:names) {assert(f.kind==6&&f.a>=40&&f.a<96);assert(f.b==(f.a==95?99999u:1000u+f.a-40));}
+    for(auto f:names) {assert(f.kind==6&&f.a>=64&&f.a<120);assert(f.b==(f.a==119?99999u:1000u+f.a-64));}
     assert(drain(r,6,true).empty());
     r.reseed(7);auto reopened=drain(r,7,true);
-    int count=0;for(auto f:reopened) if(f.kind==6&&f.a>=40&&f.a<96) ++count;
+    int count=0;for(auto f:reopened) if(f.kind==6&&f.a>=64&&f.a<120) ++count;
     assert(count==56);
     // A failed SDK label send is retained, but remains patch-only on retry.
     r.reseed(8);auto next=drain(r,8,true);Feedback name;
-    for(auto f:next) if(f.kind==6&&f.a==95) name=f;
+    for(auto f:next) if(f.kind==6&&f.a==119) name=f;
     assert(r.feedbackFailed(name));assert(drain(r,9).empty());
-    auto retry=drain(r,9,true);assert(retry.size()==1&&retry[0].a==95&&retry[0].b==99999);
+    auto retry=drain(r,9,true);assert(retry.size()==1&&retry[0].a==119&&retry[0].b==99999);
 }
 
 static void allocation_busy_admission_and_drain() {
@@ -470,7 +470,103 @@ static void allocation_busy_bundle_heartbeats_preserve_one_grant() {
     assert(!r.allocationRequested()&&!r.allocationAdmissionClosed(last+10004));
 }
 
+
+static void mixed_patch_banks_coalesce_without_erasing_each_other() {
+    assert(valid(intent(0,48,8191)));assert(!valid(intent(0,48,8192)));
+    assert(valid(intent(0,116,4095)));assert(!valid(intent(0,116,4096)));
+    Reconciler r;ready(r);
+    r.receiveObservation({1,0,1,48,3u|(5u<<13)},2);
+    assert(r.confirmed(48)==3&&r.confirmed(116)==5);
+    assert(r.intent(intent(0,48,7),3));auto low=r.takeDispatch(4);assert(low&&low->key==48);
+    assert(r.intent(intent(1,116,9),5));assert(r.intent(intent(2,48,11),6));
+    assert(r.intent(intent(3,116,13),7));assert(r.intent(intent(4,64,10),8));
+    r.receiveAck(ack(*low,7),9);
+    auto nextLow=r.takeDispatch(10);assert(nextLow&&nextLow->key==48&&nextLow->value==11);
+    r.receiveAck(ack(*low,7),11);assert(r.inflightSeq()==nextLow->seq);
+    r.receiveAck(ack(*nextLow,11),12);
+    auto high=r.takeDispatch(13);assert(high&&high->key==116&&high->value==13);
+    r.receiveAck(ack(*high,13),14);
+    auto begin=r.takeDispatch(15);assert(begin&&begin->key==64);
+    assert(r.desired(48)==11&&r.desired(116)==13&&r.confirmed(48)==11&&r.confirmed(116)==13);
+    bool full=false,latestLow=false,latestHigh=false;
+    for(auto f:drain(r,16)) {
+        assert(!(f.kind==1&&f.a>=116&&f.a<=123));
+        full|=f.kind==1&&f.a==48&&f.b==(11u|(13u<<13));
+        latestLow|=f.kind==2&&f.a==uint32_t(48|(2<<7))&&f.b==11;
+        latestHigh|=f.kind==2&&f.a==uint32_t(116|(3<<7))&&f.b==13;
+        assert(!(f.kind==2&&f.a==48)); // superseded low ACK does not release a new retap
+    }
+    assert(full&&latestLow&&latestHigh);
+    r.receiveAck(ack(*begin,0),17);
+    assert(!r.pending());
+}
+
+static void mixed_patch_bank_rejection_and_native_reconciliation() {
+    Reconciler r;ready(r);r.receiveObservation({1,0,1,48,0x1ffffffu},2);drain(r,2);
+    assert(r.confirmed(48)==8191&&r.confirmed(116)==4095);
+    assert(r.intent(intent(0,48,0),3));assert(r.intent(intent(1,116,0),4));
+    auto low=r.takeDispatch(5);assert(low&&low->key==48);r.receiveAck(ack(*low,0),6);
+    bool retainedHigh=false;
+    for(auto f:drain(r,6)) retainedHigh|=f.kind==1&&f.a==48&&f.b==(4095u<<13);
+    assert(retainedHigh);
+    auto oldHigh=r.takeDispatch(7);assert(oldHigh&&oldHigh->key==116);
+    assert(r.intent(intent(2,116,2),8));assert(r.intent(intent(3,48,5),9));
+    r.receiveAck(ack(*oldHigh,0),10);
+    auto nextLow=r.takeDispatch(11);assert(nextLow&&nextLow->key==48&&nextLow->value==5);
+    r.receiveAck(ack(*nextLow,5),12);
+    auto nextHigh=r.takeDispatch(13);assert(nextHigh&&nextHigh->key==116&&nextHigh->value==2);
+    r.receiveAck(ack(*nextHigh,rejected),14);
+    bool full=false,rejectedHigh=false;
+    for(auto f:drain(r,15)) {
+        full|=f.kind==1&&f.a==48&&f.b==5;
+        rejectedHigh|=f.kind==2&&f.a==uint32_t(116|(2<<7))&&f.b==uint32_t(rejected);
+        assert(!(f.kind==2&&f.a==uint32_t(116|(1<<7))));
+    }
+    assert(full&&rejectedHigh&&r.confirmed(48)==5&&r.confirmed(116)==0);
+    r.receiveObservation({1,1,1,48,5u|(4u<<13)},16); // manual Native change remains authoritative
+    r.receiveAck(ack(*oldHigh,0),17);
+    auto actual=drain(r,18);assert(actual.size()==1&&actual[0].b==(5u|(4u<<13)));
+    assert(r.confirmed(48)==5&&r.confirmed(116)==4&&!r.pending());
+}
+
+static void mixed_catalog_metadata_labels_and_clock_priority() {
+    Reconciler r;ready(r);int revision=0;
+    const uint32_t midiOwned=0x123456u|(1u<<21)|(1u<<22)|(7u<<23)|(1u<<26);
+    for(int source=0;source<25;++source)
+        r.receiveObservation({1,(revision++)&127,6,uint32_t(24+source),source==24?midiOwned:uint32_t(source)},2);
+    for(int chunk=0;chunk<200;++chunk)
+        r.receiveObservation({1,(revision++)&127,6,uint32_t(64+chunk),uint32_t(2000+chunk)},2);
+    r.receiveObservation({1,(revision++)&127,6,8,0x1ffffffu|(1u<<25)|(1u<<26)},3);
+    r.receiveObservation({1,(revision++)&127,1,57,8},3);
+    r.receiveObservation({1,(revision++)&127,1,48,1u<<24},3);
+    auto ordinary=drain(r,3);assert(ordinary.size()==28);
+    bool owner=false,prepared=false,fullAssignment=false;
+    for(auto f:ordinary) {
+        assert(!(f.kind==6&&f.a>=64&&f.a<264));
+        owner|=f.kind==6&&f.a==48&&f.b==midiOwned;
+        prepared|=f.kind==6&&f.a==8&&f.b==0x7ffffffu;
+        fullAssignment|=f.kind==1&&f.a==48&&f.b==(1u<<24);
+    }
+    assert(owner&&prepared&&fullAssignment&&!r.pending());
+    auto firstName=r.takeFeedback(4,true);assert(firstName&&firstName->kind==6&&firstName->a>=64);
+    r.receiveObservation({1,(revision++)&127,4,uint32_t(8|(1024<<4)),111},5);
+    auto clock=r.takeFeedback(5,true);assert(clock&&clock->kind==4&&clock->b==111);
+    r.receiveObservation({1,(revision++)&127,6,3,123},6);
+    auto busy=r.takeFeedback(6,true);assert(busy&&busy->kind==6&&busy->a==3&&busy->b==123);
+    assert(r.intent(intent(0,123,4095),7));assert(r.intent(intent(1,58,123),8));
+    auto high=r.takeDispatch(9);assert(high&&high->key==123);r.receiveAck(ack(*high,4095),10);
+    auto grant=r.takeDispatch(11);assert(grant&&grant->key==58);
+    r.receiveAck(ack(*grant,123),12);assert(!r.intent(intent(2,123,4095),13));
+    r.receiveObservation({1,(revision++)&127,6,3,0},14);drain(r,14);
+    auto names=drain(r,15,true);assert(names.size()==199);
+    r.reseed(16);auto seed=r.takeFeedback(16,true);assert(seed&&seed->kind==0);
+    auto retained=drain(r,16,true);int count=0;
+    for(auto f:retained) if(f.kind==6&&f.a>=64&&f.a<264) ++count;
+    assert(count==200);
+}
+
 int main() {
+    mixed_patch_banks_coalesce_without_erasing_each_other();mixed_patch_bank_rejection_and_native_reconciliation();mixed_catalog_metadata_labels_and_clock_priority();
     allocation_busy_bundle_heartbeats_preserve_one_grant();
     allocation_busy_admission_and_drain();allocation_busy_capacity_reseed_and_stale_receipts();allocation_busy_lease_is_bounded_and_fail_closed();
     parsers();seven_source_metadata_and_patch_only_names();superseding_parameters();discrete_order_and_deduplication();bounded_overflow();patch_intents_keep_latest_and_precede_recording();

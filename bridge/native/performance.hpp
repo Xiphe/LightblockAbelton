@@ -17,11 +17,13 @@ struct Feedback {
     int header() const { return 0xf2 | (kind<<8) | (epoch<<11) | (revision<<18); }
 };
 inline bool byte(int n) { return n>=0 && n<128; }
-inline bool parameter(int key) { return (key>=0 && key<56) || key==57 || key==114 || key==115; }
+inline int patchGroup(int key) { return key>=48&&key<56?key-48:key>=116&&key<124?key-116:-1; }
+inline bool parameter(int key) { return (key>=0 && key<56) || key==57 || key==114 || key==115 || (key>=116&&key<124); }
+inline bool sourceName(int kind,uint32_t a) { return kind==6&&a>=64&&a<264; }
 inline bool valid(Intent v) {
     if(!byte(v.seq)||!byte(v.key)||v.value<0||v.value>16383) return false;
     if(v.key<48) return v.value<=127;
-    if(v.key<56) return v.value<=127;
+    if(v.key<56) return v.value<=8191;
     if(v.key==56) return v.value>0 && v.value<=255;
     if(v.key==57) return v.value<8;
     if(v.key==58) return v.value>0 && v.value<rejected;
@@ -33,6 +35,7 @@ inline bool valid(Intent v) {
     if(v.key==113) return v.value==0 || v.value==127;
     if(v.key==114) return v.value>=1 && v.value<=99;
     if(v.key==115) return v.value==1||v.value==2||v.value==4||v.value==8||v.value==16;
+    if(v.key>=116 && v.key<124) return v.value<=4095;
     return false;
 }
 struct IntentFrame {
@@ -95,7 +98,8 @@ class Reconciler {
     struct Fact { bool known=false,dirty=false; int kind=0; uint32_t a=0,b=0; };
     struct Seen { bool known=false; Intent intent; bool completed=false; int actual=0; };
     std::array<Parameter,128> parameters{};
-    std::array<Fact,159> facts{};
+    static constexpr size_t allocationFact=320;
+    std::array<Fact,321> facts{};
     // Availability is a presentation gate, separate from confirmed Native
     // group state. A fresh program receives all6 field facts before it can act.
     std::array<uint8_t,8> initializedFields{};
@@ -132,17 +136,17 @@ class Reconciler {
         if(kind==1) {
             if(a<48) return int(a);
             if(a<56) return 78+int(a)-48;
-            if(a==57) return 101;
+            if(a==57) return 119;
             if(a==114||a==115) return int(a)-66;
         }
         if(kind==3 && a<8) return 50+int(a);
         if(kind==4 && (a&15)<=8 && (a>>4)<(1u<<21)) return 58+int(a&15);
         if(kind==5 && a<(1u<<26) && ((a>>10)&7)<=5) return 67+int(a&7);
         if(kind==6 && a<=2) return 75+int(a);
-        if(kind==6 && a==3) return 158;
+        if(kind==6 && a==3) return int(allocationFact);
         if(kind==6 && a>=8 && a<16) return 86+int(a)-8;
-        if(kind==6 && a>=24 && a<31) return 94+int(a)-24;
-        if(kind==6 && a>=40 && a<96) return 102+int(a)-40;
+        if(kind==6 && a>=24 && a<49) return 94+int(a)-24;
+        if(sourceName(kind,a)) return 120+int(a)-64;
         return -1;
     }
     bool setFact(int kind,uint32_t a,uint32_t b,bool force=false) {
@@ -171,7 +175,13 @@ class Reconciler {
                 p.confirmed=actual;p.known=true;
                 // An old fact can update confirmed state but cannot become
                 // acknowledgement of a superseding local intent.
-                setFact(1,uint32_t(wire.key),uint32_t(actual));
+                const int group=patchGroup(wire.key);
+                if(group>=0) {
+                    const auto& full=facts[size_t(78+group)];
+                    const int shift=wire.key>=116?13:0;
+                    const uint32_t mask=(wire.key>=116?4095u:8191u)<<shift;
+                    setFact(1,uint32_t(48+group),((full.known?full.b:0u)&~mask)|(uint32_t(actual)<<shift));
+                } else setFact(1,uint32_t(wire.key),uint32_t(actual));
             }
             if(p.serial==wire.serial) parameterReplies[size_t(wire.key)]=reply(device,actual);
         } else terminal(reply(device,actual));
@@ -263,7 +273,7 @@ public:
         // after receiving the fresh seed. Discrete intent is never replayed.
         for(auto& p:parameters) p.dirty=false;
         flight.reset();allocationGrant.reset();allocationTicket=0;allocationGate=false;allocationAt=0;
-        facts[158]={};
+        facts[allocationFact]={};
         commandHead=commandCount=terminalHead=terminalCount=0;
         parameterReplies={};overflowReply.reset();retryTerminal.reset();issuedFeedback.reset();seen={};quarantined={};
         epoch=generation;liveReady=false;lastLiveAt=at;
@@ -342,7 +352,7 @@ public:
         if(!liveReady || value.generation!=epoch || value.seq<0||value.seq>127
            || factIndex(value.kind,value.a)<0 || value.b>0xfffffff
            || (value.kind==6 && value.a==3 && value.b>=uint32_t(rejected))
-           || (value.kind==1 && !(value.a<48?value.b<=128:value.a==57?value.b<=8:
+           || (value.kind==1 && !(value.a<48?value.b<=128:value.a<56?value.b<=0x1ffffffu:value.a==57?value.b<=8:
                 parameter(int(value.a))&&valid(Intent{0,int(value.a),int(value.b)})))) {
             ++ignoredReplies;return;
         }
@@ -358,7 +368,13 @@ public:
                 allocationAt=at;
             }
         }
-        if(value.kind==1) { auto& p=parameters[size_t(value.a)];p.confirmed=int(value.b);p.known=true; }
+        if(value.kind==1) {
+            auto& p=parameters[size_t(value.a)];p.confirmed=int(value.b);p.known=true;
+            if(value.a>=48&&value.a<56) {
+                p.confirmed=int(value.b&8191u);
+                auto& high=parameters[size_t(116+value.a-48)];high.confirmed=int(value.b>>13);high.known=true;
+            }
+        }
         setFact(value.kind,value.a,value.b);
     }
     std::optional<Dispatch> takeDispatch(double at=0) {
@@ -373,7 +389,9 @@ public:
             if(key>=64 && key<=103) {
                 const int patchKey=48+(key-64)/5;
                 auto& patch=parameters[size_t(patchKey)];
-                if(patch.dirty) {key=patchKey;deviceSeq=patch.deviceSeq;value=patch.desired;serial=patch.serial;received=patch.received;}
+                const int prerequisite=patch.dirty?patchKey:116+(key-64)/5;
+                auto& bank=parameters[size_t(prerequisite)];
+                if(bank.dirty) {key=prerequisite;deviceSeq=bank.deviceSeq;value=bank.desired;serial=bank.serial;received=bank.received;}
             }
         } else {
             for(int n=0;n<128;++n) {
@@ -425,7 +443,7 @@ public:
         if(seedPending) { seedPending=false;return stamp(Feedback{0,uint32_t(lastDeviceSeq<0?127:lastDeviceSeq),0,epoch,0}); }
         // A known busy request/clear must reach the current program before
         // ordinary model traffic. Its receipt is separate from this send.
-        auto& allocation=facts[158];
+        auto& allocation=facts[allocationFact];
         if(allocation.dirty) { allocation.dirty=false;return stamp(Feedback{6,3,allocation.b,epoch,0}); }
         if(retryTerminal) {auto value=*retryTerminal;retryTerminal.reset();return stamp(value);}
         if(terminalCount) {auto value=terminals[size_t(terminalHead)];terminalHead=(terminalHead+1)%64;--terminalCount;return stamp(value);}
@@ -434,11 +452,15 @@ public:
             int index=(replyCursor+n)%128;
             if(parameterReplies[size_t(index)]) {auto value=*parameterReplies[size_t(index)];parameterReplies[size_t(index)].reset();replyCursor=(index+1)%128;return stamp(value);}
         }
-        for(size_t n=0;n<facts.size();++n) {
-            auto index=(size_t(factCursor)+n)%facts.size();auto& f=facts[index];
-            // Source labels stay cached while main/metronome are active. They
-            // are sent only to the patch client and do not block other facts.
-            if(f.dirty && (patchNames || f.kind!=6 || f.a<40 || f.a>=96)) {f.dirty=false;factCursor=int((index+1)%facts.size());return stamp(Feedback{f.kind,f.a,f.b,epoch,0});}
+        // Musical facts always precede bulk labels, including while the patch
+        // view is open. Label cache size cannot turn clocks into a name FIFO.
+        for(int names=0;names<=(patchNames?1:0);++names) {
+            for(size_t n=0;n<facts.size();++n) {
+                auto index=(size_t(factCursor)+n)%facts.size();auto& f=facts[index];
+                if(f.dirty && sourceName(f.kind,f.a)==bool(names)) {
+                    f.dirty=false;factCursor=int((index+1)%facts.size());return stamp(Feedback{f.kind,f.a,f.b,epoch,0});
+                }
+            }
         }
         return {};
     }

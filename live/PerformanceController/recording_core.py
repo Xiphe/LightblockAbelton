@@ -345,6 +345,11 @@ class LiveRecording:
         clip = take.clip
         if clip is None:
             return
+        source = getattr(take, 'source', None)
+        if source is not None:
+            kind = getattr(source, 'kind', 'audio')
+            if not bool(getattr(clip, 'is_' + kind + '_clip', False)):
+                raise ValueError('recorded clip type differs from its captured source')
         if clip.is_recording:
             if (take.finish_issued and take.finish_target is not None
                     and self.song.current_song_time > take.finish_target + (take.bar or 0)
@@ -401,6 +406,24 @@ class LiveRecording:
             return
         if take.normalized:
             raise ValueError('Live did not confirm normalized loop length')
+        if getattr(clip, 'is_midi_clip', False):
+            # MIDI has no sample coverage or warp map. Only our fresh issued
+            # capture, its observed playback anchor and unchanged Native end
+            # marker can authorize trimming its loop to the admitted span.
+            # Never extend beyond the actual recorded MIDI region or alter
+            # note/controller events, including those outside the loop.
+            if (take.adopted or not take.start_issued or not take.finish_issued
+                    or not self._normalizable(take) or not clip.looping
+                    or expected > clip.end_marker + EPSILON):
+                raise ValueError('fresh MIDI recording does not cover requested duration')
+            self._identity(take)
+            if clip.is_recording:
+                raise ValueError('recording resumed before normalization')
+            take.normalized = True
+            clip.loop_end = expected
+            if abs(clip.loop_end-expected) > EPSILON:
+                raise ValueError('Live did not confirm normalized MIDI length')
+            return
         if not clip.is_audio_clip or not clip.warping or not clip.looping or clip.loop_start != 0:
             raise ValueError('fresh recording loop cannot be normalized')
         markers = tuple((point['sample_time'], point['beat_time']) if isinstance(point, dict)

@@ -18,7 +18,7 @@ class Clip:
     def __init__(self, anchor=0., length=8., phase=0., recording=False, playing=True, audio=True):
         self.start_time, self.loop_start, self.loop_end = anchor, 0., length
         self.playing_position, self.is_recording, self.is_playing = phase, recording, playing
-        self.is_audio_clip, self.warping, self.looping = audio, True, True
+        self.is_audio_clip, self.is_midi_clip, self.warping, self.looping = audio, not audio, True, True
         self.sample_rate, self.sample_length = 48000., 48000*120
         self.warp_markers = (NS(sample_time=0., beat_time=0.), NS(sample_time=120., beat_time=240.))
 
@@ -60,7 +60,7 @@ class Slot:
         self.track.fired_slot_index = -1
         self.track.playing_slot_index = self.row
         if kind == 'start':
-            self.clip = Clip(anchor=target, recording=True)
+            self.clip = Clip(anchor=target, recording=True, audio=self.track.has_audio_input)
         else:
             self.clip.loop_end = target-self.clip.start_time
             self.clip.start_time = target
@@ -72,12 +72,14 @@ class Track:
     def __init__(self, song, name, group=None, foldable=False, audio=True):
         self.song, self.name, self.group_track = song, name, group
         self.is_foldable, self.has_audio_input, self.has_midi_input = foldable, audio and not foldable, not audio
+        self.has_audio_output, self.has_midi_output = audio or foldable, not audio
         self.is_frozen, self.arm, self.implicit_arm = False, False, False
         self.mute, self.color = False, 0x31a1c2
         self.playing_slot_index = self.fired_slot_index = -1
         self.clip_slots = [] if foldable else [Slot(self, i) for i in range(len(song.scenes))]
         self.input_routing_type, self.input_routing_channel = 'Factory Input', 'Factory Channel'
         self.output_routing_type, self.current_monitoring_state = 'Factory Output', 'Factory Monitor'
+        self.output_routing_channel = ''
         self.devices = []
         self.mixer_device = NS(volume=Parameter(.75), panning=Parameter(0, -1, 1),
                                sends=[Parameter(.1*i) for i in range(4)])
@@ -154,6 +156,14 @@ class Song:
         if self.misplace_new_track:
             parent = None
         self.tracks.insert(index, Track(self, 'Audio', parent))
+
+    def create_midi_track(self, index):
+        self.calls.append(('create_midi_track', index))
+        if self.create_error:raise RuntimeError('Live refused new MIDI track')
+        parent=self.tracks[index-1] if index else None
+        if parent is not None and not parent.is_foldable:parent=parent.group_track
+        if self.misplace_new_track:parent=None
+        self.tracks.insert(index,Track(self,'MIDI',parent,audio=False))
 
     def advance(self, position, apply=True):
         self.current_song_time = float(position)
@@ -232,5 +242,12 @@ class PerformanceSong(BaseSong):
         track=self.tracks[index]
         parent=track.group_track
         self.routes(track,parent)
+        self.view.selected_track=track
+        for callback in tuple(self.listeners):callback()
+
+    def create_midi_track(self,index):
+        super().create_midi_track(index)
+        track=self.tracks[index]
+        track.current_monitoring_state=2
         self.view.selected_track=track
         for callback in tuple(self.listeners):callback()

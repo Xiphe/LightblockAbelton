@@ -108,6 +108,7 @@ def validate_host(script, configuration, mode):
         return
     modules = ('surface', 'backend', 'health', 'protocol', 'model', 'audio_inputs',
                'bundle_recording', 'audio_patch_state', 'direct_monitoring',
+               'allocation_gate', 'input_contract', 'midi_routing',
                'recording_core', 'recording_coverage', 'launch_admission',
                'selection_restore', 'timing')
     if any(not (script / (name + '.py')).is_file() for name in modules):

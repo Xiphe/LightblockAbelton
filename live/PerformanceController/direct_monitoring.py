@@ -12,6 +12,12 @@ AUTO, OFF = 1, 2
 _NATIVE_ERRORS = NATIVE_ERRORS
 
 
+def input_audible(member, audible):
+    # MIDI instruments provide their own sole live-input path. Arming a
+    # following capture must never turn it into a second MIDI forwarder.
+    return audible and getattr(getattr(member, 'source', None), 'kind', 'audio') != 'midi'
+
+
 class DirectMonitoringError(ValueError):
     """One failed retained bundle; the backend may evict only these groups."""
     def __init__(self, reason, targets):
@@ -210,7 +216,7 @@ class DirectMonitoring:
         audible = take.group == self.backend.audio_inputs.monitor_owner
         items = tuple(item for item in members(take)
                       if not getattr(take, 'adopted', False) or self.owned(item.track))
-        self._claim_targets([(item.track, audible, take.group) for item in items])
+        self._claim_targets([(item.track, input_audible(item, audible), take.group) for item in items])
         for item in items:
             if self.owned(item.track):
                 item.armed_here = True
@@ -218,7 +224,7 @@ class DirectMonitoring:
     def claim_reserve(self, reserve):
         """Allow the accepted, brief overlap at a queued handoff boundary."""
         audible = reserve.group == self.backend.audio_inputs.monitor_owner
-        self._claim_targets([(item.track, audible, reserve.group) for item in reserve.members])
+        self._claim_targets([(item.track, input_audible(item, audible), reserve.group) for item in reserve.members])
 
     def tick(self):
         """Reconcile only retained captures and the owner's idle reserve."""
@@ -235,13 +241,13 @@ class DirectMonitoring:
             for item in members(capture):
                 if getattr(capture, 'adopted', False) and not self.owned(item.track):
                     continue
-                self._add(targets, item.track, capture.group == owner, capture.group)
+                self._add(targets, item.track, input_audible(item, capture.group == owner), capture.group)
         spare = self.backend.reserves.get(owner)
         owner_capture = next((capture for capture in captures if capture.group == owner), None)
         if spare is not None and (owner_capture is None or
                 owner_capture.state == 'finish_queued' and owner_capture.following is None):
             for destination in spare.members:
-                self._add(targets, destination.track, True, spare.group)
+                self._add(targets, destination.track, input_audible(destination, True), spare.group)
         self._claim_targets(targets, complete=True)
         for capture in captures:
             for item in members(capture):

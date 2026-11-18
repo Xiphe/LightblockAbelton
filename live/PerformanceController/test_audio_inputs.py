@@ -642,7 +642,7 @@ class AudioInputChecks(unittest.TestCase):
         reserve=b.reserves[0]
         self.assertEqual(len(reserve.members),7)
         self.assertEqual([m.source.track for m in reserve.members],self.sources)
-        self.assertEqual(b.audio_inputs.routing_fact(0),127|(127<<7))
+        self.assertEqual(b.audio_inputs.routing_fact(0),127)
         self.assertFalse(any(c[0]=='create_track' for c in self.song.calls))
         self.assertFalse(any(track.name.startswith('[Input ') for track in self.song._tracks))
         take=self.start()

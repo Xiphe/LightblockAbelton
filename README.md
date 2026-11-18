@@ -2,7 +2,7 @@
 
 An eight-group Session View loop controller for a ROLI Lightpad. The pad handles gestures and optimistic feedback locally, a macOS bridge reconciles intent with Live, and Live owns the music. USB and Bluetooth use the same bridge.
 
-The Audio controller offers up to seven original Audio sources from `[Inputs]`, separately or together in one take. It reuses prepared Audio tracks, keeps input effects on the source tracks, and controls each group's volume, pan and four assignable parameters. See [validation and limits](VALIDATION.md) for the physical checks and remaining limits.
+The controller offers up to 25 original Audio sources and preconfigured MIDI instruments from `[Inputs]`, separately or together in one take. It reuses prepared recording tracks, keeps effects and instruments on their original source tracks, and controls each group's volume, pan and four assignable parameters. See [validation and limits](VALIDATION.md) for the physical checks and remaining limits.
 
 ## Install
 
@@ -36,7 +36,7 @@ The app contains all four device programs and their includes. Installed runtime 
 - Hold Mode for at least 400 ms to open the metronome. Short-release returns to main; holding from the metronome opens patch.
 - Swipe horizontally on a group to move live monitoring to it. A blue indicator identifies the monitoring group.
 
-Each take captures the current leftmost playing loop as its timing reference. Layers may have different lengths and end manually. Each selected source creates its own Audio clip, controlled together as one take. Existing clips retain their source names and colors when a track is reused in another phrase.
+Each take captures the current leftmost playing loop as its timing reference. Layers may have different lengths and end manually. Each selected source creates its own Audio or MIDI clip, controlled together as one take. A MIDI instrument belongs to one group at a time; its existing instance plays the recorded MIDI layers, with audio returning through that group. Existing clips retain their source names and colors when a track is reused in another phrase.
 
 Prepared lanes avoid Audio-track insertion during ordinary recording. When they run out, the accepted overflow policy creates another track, which can cause a dropout in a heavily loaded Set. Increase prepared capacity before a performance when needed.
 
@@ -45,7 +45,7 @@ Idle uses the touchable tunnel and slideshow. Connection faults show a white Abl
 ## Repository
 
 ```text
-live/PerformanceController/  Audio Live adapter, preparation and host tests
+live/PerformanceController/  Audio/MIDI Live adapter, preparation and host tests
 bridge/                      macOS helper, packaging, installation and tests
 lightpad/                    Device programs, UX contract and bytecode tests
 templates/                   Legacy portable starter Set

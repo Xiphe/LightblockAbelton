@@ -108,13 +108,13 @@ An unfilled fader means its Live parameter is exactly at minimum. Any positive v
 
 The four white controls may target sends or group-device parameters. Defaults follow the first four sends. Explicit configured assignments retain target identity and disable only the affected control if its target moves or disappears. Assignments are configured in the [Live script](../live/README.md#local-configuration); there is no assignment screen.
 
-## Audio patch selector
+## Patch selector
 
-The Audio selector offers up to seven original Audio tracks in the order they appear inside `[Inputs]`, flattening organizational subgroups. Their physical inputs follow each source track's Live configuration. The upper four rows show eight compact three-by-two group tiles in two rows, with column gaps. Row4 is the separator. Inputs use three-by-two tiles below it, in the established five-column layout. The remaining input area stays empty; MIDI selection is a later step.
+The selector offers up to 25 Audio sources and preconfigured MIDI instruments in the order they appear inside `[Inputs]`, flattening organizational subgroups. Physical inputs follow each original source's Live configuration. The upper four rows show eight compact three-by-two group tiles in two rows, with column gaps. Row4 is the separator. Below it, 25 three-by-two input tiles fill a five-column, five-row grid without pagination. Unused slots remain empty.
 
 Hold a group and touch its input tiles to toggle assignments. There is no persistent group selection after release. The inverse order also works: hold one or more sources, then touch a group to toggle them together. Moving a contact does not repeatedly toggle assignments. With no group held, holding a source scrolls its name locally across the dimmed group area; group hit targets remain available beneath the name. Multiple different held groups provide no assignment context.
 
-Multiple Audio sources may be assigned to the same group and recorded in one take. Assignments apply to subsequent takes; accepted clips and their source identity remain unchanged. Audio sources can be assigned to multiple groups. The latest assignment selects the monitoring group, and the overview's horizontal gesture can change it later.
+Multiple Audio and MIDI sources may be assigned to one group and recorded together as a single take. Assignments apply to subsequent takes; accepted clips and their source identity remain unchanged. Audio sources can be assigned to multiple groups. A MIDI instrument already owned by another group cannot be added; a selected unavailable source can still be removed. Clear releases its MIDI ownership without deleting accepted clips. The latest assignment selects the monitoring group, and the overview's horizontal gesture can change it later.
 
 An assignment reacts locally immediately. Its input tile's upper row shows the desired state; the lower row pulses between prepared and desired states until routing preparation completes. The group also pulses while work remains. Contacts ending do not cancel already admitted changes. Retapping changes the latest desired state rather than growing a queue of toggles. Failure restores actual assignment and flashes briefly. A missing source cannot be added, but can still be removed from a group that already selected it.
 
