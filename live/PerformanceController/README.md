@@ -16,11 +16,17 @@ Each `[Remote]` needs one direct Audio child explicitly marked with `net.xiphe.l
 
 Source routing uses Native `RoutingType.attached_object` to identify the original Track. A recording lane with the same name cannot substitute for the source. Discovery retains actual Native objects and completes unavailable startup routing profiles in background callbacks. Duplicate source UUIDs, missing sources and unsupported routing remain unavailable rather than resolving by an ambiguous label. Restoring a known source's readiness clears only readiness failures, never an uncertain Native mutation.
 
+## Constants mixers
+
+The unique `Constants` / `[Constants]` group contributes its first four direct children in Live order as retained mixer targets 8–11. They stay separate from the eight recording `GroupState` entries, clocks, phrase inventory, patch assignments and preparation. Mute and parameter commands use retained Native objects. One separate bounded Constants observation per slow callback reconciles manual mixer changes without changing the existing loop maintenance cursor. Missing or ambiguous Constants roots blank those four tiles without disabling looping.
+
+The same `PARAMETER_BINDINGS` map uses indices 8–11 for their four white controls. No Constants routing or instrument changes are made.
+
 ## Patch state and monitoring
 
 `audio_patch_state.py` stores source UUIDs on original source tracks, selected UUIDs on R-groups, and one monitoring-owner index on `[Inputs]`, using namespaced, versioned `Track.get_data/set_data` values. Selection survives catalog reordering by identity. Missing selected UUIDs remain unresolved; another source is never silently substituted. New groups start without a selected source.
 
-Keys48–55 replace each group's low 13 source bits;116–123 replace its high 12 bits. Each ACK confirms only that bank, while kind1/48–55 observations carry the full 25-bit desired mask. Kind6/8–15 carries the prepared mask with busy/failed bits25/26; source metadata uses24–48 and name chunks64–263. Key57 selects the monitoring group without changing its source selection. These commands update cached intent only. They perform no graph scan, routing or metadata writes. Retaps replace the desired state, and releasing contacts does not cancel admitted preparation. Changed metadata is coalesced and flushed during maintenance. A preparation failure rolls back only its still-current intent. An older failure cannot overwrite a newer patch or monitoring choice.
+Keys48–55 replace each group's low 13 source bits;116–123 replace its high 12 bits. Each ACK confirms only that bank, while kind1/80–87 observations carry the full 25-bit desired mask. Kind6/8–15 carries the prepared mask with busy/failed bits25/26; source metadata uses24–48 and name chunks64–263. Key57 selects the monitoring group without changing its source selection. These commands update cached intent only. They perform no graph scan, routing or metadata writes. Retaps replace the desired state, and releasing contacts does not cancel admitted preparation. Changed metadata is coalesced and flushed during maintenance. A preparation failure rolls back only its still-current intent. An older failure cannot overwrite a newer patch or monitoring choice.
 
 Native user data is included in an actual Live Set save. Metadata-only changes neither mark a clean Set modified nor add an Undo step, and Cmd+S on that otherwise clean Set does not write them. Actual routing and monitoring changes are normal Live edits and have been checked to trigger saving in the small Native trials. The adapter performs no automatic save or artificial parameter toggle. Save the Set after changing its working setup.
 

@@ -34,7 +34,7 @@ class PreparationBusyTests(unittest.TestCase):
         for group in range(8):
             self.model(vm,3,group,100|70<<7|50<<14|1<<21|1<<22)
             if name=='patch':
-                self.model(vm,1,48+group,1);self.model(vm,6,8+group,1|1<<25)
+                self.model(vm,1,80+group,1);self.model(vm,6,8+group,1|1<<25)
         if name=='patch':
             for source in range(25):self.model(vm,6,24+source,100|70<<7|50<<14|1<<21)
         self.model(vm,6,0,120*128);self.model(vm,6,1,4|4<<7|1<<14|255<<16)

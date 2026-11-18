@@ -313,7 +313,7 @@ class MixedInputChecks(unittest.TestCase):
         self.assertEqual(b.dispatch(48,1<<13),REJECT)
         self.assertEqual(b.dispatch(116,1<<12),REJECT)
         b._global_facts();facts=b.drain_facts(500)
-        self.assertIn((1,48,3),facts)
+        self.assertIn((1,80,3),facts)
         self.assertTrue(any(kind==6 and a==64+24*8 for kind,a,value in facts))
         self.assertFalse(any(kind==1 and 116<=a<=123 for kind,a,value in facts))
 

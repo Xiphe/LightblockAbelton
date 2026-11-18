@@ -98,7 +98,7 @@ def configuration_values(configuration):
     return result
 
 
-def validate_host(script, configuration, mode):
+def validate_host(script, configuration, mode, performance_contract=1):
     if 'verification/experiments/' in configuration:
         raise ValueError('Production configuration must not depend on private experiment paths')
     settings = configuration_values(configuration)
@@ -113,6 +113,10 @@ def validate_host(script, configuration, mode):
                'selection_restore', 'timing')
     if any(not (script / (name + '.py')).is_file() for name in modules):
         raise ValueError('Audio app requires the complete matched PerformanceController script')
+    host_contract = configuration_values((script / 'protocol.py').read_text()).get('PERFORMANCE_CONTRACT', 1)
+    if (type(performance_contract) is not int or performance_contract not in (1, 2)
+            or type(host_contract) is not int or host_contract != performance_contract):
+        raise ValueError('Audio app and Live script require the same performance contract')
     surface = ast.parse((script / 'surface.py').read_text())
     if not any(isinstance(node, ast.ClassDef) and node.name == 'PerformanceController' for node in surface.body):
         raise ValueError('Audio app requires the matched PerformanceController script')
@@ -151,7 +155,9 @@ def stage(app, script, output, app_target, script_target, support, login_target,
     if configuration_path.is_symlink():
         raise ValueError('Symbolic-link configuration files are not supported')
     configuration_text = configuration_path.read_text()
-    validate_host(script, configuration_text, mode)
+    manifest_path = app / 'Contents/Resources/build-info.json'
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+    validate_host(script, configuration_text, mode, manifest.get('performance_contract', 1))
     hashes(app); hashes(script)  # reject symlinks before creating output
     output.mkdir(parents=True)
     copy(app, output / 'Lightpad Bridge.app')
@@ -171,6 +177,8 @@ def stage(app, script, output, app_target, script_target, support, login_target,
     plan = dict(schema=1, controller_mode=mode, entries=entries, support=str(support), login_enabled=login,
                 launch_label=LABEL, source_stage=str(output), saved_default_writes=False,
                 firmware_writes=False, live_preference_writes=False, audio_saves=False)
+    if mode == 'audio-performance':
+        plan['performance_contract'] = manifest.get('performance_contract', 1)
     (output / 'install-plan.json').write_text(json.dumps(plan, indent=2) + '\n')
     return plan
 

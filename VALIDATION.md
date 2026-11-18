@@ -6,14 +6,14 @@ This file describes the accepted Audio/MIDI controller baseline. Detailed interm
 
 | Area | Passing checks | What they establish |
 | --- | ---: | --- |
-| Current Live adapter | 223 | Recording transactions, retained mixer targets, source routing, exclusive MIDI ownership, saved metadata, deletion recovery and bounded preparation |
-| Compiled device clients | 165 | Actual Littlefoot bytecode, gestures, optimistic state, delayed replies, modal controls and memory limits |
-| Joined device/bridge/host paths | 16 | Compiled clients and the actual C++ reconciler against a Python backend with fake Native endpoints |
+| Current Live adapter | 240 | Recording transactions, retained mixer targets, source routing, exclusive MIDI ownership, saved metadata, deletion recovery and bounded preparation |
+| Compiled performance clients | 70 | Actual Littlefoot bytecode, gestures, optimistic state, delayed replies, modal controls and memory limits |
+| Joined device/bridge/host paths | 21 | Compiled clients and the actual C++ reconciler against a Python backend with fake Native endpoints |
 | Native bridge | 7 CTests | Framing, transport policy, semantic reconciliation, modal switching and health handling |
 
 The [Live adapter](live/PerformanceController/README.md), [device](lightpad/PERFORMANCE.md) and [bridge](bridge/README.md#tests) document the test commands. Fake Native objects, clocks and audio endpoints do not measure hardware latency or audible continuity.
 
-Main uses 7,190 of 7,200 bytes. Patch uses 5,084 and metronome 3,558; each is a separate program with its own budget. Main's ten-byte margin is not capacity for an unmeasured feature addition.
+Main uses 7,176 of 7,200 bytes. Patch uses 5,084 and metronome 3,558; each is a separate program with its own budget. Main's 24-byte margin is not capacity for an unmeasured feature addition.
 
 ## Physical acceptance
 
@@ -33,4 +33,4 @@ Temple of Loops is a private, explicitly configured Set. The legacy portable tem
 
 ## Before the first production session
 
-The agreed four Constants mixer targets are still to be added to this baseline. Then prepare the private performance Set and run a cold-start check plus a sustained rehearsal with the actual interface and sources. Physical MPE, audible sustain/CC behavior, the other instrument plug-ins, long-duration streaming, sleep/wake and a full crash/rollback rehearsal are not established by the completed checks.
+The agreed four Constants mixer targets pass compiled and joined checks, including all24 controls, mixed mute chords, delayed acknowledgments and recording/modal regression. The physical Constants trial is pending. Then prepare the private performance Set and run a cold-start check plus a sustained rehearsal with the actual interface and sources. Physical MPE, audible sustain/CC behavior, the other instrument plug-ins, long-duration streaming, sleep/wake and a full crash/rollback rehearsal are not established by the completed checks.

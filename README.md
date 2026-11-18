@@ -1,6 +1,6 @@
 # Lightpad controller for Ableton Live
 
-An eight-group Session View loop controller for a ROLI Lightpad. The pad handles gestures and optimistic feedback locally, a macOS bridge reconciles intent with Live, and Live owns the music. USB and Bluetooth use the same bridge.
+An eight-group Session View loop controller with four additional live-channel mixers for a ROLI Lightpad. The pad handles gestures and optimistic feedback locally, a macOS bridge reconciles intent with Live, and Live owns the music. USB and Bluetooth use the same bridge.
 
 The controller offers up to 25 original Audio sources and preconfigured MIDI instruments from `[Inputs]`, separately or together in one take. It reuses prepared recording tracks, keeps effects and instruments on their original source tracks, and controls each group's volume, pan and four assignable parameters. See [validation and limits](VALIDATION.md) for the physical checks and remaining limits.
 
@@ -32,11 +32,14 @@ The app contains all four device programs and their includes. Installed runtime 
 - In recording: Cancel/Accept are above Retry/Accept-and-next. Accept ends at the next safe bar; Accept-and-next starts its replacement at that same boundary.
 - Turn a down-swipe left or right into an L to stop that group and advance to a free row, preserving clips.
 - Hold a group for volume, four assignable controls and horizontal pan.
+- The four compact Constants tiles below the loop groups control Drums, Voiceover and guests. Tap to mute, combine them with loop groups in a mute chord, or hold for their mixer. They have no recording or patch gestures.
 - Short-release Mode to open patch. Hold a group and tap source tiles to toggle inputs. Short-release Mode again to return.
 - Hold Mode for at least 400 ms to open the metronome. Short-release returns to main; holding from the metronome opens patch.
 - Swipe horizontally on a group to move live monitoring to it. A blue indicator identifies the monitoring group.
 
 Each take captures the current leftmost playing loop as its timing reference. Layers may have different lengths and end manually. Each selected source creates its own Audio or MIDI clip, controlled together as one take. A MIDI instrument belongs to one group at a time; its existing instance plays the recorded MIDI layers, with audio returning through that group. Existing clips retain their source names and colors when a track is reused in another phrase.
+
+Put the four fixed live channels under one `Constants` or `[Constants]` group in Live. Its first four direct children supply the tiles in Live order; their existing input routing stays in Live. Constants use the same mixer bindings as loops, with configuration indices 8 through 11.
 
 Prepared lanes avoid Audio-track insertion during ordinary recording. When they run out, the accepted overflow policy creates another track, which can cause a dropout in a heavily loaded Set. Increase prepared capacity before a performance when needed.
 

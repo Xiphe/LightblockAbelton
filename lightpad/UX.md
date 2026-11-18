@@ -4,7 +4,7 @@ Current controls and display behavior for the 15 by 15 Lightpad. See [setup](../
 
 ## Screens and timing
 
-The device has a 15 by 15 LED grid. Main overview, recording controls and the held group mixer share the main program. The Audio patch selector, full-screen metronome and global connection status are separate programs. The helper keeps the connection and Live's MIDI ports while switching programs.
+The device has a 15 by 15 LED grid. Main overview, recording controls and the held loop/Constants mixers share the main program. The Audio patch selector, full-screen metronome and global connection status are separate programs. The helper keeps the connection and Live's MIDI ports while switching programs.
 
 Short release of the physical Mode button opens the patch selector from main and returns to main from either settings screen. A hold of at least400ms opens the metronome from main or patch, and opens patch from the metronome. Releasing a recognized hold does not trigger another short action. Switching waits for contacts to lift and is unavailable during recording. Mode is inactive on global status. Neither settings screen needs an on-screen Close button.
 
@@ -24,6 +24,8 @@ The eight perimeter pixels show clockwise loop progress. Completed segments rema
 | Empty, muted | The same extremely faint progress | Off |
 
 An unassigned tile is blank. Stale/unavailable feedback retains the established X. Group-specific action failures use a brief local flash, preserve the current workflow and send no automatic Mac notification. Recording and queued-recording states use the recording view rather than another overview tile state.
+
+Four Constants occupy columns 0–2, 4–6, 8–10 and 12–14 on zero-based rows 8–9, the ninth and tenth physical rows. Their Live colors are bright when unmuted and dimmed when muted, without loop progress. The first four direct children of the unique `Constants` or `[Constants]` group supply these mixer-only targets in Live order. Constants join the same local mute batch as loop groups, with white pending dots on row 10. Down/L and monitoring gestures do not act on Constants. Their source routing is configured in Live.
 
 The bottom row is a visual metronome only. A white dot swings without a trail, moving to the opposite side on each denominator beat. Thus 6/8 has six swings per bar. It continues with the audible click off; stopped transport shows a dim center dot. Main has no bottom-row tempo tap or editor gesture. Both programs sample clock phase once per repaint to avoid opposite-edge flashes.
 
@@ -103,6 +105,8 @@ The held group's row remains visible. The other group row becomes horizontal pan
 | Assignable 4 | 13 through 14 | White |
 
 Columns 3, 6, 9 and 12 are gaps. Touching a control causes no initial value jump. Faders use relative vertical dragging; pan uses relative horizontal dragging. The holding finger does not adjust a control. There is no audio level meter.
+
+Holding a Constant keeps all four compact tiles visible on rows 8–9. The same five seven-pixel faders move to rows 0–6, with row 7 blank. Horizontal pan occupies rows 12–13 above the visual metronome on row 14; row 11 remains blank. The fader columns, colors, relative movement and no-jump touch start are unchanged. The existing loop-group mixer keeps its original layout. All views and feedback remain local.
 
 An unfilled fader means its Live parameter is exactly at minimum. Any positive value shows fill, with the leading pixel gradually brightening between the resting background and the established full-step brightness. Volume keeps its group color and the four assignable controls remain white.
 

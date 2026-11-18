@@ -194,6 +194,36 @@ class InstallationTests(unittest.TestCase):
         self.assertFalse(audio_target.exists())
         self.assertEqual(install.hashes(self.script_target), legacy_before)
 
+    def test_audio_stage_rejects_mixed_semantic_banks_before_writing(self):
+        audio_target = self.audio_fixture()
+        manifest_path = self.app / 'Contents/Resources/build-info.json'
+        manifest = json.loads(manifest_path.read_text())
+        before = [install.hashes(p) for p in (self.app_target, self.script_target, self.login)]
+        for app_contract, host_contract in ((1, 2), (2, 1), (3, 3), ('2', 2)):
+            with self.subTest(app=app_contract, host=host_contract):
+                manifest['performance_contract'] = app_contract
+                manifest_path.write_text(json.dumps(manifest))
+                (self.script / 'protocol.py').write_text('PERFORMANCE_CONTRACT = %r\n' % host_contract)
+                with self.assertRaisesRegex(ValueError, 'same performance contract'):
+                    install.stage(self.app, self.script, self.stage, self.app_target,
+                                  audio_target, self.support, self.login,
+                                  configuration=self.private_configuration)
+                self.assertFalse(self.stage.exists())
+                self.assertEqual(before, [install.hashes(p) for p in
+                                         (self.app_target, self.script_target, self.login)])
+
+    def test_audio_stage_records_matching_constants_contract(self):
+        audio_target = self.audio_fixture()
+        manifest_path = self.app / 'Contents/Resources/build-info.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['performance_contract'] = 2
+        manifest_path.write_text(json.dumps(manifest))
+        (self.script / 'protocol.py').write_text('PERFORMANCE_CONTRACT = 2\n')
+        plan = install.stage(self.app, self.script, self.stage, self.app_target,
+                             audio_target, self.support, self.login,
+                             configuration=self.private_configuration)
+        self.assertEqual(plan['performance_contract'], 2)
+
     def test_audio_app_cannot_overwrite_normal_script_folder(self):
         self.audio_fixture()
         with self.assertRaisesRegex(ValueError, 'matching Live script folder'):

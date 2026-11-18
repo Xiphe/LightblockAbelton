@@ -151,7 +151,7 @@ def package(binary, controller, metronome, device, output, notices=(),
                 destination: sha(source_root / destination)
                 for destination in sorted(trees[name]) if destination != entry}
     manifest = dict(
-        baseline=("Optimistic Audio controller with dual-source patching" if audio_performance
+        baseline=("Optimistic Audio/MIDI controller with Constants mixers" if audio_performance
                   else "Live-authoritative controller with global connection status"),
         controller_mode="audio-performance" if audio_performance else "legacy",
         protocol="performance/F2" if audio_performance else "18/A8",
@@ -163,6 +163,8 @@ def package(binary, controller, metronome, device, output, notices=(),
             [p for p in (HERE / "native").iterdir() if p.is_file()]
             + list((HERE / "tests").glob("*_test.cpp")))},
     )
+    if audio_performance:
+        manifest['performance_contract'] = 2
     if build_metadata is not None:
         manifest["build"] = build_metadata
     resources = output / "Contents/Resources"

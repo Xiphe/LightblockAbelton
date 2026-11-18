@@ -16,6 +16,7 @@ class PerformanceController(ControlSurface):
         self._closed=False
         self._generation=None
         self._frame=None
+        self._constant_frame=None
         self._last=None
         self._observation_seq=0
         self._trace_at=0.
@@ -44,6 +45,7 @@ class PerformanceController(ControlSurface):
             previous=self.backend
             self.backend=None;self._bound_path=None
             self._generation=None;self._frame=None;self._last=None
+            self._constant_frame=None
             try:previous.close()
             except Exception as exc:disposal_error=str(exc)
         if self.backend is None:
@@ -56,8 +58,9 @@ class PerformanceController(ControlSurface):
 
     def build_midi_map(self,handle):
         super().build_midi_map(handle)
-        for cc in range(69,75):
-            Live.MidiMap.forward_midi_cc(self._c_instance.handle(),handle,0,cc)
+        for channel in (0,1):
+            for cc in range(69,75):
+                Live.MidiMap.forward_midi_cc(self._c_instance.handle(),handle,channel,cc)
         for cc in (78,79,109):
             Live.MidiMap.forward_midi_cc(self._c_instance.handle(),handle,15,cc)
 
@@ -68,8 +71,8 @@ class PerformanceController(ControlSurface):
         for message in messages:self._send_midi(message,optimized=False)
 
     def _ack(self,seq,key,value):
-        for cc,data in ((69,self._generation),(75,seq),(76,key),(77,value&127),(78,(value>>7)&127),(79,seq)):
-            self._cc(0,cc,data)
+        for cc,data in ((69,self._generation),(75,seq),(76,key&127),(77,value&127),(78,(value>>7)&127),(79,seq)):
+            self._cc(key>>7,cc,data)
 
     def _fact(self,kind,a,b):
         seq=self._observation_seq;self._observation_seq=(seq+1)&127
@@ -91,22 +94,25 @@ class PerformanceController(ControlSurface):
             if not 1<=value<=127 or not self._bind():return
             if cc==78 or self._generation!=value:
                 self._generation=value;self._frame=None;self._last=None;self._observation_seq=0
+                self._constant_frame=None
                 self.backend.reseed()
             self._cc(15,79,value)
             return
-        if status!=0xB0 or self._generation is None:return
+        if status not in (0xB0,0xB1) or self._generation is None:return
+        frame_name='_constant_frame' if status==0xB1 else '_frame'
         if cc==69:
-            self._frame=[value] if value==self._generation else None
+            setattr(self,frame_name,[value] if value==self._generation else None)
             return
-        frame=self._frame
+        frame=getattr(self,frame_name)
         if frame is None:return
         expected=69+len(frame)
         if cc!=expected or not 0<=value<=127:
-            self._frame=None;return
+            setattr(self,frame_name,None);return
         frame.append(value)
         if cc!=74:return
-        self._frame=None
+        setattr(self,frame_name,None)
         generation,seq,key,lo,hi,end=frame
+        if status==0xB1:key|=128
         if seq!=end:return
         command=(generation,seq,key,lo|(hi<<7))
         if not self._target() or self.backend is None or self._bound_path!=str(self.song().file_path):
@@ -153,6 +159,8 @@ class PerformanceController(ControlSurface):
                 display_error=self._display_error,
                 pool_unavailable=dict(backend.pool_unavailable),
                 groups=sorted(backend.state.groups),
+                constants=sorted(backend.state.constants),
+                constants_issues=dict(backend.state.constants_issues),
                 reserves=[dict(group=group,row=reserve.row)
                           for group,reserve in sorted(backend.reserves.items())],
                 tasks=[dict(group=group,stage=task.get('stage'),row=task.get('row'))

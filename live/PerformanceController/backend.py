@@ -21,12 +21,17 @@ from .allocation_gate import AllocationGate, AllocationContext
 from .bundle_recording import BundleRecording
 
 MARKER = re.compile(r'^\[R([1-8])\]')
+CONSTANTS_MARKER = re.compile(r'^\[Constants\](?:\s|$)')
 DENOMINATORS = (1, 2, 4, 8, 16)
 REJECT = 16383
 
 
 def label(value):
     return str(getattr(value, 'display_name', value))
+
+
+def constants_name(name):
+    return name == 'Constants' or bool(CONSTANTS_MARKER.match(name))
 
 
 def normalized(parameter, preserve_positive=True):
@@ -42,6 +47,8 @@ class RetainedState:
     def __init__(self, song, assignments):
         self.song, self.assignments = song, assignments
         self.groups, self.parameters, self.anchors = {}, {}, {}
+        self.constants, self.mixer_targets = {}, {}
+        self.constants_issues = {}
         self.tracks, self.issues = (), {}
         self.topology_dirty = True
         self.bindings = {}
@@ -78,19 +85,31 @@ class RetainedState:
             else:
                 issues[index] = 'rightmost Remote subgroup unavailable'
             groups[index] = GroupState(index, group, musical, (), ())
-            mix = group.mixer_device
-            bound = [mix.volume, mix.panning]
-            targets = self.assignments.get(index, self.assignments.get(str(index), None))
-            targets = [{'kind':'send', 'index':i} for i in range(4)] if targets is None else targets
-            for slot in range(4):
-                try:target = targets[slot]
-                except (IndexError,TypeError):target = None
-                bound.append(self._target(index,slot,group,mix,target))
-            checks = ()
-            parameters[index] = tuple(bound)
-            bindings[index] = tuple(checks)
+            parameters[index] = self._mixer_parameters(index,group)
+            bindings[index] = ()
+        constant_roots = [t for t in tracks if t.is_foldable and constants_name(str(t.name))]
+        constants, constant_issues = {}, {}
+        if len(constant_roots) == 1:
+            root = constant_roots[0]
+            for i,target in enumerate([t for t in tracks if same(getattr(t,'group_track',None),root)][:4]):
+                index = 8+i
+                if any(same(target,item.group) for item in groups.values()):
+                    # A Native target has one role. Keep the explicit R-group
+                    # and its music; leave this Constant slot blank in place.
+                    constant_issues[index] = 'Constant target also marked as remote group'
+                    continue
+                constants[index] = target
+            for index,target in constants.items():
+                parameters[index] = self._mixer_parameters(index,target)
+                bindings[index] = ()
+        elif len(constant_roots) > 1:
+            constant_issues['root'] = 'ambiguous Constants group'
         old_groups=self.groups
         self.tracks, self.groups, self.anchors = tracks, groups, anchors
+        self.constants = constants
+        self.mixer_targets = {index:item.group for index,item in groups.items()}
+        self.mixer_targets.update(constants)
+        self.constants_issues = constant_issues
         for index,item in groups.items():
             old=old_groups.get(index)
             if old is None or len(old.tracks)!=len(item.tracks) or any(not same(a,b) for a,b in zip(old.tracks,item.tracks)):
@@ -101,6 +120,17 @@ class RetainedState:
         for index in tuple(groups):
             self.observe(index)
         return self
+
+    def _mixer_parameters(self,index,target):
+        mix = target.mixer_device
+        bound = [mix.volume,mix.panning]
+        targets = self.assignments.get(index,self.assignments.get(str(index),None))
+        targets = [{'kind':'send','index':i} for i in range(4)] if targets is None else targets
+        for slot in range(4):
+            try:spec = targets[slot]
+            except (IndexError,TypeError):spec = None
+            bound.append(self._target(index,slot,target,mix,spec))
+        return tuple(bound)
 
     def _listen_names(self,tracks):
         for track,callback in self._names:
@@ -113,7 +143,8 @@ class RetainedState:
                 if not live_valid(track):
                     self.topology_dirty=True;return
                 current=str(track.name)
-                if MARKER.match(previous) or MARKER.match(current) or previous=='[Remote]' or current=='[Remote]':
+                if (MARKER.match(previous) or MARKER.match(current) or previous=='[Remote]' or current=='[Remote]'
+                        or constants_name(previous) or constants_name(current)):
                     self.topology_dirty=True
             try:
                 track.add_name_listener(callback);self._names.append((track,callback))
@@ -206,6 +237,10 @@ class RetainedState:
         updated.__dict__['occupied_rows']=self.occupancy.get(index,frozenset())
         self.groups[index] = updated
         # Binding verification belongs to maintenance, never a parameter write.
+        self.observe_mixer(index)
+
+    def observe_mixer(self,index):
+        """Validate retained controls without examining clips or descendants."""
         bound=list(self.parameters.get(index,()))
         if len(bound)==6:
             for control in range(4):
@@ -415,6 +450,7 @@ class Backend:
         self.handoff_alias = None
         self.restoration = None
         self._cursor = 0
+        self._constant_cursor = 0
         self._slow_at = -10.
         self._clock_at = -10.
         self._refclock_at = -10.
@@ -476,18 +512,19 @@ class Backend:
         self._published.clear()
         self.allocations.clear(publish=True)
         self._slow_at = self._clock_at = self._take_at = -10.
-        for group in range(8):
+        for group in range(12):
             self._group_facts(group)
         self._global_facts()
 
     def _group_facts(self, index, parameters=True):
         item = self.state.groups.get(index)
-        if item is None:
+        group = self.state.mixer_targets.get(index)
+        if group is None:
             self._fact(3,index,0)
             return
-        group = item.group; color = int(group.color)
+        color = int(group.color)
         rgb = ((color >> 17) & 127) | (((color >> 9) & 127) << 7) | (((color >> 1) & 127) << 14)
-        populated=bool(item.playing or item.recording)
+        populated=bool(item and (item.playing or item.recording))
         flags = (1 << 21) | (populated << 22) | (bool(group.mute) << 23)
         if parameters:
             for control, parameter in enumerate(self.state.parameters.get(index, ())):
@@ -509,7 +546,7 @@ class Backend:
                    | (available<<16) | ((owner+1 if owner is not None else 0)<<24))
         if self.audio_inputs:
             for group in range(8):
-                self._fact(1,48+group,self.audio_inputs.desired.get(group,0))
+                self._fact(1,p.PATCH_DESIRED_FACT_BASE+group,self.audio_inputs.desired.get(group,0))
                 self._fact(6,8+group,self.audio_inputs.routing_fact(group))
             for index in range(MAX_SOURCES):
                 source=self.audio_inputs.sources.get(index)
@@ -519,7 +556,7 @@ class Backend:
                 source_owner=self.audio_inputs.midi.owner(index) if midi else None
                 self._fact(6,24+index,rgb | (bool(self.audio_inputs.available&(1<<index))<<21)
                            | (midi<<22) | ((source_owner or 0)<<23) | ((source_owner is not None)<<26))
-            self._fact(1,57,owner if owner is not None else 8)
+            self._fact(1,p.MONITOR_OWNER_FACT,owner if owner is not None else 8)
             # Catalog labels are lower-priority than control readiness.
             for index in range(MAX_SOURCES):
                 source=self.audio_inputs.sources.get(index)
@@ -578,7 +615,8 @@ class Backend:
     def _parameter(self, key, value):
         if not 0 <= value <= 127:
             raise ValueError('parameter value out of range')
-        group,control = divmod(key,6)
+        local = key-p.CONSTANT_PARAMETER_BASE+48 if p.CONSTANT_PARAMETER_BASE<=key<p.CONSTANT_PARAMETER_BASE+p.CONSTANT_PARAMETER_COUNT else key
+        group,control = divmod(local,6)
         parameter = self.state.parameters[group][control]
         if parameter is None or not parameter.is_enabled:
             raise ValueError('unbound parameter')
@@ -598,7 +636,7 @@ class Backend:
         try:
             if type(key) is not int or type(value) is not int or not 0 <= value <= 16383:
                 return REJECT
-            if key < 48:
+            if key < 48 or p.CONSTANT_PARAMETER_BASE<=key<p.CONSTANT_PARAMETER_BASE+p.CONSTANT_PARAMETER_COUNT:
                 return self._parameter(key,value)
             if self.audio_inputs and (48<=key<=55 or 116<=key<=123):
                 high=key>=116;group=key-(116 if high else 48)
@@ -616,14 +654,14 @@ class Backend:
             if key==57 and self.audio_inputs and 0<=value<8:
                 result=self.audio_inputs.set_monitor(value);self._global_facts();return result
             if key == 56:
-                if value & ~255:
+                if value & ~4095:
                     return REJECT
-                for group in range(8):
-                    if value & (1<<group):
-                        target = self.state.groups[group].group
-                        target.mute = not target.mute
-                mask = sum(bool(item.group.mute)<<g for g,item in self.state.groups.items())
-                for g in self.state.groups:
+                targets = self.state.mixer_targets
+                selected = [targets[group] for group in range(12) if value & (1<<group)]
+                for target in selected:
+                    target.mute = not target.mute
+                mask = sum(bool(target.mute)<<g for g,target in targets.items())
+                for g in targets:
                     self._group_facts(g,parameters=False)
                 return mask
             if 64 <= key <= 103:
@@ -913,6 +951,13 @@ class Backend:
                 group=priority
             self.state.scan_occupancy(group,64)
             self._maintenance(group)
+            # Constants are mixer-only. Their separate cursor leaves the loop
+            # observation/preparation cadence and priority decisions unchanged.
+            constant = 8+self._constant_cursor
+            self._constant_cursor = (self._constant_cursor+1)%4
+            if constant in self.state.constants:
+                self.state.observe_mixer(constant)
+            self._group_facts(constant)
         if self.monitoring:
             try:self.monitoring.tick()
             except DirectMonitoringError as error:self._monitoring_failed(error)

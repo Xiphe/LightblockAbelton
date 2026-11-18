@@ -262,7 +262,7 @@ class PerformanceMainTests(unittest.TestCase):
         self.touch('Start',1,4,12);self.touch('Move',1,4,8);self.touch('End',1,4,8)
         self.assertEqual(len(self.frames()),before)
         self.assertEqual(self.vm.memory[self.vm.heap_start+2],0)
-        self.assertEqual(self.vm.memory[self.vm.heap_start+48+2],128)
+        self.assertEqual(self.vm.memory[self.vm.heap_start+72+2],128)
     def test_parameter_removed_during_owned_drag_recovers_to_zero_after_rejection(self):
         self.open();self.touch('Start',1,1,12);self.touch('Move',1,1,10);frame=self.frames()[-1]
         self.model(1,0,128);self.assertGreater(self.state('currentValue'),0)

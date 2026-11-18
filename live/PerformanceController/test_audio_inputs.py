@@ -798,7 +798,7 @@ class AudioInputChecks(unittest.TestCase):
         b.reseed()
         facts={(kind,a):value for kind,a,value in b.drain_facts(512)}
         for group in range(2,8):
-            self.assertEqual(facts[1,48+group],0)
+            self.assertEqual(facts[1,80+group],0)
             self.assertEqual(facts[6,8+group],0)
 
     def test_deleted_native_destinations_rebuild_without_replaying_or_touching_other_groups(self):

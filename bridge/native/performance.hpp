@@ -18,13 +18,21 @@ struct Feedback {
 };
 inline bool byte(int n) { return n>=0 && n<128; }
 inline int patchGroup(int key) { return key>=48&&key<56?key-48:key>=116&&key<124?key-116:-1; }
-inline bool parameter(int key) { return (key>=0 && key<56) || key==57 || key==114 || key==115 || (key>=116&&key<124); }
+constexpr int parameterCapacity=152;
+inline bool constantParameter(int key) { return key>=128 && key<152; }
+inline int wireChannel(int key) { return constantParameter(key)?2:1; }
+inline int wireKey(int key) { return key&127; }
+inline int feedbackKey(uint32_t a) { return int(a&127)+int((a>>14)&1)*128; }
+inline int parameterFact(int key) { return constantParameter(key)?key-80:key==57?88:key; }
+inline int factParameter(uint32_t a) { return a<48?int(a):a<72?int(a)+80:a>=80&&a<88?int(a)-32:a==88?57:int(a); }
+inline int mixerFactIndex(int group) { return group<8?50+group:345+group-8; }
+inline bool parameter(int key) { return (key>=0 && key<56) || key==57 || key==114 || key==115 || (key>=116&&key<124) || constantParameter(key); }
 inline bool sourceName(int kind,uint32_t a) { return kind==6&&a>=64&&a<264; }
 inline bool valid(Intent v) {
-    if(!byte(v.seq)||!byte(v.key)||v.value<0||v.value>16383) return false;
-    if(v.key<48) return v.value<=127;
+    if(!byte(v.seq)||v.key<0||v.key>=parameterCapacity||v.value<0||v.value>16383) return false;
+    if(v.key<48 || constantParameter(v.key)) return v.value<=127;
     if(v.key<56) return v.value<=8191;
-    if(v.key==56) return v.value>0 && v.value<=255;
+    if(v.key==56) return v.value>0 && v.value<=4095;
     if(v.key==57) return v.value<8;
     if(v.key==58) return v.value>0 && v.value<rejected;
     if(v.key>=64 && v.key<=103) {
@@ -38,38 +46,45 @@ inline bool valid(Intent v) {
     if(v.key>=116 && v.key<124) return v.value<=4095;
     return false;
 }
+struct BankFrameState { int stage=0,generation=0,seq=0,key=0,value=0; };
 struct IntentFrame {
-    int stage=0,generation=0,seq=0,key=0,value=0;
-    void reset() { stage=0; }
+    std::array<BankFrameState,2> banks{};
+    void reset() { banks={}; }
     std::optional<Intent> push(int channel,int cc,int data) {
-        if(channel!=1) return {};
-        if(!byte(data)) { reset(); return {}; }
-        if(cc==69) { generation=data;stage=data?1:0;return {}; }
-        if(stage==1 && cc==70) { seq=data;stage=2;return {}; }
-        if(stage==2 && cc==71) { key=data;stage=3;return {}; }
-        if(stage==3 && cc==72) { value=data;stage=4;return {}; }
-        if(stage==4 && cc==73) { value|=data<<7;stage=5;return {}; }
-        if(stage==5 && cc==74 && data==seq) {
-            reset(); Intent result{seq,key,value,generation};
+        if(channel<1 || channel>2) return {};
+        auto& f=banks[size_t(channel-1)];
+        if(!byte(data)) { f.stage=0;return {}; }
+        if(cc==69) { f.generation=data;f.stage=data?1:0;return {}; }
+        if(f.stage==1 && cc==70) { f.seq=data;f.stage=2;return {}; }
+        if(f.stage==2 && cc==71) { f.key=data+(channel==2?128:0);f.stage=3;return {}; }
+        if(f.stage==3 && cc==72) { f.value=data;f.stage=4;return {}; }
+        if(f.stage==4 && cc==73) { f.value|=data<<7;f.stage=5;return {}; }
+        if(f.stage==5 && cc==74 && data==f.seq) {
+            f.stage=0;Intent result{f.seq,f.key,f.value,f.generation};
             if(valid(result)) return result;
             return {};
         }
-        reset();return {};
+        f.stage=0;return {};
     }
 };
 struct AckFrame {
-    int stage=0,generation=0,seq=0,key=0,value=0;
-    void reset() { stage=0; }
+    std::array<BankFrameState,2> banks{};
+    void reset() { banks={}; }
     std::optional<Ack> push(int channel,int cc,int data) {
-        if(channel!=1) return {};
-        if(!byte(data)) { reset();return {}; }
-        if(cc==69) { generation=data;stage=data?1:0;return {}; }
-        if(stage==1 && cc==75) { seq=data;stage=2;return {}; }
-        if(stage==2 && cc==76) { key=data;stage=3;return {}; }
-        if(stage==3 && cc==77) { value=data;stage=4;return {}; }
-        if(stage==4 && cc==78) { value|=data<<7;stage=5;return {}; }
-        if(stage==5 && cc==79 && seq==data) { reset();return Ack{generation,seq,key,value}; }
-        reset();return {};
+        if(channel<1 || channel>2) return {};
+        auto& f=banks[size_t(channel-1)];
+        if(!byte(data)) { f.stage=0;return {}; }
+        if(cc==69) { f.generation=data;f.stage=data?1:0;return {}; }
+        if(f.stage==1 && cc==75) { f.seq=data;f.stage=2;return {}; }
+        if(f.stage==2 && cc==76) { f.key=data+(channel==2?128:0);f.stage=3;return {}; }
+        if(f.stage==3 && cc==77) { f.value=data;f.stage=4;return {}; }
+        if(f.stage==4 && cc==78) { f.value|=data<<7;f.stage=5;return {}; }
+        if(f.stage==5 && cc==79 && f.seq==data) {
+            f.stage=0;
+            if(channel==1 || constantParameter(f.key)) return Ack{f.generation,f.seq,f.key,f.value};
+            return {};
+        }
+        f.stage=0;return {};
     }
 };
 struct ObservationFrame {
@@ -97,18 +112,18 @@ class Reconciler {
     struct Flight { Dispatch wire; double at=0; };
     struct Fact { bool known=false,dirty=false; int kind=0; uint32_t a=0,b=0; };
     struct Seen { bool known=false; Intent intent; bool completed=false; int actual=0; };
-    std::array<Parameter,128> parameters{};
+    std::array<Parameter,parameterCapacity> parameters{};
     static constexpr size_t allocationFact=320;
-    std::array<Fact,321> facts{};
+    std::array<Fact,349> facts{};
     // Availability is a presentation gate, separate from confirmed Native
     // group state. A fresh program receives all6 field facts before it can act.
-    std::array<uint8_t,8> initializedFields{};
+    std::array<uint8_t,12> initializedFields{};
     std::array<Seen,128> seen{};
     std::array<Command,16> commands{};
     std::array<Feedback,64> terminals{};
     // Parameter ACKs can supersede earlier ACKs of the same control. Discrete
     // admitted results retain their own reserved terminal slot until sent.
-    std::array<std::optional<Feedback>,128> parameterReplies{};
+    std::array<std::optional<Feedback>,parameterCapacity> parameterReplies{};
     std::optional<Feedback> overflowReply;
     // One extra slot retains the synchronous SDK send currently being retried.
     // Concurrent Native replies cannot consume this reserved transport slot.
@@ -135,11 +150,12 @@ class Reconciler {
     static int factIndex(int kind,uint32_t a) {
         if(kind==1) {
             if(a<48) return int(a);
-            if(a<56) return 78+int(a)-48;
-            if(a==57) return 119;
+            if(a<72) return 321+int(a)-48;
+            if(a>=80 && a<88) return 78+int(a)-80;
+            if(a==88) return 119;
             if(a==114||a==115) return int(a)-66;
         }
-        if(kind==3 && a<8) return 50+int(a);
+        if(kind==3 && a<12) return mixerFactIndex(int(a));
         if(kind==4 && (a&15)<=8 && (a>>4)<(1u<<21)) return 58+int(a&15);
         if(kind==5 && a<(1u<<26) && ((a>>10)&7)<=5) return 67+int(a&7);
         if(kind==6 && a<=2) return 75+int(a);
@@ -159,7 +175,7 @@ class Reconciler {
         return true;
     }
     Feedback reply(Intent v,int actual,int kind=2) const {
-        return Feedback{kind,uint32_t(v.key|(v.seq<<7)),uint32_t(actual),epoch,0};
+        return Feedback{kind,uint32_t(wireKey(v.key)|(v.seq<<7)|(constantParameter(v.key)?1<<14:0)),uint32_t(actual),epoch,0};
     }
     void terminal(Feedback value) {
         if(terminalCount<64) { terminals[size_t((terminalHead+terminalCount)%64)]=value;++terminalCount; }
@@ -180,14 +196,14 @@ class Reconciler {
                     const auto& full=facts[size_t(78+group)];
                     const int shift=wire.key>=116?13:0;
                     const uint32_t mask=(wire.key>=116?4095u:8191u)<<shift;
-                    setFact(1,uint32_t(48+group),((full.known?full.b:0u)&~mask)|(uint32_t(actual)<<shift));
-                } else setFact(1,uint32_t(wire.key),uint32_t(actual));
+                    setFact(1,uint32_t(80+group),((full.known?full.b:0u)&~mask)|(uint32_t(actual)<<shift));
+                } else setFact(1,uint32_t(parameterFact(wire.key)),uint32_t(actual));
             }
             if(p.serial==wire.serial) parameterReplies[size_t(wire.key)]=reply(device,actual);
         } else terminal(reply(device,actual));
         if(actual!=rejected && wire.key==56) {
-            for(int group=0;group<8;++group) {
-                auto& f=facts[size_t(50+group)];
+            for(int group=0;group<12;++group) {
+                auto& f=facts[size_t(mixerFactIndex(group))];
                 if(f.known) setFact(3,f.a,(f.b&~(1u<<23))|(((uint32_t(actual)>>group)&1u)<<23));
             }
         }
@@ -226,22 +242,22 @@ class Reconciler {
         liveReady=false;return {};
     }
     void fieldDelivered(uint32_t key,bool delivered) {
-        if(key>=48) return;
+        if(key>=72) return;
         const size_t group=size_t(key/6);
         const uint8_t bit=uint8_t(1u<<(key%6));
         const uint8_t before=initializedFields[group];
         initializedFields[group]=delivered?uint8_t(before|bit):uint8_t(before&~bit);
-        if((before==63)!=(initializedFields[group]==63) && facts[50+group].known)
-            facts[50+group].dirty=true;
+        if((before==63)!=(initializedFields[group]==63) && facts[size_t(mixerFactIndex(int(group)))].known)
+            facts[size_t(mixerFactIndex(int(group)))].dirty=true;
     }
     Feedback stamp(Feedback value) {
         if(value.kind==1) fieldDelivered(value.a,true);
-        if(value.kind==3 && value.a<8 && initializedFields[size_t(value.a)]!=63)
+        if(value.kind==3 && value.a<12 && initializedFields[size_t(value.a)]!=63)
             value.b&=~(1u<<21);
         modelRevision=(modelRevision+1)&8191;
         value.epoch=epoch;value.revision=modelRevision;
         issuedFeedback=value;
-        const int key=int(value.a&127);
+        const int key=feedbackKey(value.a);
         issuedParameterSerial=value.kind==2&&parameter(key)?parameters[size_t(key)].serial:0;
         return value;
     }
@@ -337,6 +353,7 @@ public:
     void receiveAck(Ack value,double at=0) {
         if(value.generation!=epoch || !flight || value.seq!=flight->wire.seq
            || value.key!=flight->wire.key || value.value<0 || value.value>16383
+           || (value.key==56 && value.value!=rejected && value.value>4095)
            || (value.value!=rejected && parameter(value.key) && !valid(Intent{0,value.key,value.value}))) {
             ++ignoredReplies;return;
         }
@@ -352,8 +369,8 @@ public:
         if(!liveReady || value.generation!=epoch || value.seq<0||value.seq>127
            || factIndex(value.kind,value.a)<0 || value.b>0xfffffff
            || (value.kind==6 && value.a==3 && value.b>=uint32_t(rejected))
-           || (value.kind==1 && !(value.a<48?value.b<=128:value.a<56?value.b<=0x1ffffffu:value.a==57?value.b<=8:
-                parameter(int(value.a))&&valid(Intent{0,int(value.a),int(value.b)})))) {
+           || (value.kind==1 && !(value.a<72?value.b<=128:value.a>=80&&value.a<88?value.b<=0x1ffffffu:value.a==88?value.b<=8:
+                parameter(factParameter(value.a))&&valid(Intent{0,factParameter(value.a),int(value.b)})))) {
             ++ignoredReplies;return;
         }
         int distance=observationRevision<0?1:(value.seq-observationRevision)&127;
@@ -369,10 +386,10 @@ public:
             }
         }
         if(value.kind==1) {
-            auto& p=parameters[size_t(value.a)];p.confirmed=int(value.b);p.known=true;
-            if(value.a>=48&&value.a<56) {
+            auto& p=parameters[size_t(factParameter(value.a))];p.confirmed=int(value.b);p.known=true;
+            if(value.a>=80&&value.a<88) {
                 p.confirmed=int(value.b&8191u);
-                auto& high=parameters[size_t(116+value.a-48)];high.confirmed=int(value.b>>13);high.known=true;
+                auto& high=parameters[size_t(116+value.a-80)];high.confirmed=int(value.b>>13);high.known=true;
             }
         }
         setFact(value.kind,value.a,value.b);
@@ -394,8 +411,8 @@ public:
                 if(bank.dirty) {key=prerequisite;deviceSeq=bank.deviceSeq;value=bank.desired;serial=bank.serial;received=bank.received;}
             }
         } else {
-            for(int n=0;n<128;++n) {
-                int candidate=(parameterCursor+n)%128;
+            for(int n=0;n<parameterCapacity;++n) {
+                int candidate=(parameterCursor+n)%parameterCapacity;
                 auto& p=parameters[size_t(candidate)];
                 if(parameter(candidate) && p.dirty) {key=candidate;deviceSeq=p.deviceSeq;value=p.desired;serial=p.serial;received=p.received;break;}
             }
@@ -406,7 +423,7 @@ public:
         }
         if(key<0) return {};
         auto seq=wireSequence();if(!seq) return {};
-        if(parameter(key)) {parameters[size_t(key)].dirty=false;parameterCursor=(key+1)%128;}
+        if(parameter(key)) {parameters[size_t(key)].dirty=false;parameterCursor=(key+1)%parameterCapacity;}
         else if(key==58) allocationGrant.reset();
         else {commandHead=(commandHead+1)%16;--commandCount;}
         Dispatch result{epoch,*seq,key,value,deviceSeq,serial};flight=Flight{result,at};
@@ -422,7 +439,7 @@ public:
         ++feedbackRetries;
         if(value.kind==0) { seedPending=true;return true; }
         if(value.kind==2 || value.kind==7) {
-            const int key=int(value.a&127),seq=int((value.a>>7)&127);
+            const int key=feedbackKey(value.a),seq=int((value.a>>7)&127);
             if(value.kind==2 && parameter(key)) {
                 const auto& p=parameters[size_t(key)];
                 if(p.serial!=issuedParameterSerial || p.deviceSeq!=seq) return false;
@@ -448,9 +465,9 @@ public:
         if(retryTerminal) {auto value=*retryTerminal;retryTerminal.reset();return stamp(value);}
         if(terminalCount) {auto value=terminals[size_t(terminalHead)];terminalHead=(terminalHead+1)%64;--terminalCount;return stamp(value);}
         if(overflowReply) { auto value=*overflowReply;overflowReply.reset();return stamp(value); }
-        for(int n=0;n<128;++n) {
-            int index=(replyCursor+n)%128;
-            if(parameterReplies[size_t(index)]) {auto value=*parameterReplies[size_t(index)];parameterReplies[size_t(index)].reset();replyCursor=(index+1)%128;return stamp(value);}
+        for(int n=0;n<parameterCapacity;++n) {
+            int index=(replyCursor+n)%parameterCapacity;
+            if(parameterReplies[size_t(index)]) {auto value=*parameterReplies[size_t(index)];parameterReplies[size_t(index)].reset();replyCursor=(index+1)%parameterCapacity;return stamp(value);}
         }
         // Musical facts always precede bulk labels, including while the patch
         // view is open. Label cache size cannot turn clocks into a name FIFO.
@@ -476,7 +493,7 @@ public:
     int queuedDiscrete() const { return commandCount; }
     int terminalResults() const { return terminalCount+(retryTerminal?1:0); }
     int lastDeviceSequence() const { return lastDeviceSeq<0?127:lastDeviceSeq; }
-    int confirmed(int key) const { return key>=0&&key<128&&parameters[size_t(key)].known?parameters[size_t(key)].confirmed:-1; }
-    int desired(int key) const { return key>=0&&key<128?parameters[size_t(key)].desired:-1; }
+    int confirmed(int key) const { return key>=0&&key<parameterCapacity&&parameters[size_t(key)].known?parameters[size_t(key)].confirmed:-1; }
+    int desired(int key) const { return key>=0&&key<parameterCapacity?parameters[size_t(key)].desired:-1; }
 };
 }

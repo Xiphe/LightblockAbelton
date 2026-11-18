@@ -228,8 +228,8 @@ struct Service : juce::MidiInputCallback, juce::AsyncUpdater, juce::Timer, roli:
         if(handshakeCC) hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(16,handshakeCC,performanceGeneration));
         if(command) {
             for(auto data:std::array<std::array<int,2>,6>{{{69,command->generation},{70,command->seq},
-                {71,command->key},{72,command->value&127},{73,(command->value>>7)&127},{74,command->seq}}})
-                hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(1,data[0],data[1]));
+                {71,performance::wireKey(command->key)},{72,command->value&127},{73,(command->value>>7)&127},{74,command->seq}}})
+                hostInput->sendMessageNow(juce::MidiMessage::controllerEvent(performance::wireChannel(command->key),data[0],data[1]));
             forwarded+=6;
         }
         if(feedback) {
@@ -783,6 +783,7 @@ int main(int argc,char** argv) {
                 info->setProperty("status_program",juce::String(options.statusSource));
                 info->setProperty("patch",juce::String(options.patchSource));
                 info->setProperty("controller_mode",options.audioPerformance?"audio-performance":"legacy");
+                info->setProperty("performance_contract",options.audioPerformance?2:1);
                 info->setProperty("status_file",juce::String(options.status));
                 std::cout<<juce::JSON::toString(juce::var(info.get()),true)<<'\n';return 0;
             }

@@ -315,17 +315,17 @@ static void patch_intents_keep_latest_and_precede_recording() {
     // Appended patch/readiness/source facts must not collide with the existing
     // meter parameter, group or clock slots. Routing readiness is not an ACK.
     Reconciler facts;ready(facts);
-    facts.receiveObservation({1,0,1,48,3},2);
+    facts.receiveObservation({1,0,1,80,3},2);
     facts.receiveObservation({1,1,1,114,7},2);
     facts.receiveObservation({1,2,6,8,19},2);
     facts.receiveObservation({1,3,6,24,0x200123},2);
     facts.receiveObservation({1,4,6,1,516u|(255u<<16)},2);
-    facts.receiveObservation({1,5,1,57,8},2); // observation-only: no monitor owner
+    facts.receiveObservation({1,5,1,88,8},2); // observation-only: no monitor owner
     auto all=drain(facts,3);
     assert(all.size()==6);assert(facts.confirmed(57)==8);
     bool patch=false,meter=false,pending=false,source=false;
     for(auto f:all) {
-        patch|=f.kind==1&&f.a==48&&f.b==3;
+        patch|=f.kind==1&&f.a==80&&f.b==3;
         meter|=f.kind==1&&f.a==114&&f.b==7;
         pending|=f.kind==6&&f.a==8&&f.b==19;
         source|=f.kind==6&&f.a==24&&f.b==0x200123;
@@ -341,7 +341,7 @@ static void seven_source_metadata_and_patch_only_names() {
     int sequence=0;
     for(int source=0;source<7;++source)
         r.receiveObservation({1,sequence++,6,uint32_t(24+source),uint32_t(0x200000+source)},2);
-    r.receiveObservation({1,sequence++,1,57,8},2);
+    r.receiveObservation({1,sequence++,1,88,8},2);
     r.receiveObservation({1,sequence++,6,8,65u|(1u<<25)},2);
     for(int chunk=0;chunk<56;++chunk)
         r.receiveObservation({1,sequence++,6,uint32_t(64+chunk),uint32_t(1000+chunk)},2);
@@ -351,7 +351,7 @@ static void seven_source_metadata_and_patch_only_names() {
     for(auto f:main) {
         assert(f.kind!=6 || f.a<64 || f.a>=264);
         if(f.kind==6&&f.a>=24&&f.a<31) {++colors;assert(f.b==0x200000+f.a-24);}
-        owner|=f.kind==1&&f.a==57&&f.b==8;
+        owner|=f.kind==1&&f.a==88&&f.b==8;
         readiness|=f.kind==6&&f.a==8&&f.b==(65u|(1u<<25));
     }
     assert(colors==7&&owner&&readiness);
@@ -475,7 +475,7 @@ static void mixed_patch_banks_coalesce_without_erasing_each_other() {
     assert(valid(intent(0,48,8191)));assert(!valid(intent(0,48,8192)));
     assert(valid(intent(0,116,4095)));assert(!valid(intent(0,116,4096)));
     Reconciler r;ready(r);
-    r.receiveObservation({1,0,1,48,3u|(5u<<13)},2);
+    r.receiveObservation({1,0,1,80,3u|(5u<<13)},2);
     assert(r.confirmed(48)==3&&r.confirmed(116)==5);
     assert(r.intent(intent(0,48,7),3));auto low=r.takeDispatch(4);assert(low&&low->key==48);
     assert(r.intent(intent(1,116,9),5));assert(r.intent(intent(2,48,11),6));
@@ -491,7 +491,7 @@ static void mixed_patch_banks_coalesce_without_erasing_each_other() {
     bool full=false,latestLow=false,latestHigh=false;
     for(auto f:drain(r,16)) {
         assert(!(f.kind==1&&f.a>=116&&f.a<=123));
-        full|=f.kind==1&&f.a==48&&f.b==(11u|(13u<<13));
+        full|=f.kind==1&&f.a==80&&f.b==(11u|(13u<<13));
         latestLow|=f.kind==2&&f.a==uint32_t(48|(2<<7))&&f.b==11;
         latestHigh|=f.kind==2&&f.a==uint32_t(116|(3<<7))&&f.b==13;
         assert(!(f.kind==2&&f.a==48)); // superseded low ACK does not release a new retap
@@ -502,12 +502,12 @@ static void mixed_patch_banks_coalesce_without_erasing_each_other() {
 }
 
 static void mixed_patch_bank_rejection_and_native_reconciliation() {
-    Reconciler r;ready(r);r.receiveObservation({1,0,1,48,0x1ffffffu},2);drain(r,2);
+    Reconciler r;ready(r);r.receiveObservation({1,0,1,80,0x1ffffffu},2);drain(r,2);
     assert(r.confirmed(48)==8191&&r.confirmed(116)==4095);
     assert(r.intent(intent(0,48,0),3));assert(r.intent(intent(1,116,0),4));
     auto low=r.takeDispatch(5);assert(low&&low->key==48);r.receiveAck(ack(*low,0),6);
     bool retainedHigh=false;
-    for(auto f:drain(r,6)) retainedHigh|=f.kind==1&&f.a==48&&f.b==(4095u<<13);
+    for(auto f:drain(r,6)) retainedHigh|=f.kind==1&&f.a==80&&f.b==(4095u<<13);
     assert(retainedHigh);
     auto oldHigh=r.takeDispatch(7);assert(oldHigh&&oldHigh->key==116);
     assert(r.intent(intent(2,116,2),8));assert(r.intent(intent(3,48,5),9));
@@ -518,12 +518,12 @@ static void mixed_patch_bank_rejection_and_native_reconciliation() {
     r.receiveAck(ack(*nextHigh,rejected),14);
     bool full=false,rejectedHigh=false;
     for(auto f:drain(r,15)) {
-        full|=f.kind==1&&f.a==48&&f.b==5;
+        full|=f.kind==1&&f.a==80&&f.b==5;
         rejectedHigh|=f.kind==2&&f.a==uint32_t(116|(2<<7))&&f.b==uint32_t(rejected);
         assert(!(f.kind==2&&f.a==uint32_t(116|(1<<7))));
     }
     assert(full&&rejectedHigh&&r.confirmed(48)==5&&r.confirmed(116)==0);
-    r.receiveObservation({1,1,1,48,5u|(4u<<13)},16); // manual Native change remains authoritative
+    r.receiveObservation({1,1,1,80,5u|(4u<<13)},16); // manual Native change remains authoritative
     r.receiveAck(ack(*oldHigh,0),17);
     auto actual=drain(r,18);assert(actual.size()==1&&actual[0].b==(5u|(4u<<13)));
     assert(r.confirmed(48)==5&&r.confirmed(116)==4&&!r.pending());
@@ -537,15 +537,15 @@ static void mixed_catalog_metadata_labels_and_clock_priority() {
     for(int chunk=0;chunk<200;++chunk)
         r.receiveObservation({1,(revision++)&127,6,uint32_t(64+chunk),uint32_t(2000+chunk)},2);
     r.receiveObservation({1,(revision++)&127,6,8,0x1ffffffu|(1u<<25)|(1u<<26)},3);
-    r.receiveObservation({1,(revision++)&127,1,57,8},3);
-    r.receiveObservation({1,(revision++)&127,1,48,1u<<24},3);
+    r.receiveObservation({1,(revision++)&127,1,88,8},3);
+    r.receiveObservation({1,(revision++)&127,1,80,1u<<24},3);
     auto ordinary=drain(r,3);assert(ordinary.size()==28);
     bool owner=false,prepared=false,fullAssignment=false;
     for(auto f:ordinary) {
         assert(!(f.kind==6&&f.a>=64&&f.a<264));
         owner|=f.kind==6&&f.a==48&&f.b==midiOwned;
         prepared|=f.kind==6&&f.a==8&&f.b==0x7ffffffu;
-        fullAssignment|=f.kind==1&&f.a==48&&f.b==(1u<<24);
+        fullAssignment|=f.kind==1&&f.a==80&&f.b==(1u<<24);
     }
     assert(owner&&prepared&&fullAssignment&&!r.pending());
     auto firstName=r.takeFeedback(4,true);assert(firstName&&firstName->kind==6&&firstName->a>=64);
@@ -565,7 +565,112 @@ static void mixed_catalog_metadata_labels_and_clock_priority() {
     assert(count==200);
 }
 
+static void constants_bank_frames_and_isolation() {
+    assert(wireChannel(0)==1&&wireChannel(128)==2&&wireKey(151)==23);
+    assert(valid(intent(0,128,0)));assert(valid(intent(0,151,127)));
+    assert(!valid(intent(0,128,128)));assert(!valid(intent(0,152,1)));
+    assert(valid(intent(0,56,4095)));assert(!valid(intent(0,56,4096)));
+    IntentFrame input;
+    // Banks are independent frame contexts, never parts of one hybrid frame.
+    const int low[][2]={{69,3},{70,7},{71,0},{72,17},{73,0}};
+    const int high[][2]={{69,3},{70,8},{71,23},{72,99},{73,0}};
+    for(int i=0;i<5;++i) {assert(!input.push(1,low[i][0],low[i][1]));assert(!input.push(2,high[i][0],high[i][1]));}
+    auto original=input.push(1,74,7);assert(original&&original->key==0&&original->value==17);
+    auto constant=input.push(2,74,8);assert(constant&&constant->key==151&&constant->value==99);
+    // A bank2 key outside its24 fields must not become a global command.
+    const int bad[][2]={{69,3},{70,9},{71,56},{72,1},{73,0},{74,9}};
+    for(auto part:bad) assert(!input.push(2,part[0],part[1]));
+    assert(!input.push(2,69,3));assert(!input.push(2,70,10));
+    assert(!input.push(1,71,0));assert(!input.push(1,72,70));assert(!input.push(1,73,0));assert(!input.push(1,74,10));
+    assert(!input.push(2,71,0));assert(!input.push(2,72,50));assert(!input.push(2,73,0));
+    auto separate=input.push(2,74,10);assert(separate&&separate->key==128&&separate->value==50);
+
+    AckFrame acks;
+    const int ack1[][2]={{69,3},{75,11},{76,0},{77,20},{78,0}};
+    const int ack2[][2]={{69,3},{75,12},{76,0},{77,30},{78,0}};
+    for(int i=0;i<5;++i) {assert(!acks.push(1,ack1[i][0],ack1[i][1]));assert(!acks.push(2,ack2[i][0],ack2[i][1]));}
+    auto first=acks.push(1,79,11);assert(first&&first->key==0&&first->value==20);
+    auto second=acks.push(2,79,12);assert(second&&second->key==128&&second->value==30);
+}
+static void constants_coalescing_and_feedback_retries() {
+    Reconciler r;ready(r);
+    assert(r.intent(intent(0,0,17),2));assert(r.intent(intent(1,128,20),3));
+    auto loop=r.takeDispatch(4);assert(loop&&loop->key==0);r.receiveAck(ack(*loop,17),5);drain(r,5);
+    auto old=r.takeDispatch(6);assert(old&&old->key==128&&old->value==20);
+    // Same low key/sequence on the wrong wire bank cannot acknowledge it.
+    r.receiveAck({old->generation,old->seq,0,20},7);assert(r.inflightSeq()==old->seq);
+    assert(r.intent(intent(2,128,80),8));r.receiveAck(ack(*old,20),9);
+    for(auto f:drain(r,9)) assert(f.kind!=2);
+    auto last=r.takeDispatch(10);assert(last&&last->key==128&&last->value==80);
+    r.receiveAck(ack(*last,80),11);auto response=r.takeFeedback(11);
+    assert(response&&response->kind==2&&response->a==uint32_t((2<<7)|(1<<14))&&response->b==80);
+    assert(r.feedbackFailed(*response));auto retry=r.takeFeedback(12);assert(retry&&retry->a==response->a&&retry->b==80);
+    assert(!r.takeDispatch(12));assert(r.confirmed(0)==17&&r.confirmed(128)==80);
+    assert(r.intent(intent(3,128,81),13));auto newer=r.takeDispatch(14);assert(newer&&newer->key==128);
+    assert(!r.feedbackFailed(*response));r.receiveAck(ack(*newer,81),15);drain(r,15);
+    assert(r.intent(intent(4,151,127),16));auto highest=r.takeDispatch(17);assert(highest&&highest->key==151);
+    r.receiveAck(ack(*highest,127),18);auto top=r.takeFeedback(18);
+    assert(top&&top->a==uint32_t(23|(4<<7)|(1<<14))&&top->b==127);
+    assert(!r.pending());assert(r.confirmed(151)==127);
+}
+static void constants_facts_delivery_and_twelve_target_mute() {
+    constexpr uint32_t available=1u<<21,muted=1u<<23;
+    Reconciler r;ready(r);
+    r.receiveObservation({1,0,3,8,available|12},2);
+    auto early=r.takeFeedback(2);assert(early&&early->kind==3&&!(early->b&available));
+    for(int key=48;key<54;++key) r.receiveObservation({1,key-47,1,uint32_t(key),uint32_t(key==53?128:64)},3);
+    bool complete=false;
+    for(auto f:drain(r,3)) if(f.kind==3&&f.a==8) {assert(f.b&available);complete=true;}
+    assert(complete);assert(r.confirmed(133)==128);
+    r.receiveObservation({1,7,3,11,0x13579},4);drain(r,4);
+    assert(r.intent(intent(0,56,1|(1<<8)|(1<<11)),5));auto toggle=r.takeDispatch(6);
+    assert(toggle&&toggle->key==56&&toggle->value==(1|(1<<8)|(1<<11)));
+    r.receiveAck(ack(*toggle,4096),7);assert(r.inflightSeq()==toggle->seq);
+    r.receiveAck(ack(*toggle,1|(1<<8)|(1<<11)),7);
+    bool first=false,last=false;
+    for(auto f:drain(r,7)) if(f.kind==3) {
+        if(f.a==8) {assert(f.b&muted);first=true;}
+        if(f.a==11) {assert(f.b&muted);last=true;}
+    }
+    assert(first&&last);
+    // Extended mixer facts cannot collide with cached patch names or assignment.
+    r.receiveObservation({1,8,1,71,99},8);
+    r.receiveObservation({1,9,6,128,1234},8);
+    r.receiveObservation({1,10,1,80,3},8);
+    auto ordinary=drain(r,9);bool param=false,patch=false;
+    for(auto f:ordinary) {param|=f.kind==1&&f.a==71&&f.b==99;patch|=f.kind==1&&f.a==80&&f.b==3;}
+    assert(param&&patch);auto label=r.takeFeedback(9,true);assert(label&&label->kind==6&&label->a==128&&label->b==1234);
+    r.reseed(10);auto seed=r.takeFeedback(10,true);assert(seed&&seed->kind==0);
+    bool availableAgain=false,field=false;
+    for(auto f:drain(r,10,true)) {
+        if(f.kind==1&&f.a==53) field=true;
+        if(f.kind==3&&f.a==8&&(f.b&available)) {assert(field);availableAgain=true;}
+    }
+    assert(availableAgain);
+}
+
+static void compact_parameter_fact_namespace_is_disjoint() {
+    Reconciler r;ready(r);int sequence=0;
+    for(int a=0;a<72;++a) r.receiveObservation({1,sequence++,1,uint32_t(a),uint32_t(a)},1);
+    for(int a=80;a<88;++a) r.receiveObservation({1,sequence++,1,uint32_t(a),0x1ffffffu},1);
+    r.receiveObservation({1,sequence++,1,88,8},1);
+    r.receiveObservation({1,sequence++,1,114,7},1);
+    r.receiveObservation({1,sequence++,1,115,8},1);
+    for(int a=0;a<72;++a) assert(r.confirmed(a<48?a:a+80)==a);
+    for(int group=0;group<8;++group) assert(r.confirmed(48+group)==8191&&r.confirmed(116+group)==4095);
+    assert(r.confirmed(57)==8&&r.confirmed(137)==57);
+    auto facts=drain(r,2);assert(facts.size()==83);
+    for(uint32_t a: {72u,79u,89u,113u,116u,127u,128u,151u,152u}) {
+        const auto before=r.ignoredReplies;
+        r.receiveObservation({1,sequence++&127,1,a,0},2);
+        assert(r.ignoredReplies==before+1);
+    }
+    assert(drain(r,3).empty());
+}
+
 int main() {
+    compact_parameter_fact_namespace_is_disjoint();
+    constants_bank_frames_and_isolation();constants_coalescing_and_feedback_retries();constants_facts_delivery_and_twelve_target_mute();
     mixed_patch_banks_coalesce_without_erasing_each_other();mixed_patch_bank_rejection_and_native_reconciliation();mixed_catalog_metadata_labels_and_clock_priority();
     allocation_busy_bundle_heartbeats_preserve_one_grant();
     allocation_busy_admission_and_drain();allocation_busy_capacity_reseed_and_stale_receipts();allocation_busy_lease_is_bounded_and_fail_closed();

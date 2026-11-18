@@ -38,13 +38,13 @@ class SurfaceChecks(unittest.TestCase):
         return self.surface
     def handshake(self,generation=4):self.surface.receive_midi((0xBF,79,generation))
     def command(self,seq=1,key=0,value=40,generation=4):
-        for cc,v in ((69,generation),(70,seq),(71,key),(72,value&127),(73,value>>7),(74,seq)):
-            self.surface.receive_midi((0xB0,cc,v))
+        for cc,v in ((69,generation),(70,seq),(71,key&127),(72,value&127),(73,value>>7),(74,seq)):
+            self.surface.receive_midi((0xB0+(key>>7),cc,v))
     def test_explicit_native_forwarding_matches_entire_contract(self):
         surface=self.make();handle=NS(forwarded=[])
         surface.build_midi_map(handle)
         self.assertTrue(handle.base)
-        self.assertEqual(set(handle.forwarded),{(0,n) for n in range(69,75)}|{(15,78),(15,79),(15,109)})
+        self.assertEqual(set(handle.forwarded),{(c,n) for c in (0,1) for n in range(69,75)}|{(15,78),(15,79),(15,109)})
     def test_empty_target_fails_closed_even_untitled(self):
         surface=self.make(False);self.song.file_path=''
         self.handshake();self.command()

@@ -61,7 +61,7 @@ With patch enabled, short Mode opens patch from main and returns to main from ei
 
 Patch owns group/source contact context and optimistic feedback locally. Set `AUDIO_SOURCES = 'catalog'` in the private configuration to discover up to 25 Audio and MIDI source tracks inside `[Inputs]`, in Live order across organizational subgroups. Selected sources create independently stored Audio or MIDI clips within one logical take; MIDI instruments remain external and have exclusive group ownership. The upper input row shows the desired assignment and the lower row pulses while preparation completes. Prepared recording lanes provide monitoring directly, retaining original source effects and accepted recordings. Two independently acknowledged command banks carry each25-source selection. Source names stay cached in patch and never delay musical facts. Set-local metadata records source identities and group selections; a source-by-group helper matrix is not needed. See the [semantic wire contract](native/performance_protocol.md) for command admission, readiness, source metadata and failure handling.
 
-Main currently uses7190of7200bytes. The separate patch program uses 5084, leaving 2116 free, and metronome3558; main's ten-byte margin is not spare capacity for further features. Run the [compiled-device checks](../lightpad/PERFORMANCE.md) and joined paths with `PERFORMANCE_REPLAY` pointing at the matching `performance_replay` executable:
+Main includes the twelve-target local mixer and is checked against its7,200-byte limit. The separate patch program uses 5084, leaving 2116 free, and metronome3558; every program change must recheck the compiled budget and stack. Run the [compiled-device checks](../lightpad/PERFORMANCE.md) and joined paths with `PERFORMANCE_REPLAY` pointing at the matching `performance_replay` executable:
 
 ```sh
 PERFORMANCE_REPLAY=/absolute/build/performance_replay \
@@ -96,7 +96,7 @@ python3 bridge/install.py stage \
   --output /tmp/lightpad-install-plan
 ```
 
-Prepare the private configuration from [Live setup](../live/README.md), using durable Set and diagnostic paths. Staging copies it into the Live package without modifying source files. Audio staging checks matching bundle mode, all four source/include hashes, the complete host package and explicit configuration. Verify the candidate's signature with `codesign --verify --strict '/tmp/Lightpad Bridge.app'`.
+Prepare the private configuration from [Live setup](../live/README.md), using durable Set and diagnostic paths. Staging copies it into the Live package without modifying source files. Audio staging checks matching bundle mode, all four source/include hashes, the complete host package and explicit configuration. Constants use performance contract2 in both the app manifest and Live protocol module; mixed contract1/2 installations are rejected before writes. Verify the candidate's signature with `codesign --verify --strict '/tmp/Lightpad Bridge.app'`.
 
 Defaults are `~/Applications/Lightpad Bridge.app`, `~/Music/Ableton/User Library/Remote Scripts/LightpadAudioInputs` and `~/Library/LaunchAgents/net.xiphe.lightpad-bridge.plist`. Existing `LightpadController` files are preserved. A legacy-mode app instead requires the legacy script and defaults to its `LightpadController` target. Use a new plan directory if one exists. `--no-login` omits the login agent; `install.py stage --help` lists custom destinations.
 

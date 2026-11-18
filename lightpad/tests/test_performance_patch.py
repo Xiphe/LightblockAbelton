@@ -21,7 +21,7 @@ class PerformancePatchTests(unittest.TestCase):
         self.model(0,127,0)
         for g in range(8):
             self.model(3,g,100|70<<7|50<<14|1<<21)
-            self.model(1,48+g,1)
+            self.model(1,80+g,1)
             self.model(6,8+g,1)
         self.model(6,24,90|40<<7|10<<14|1<<21)
         self.model(6,25,10|70<<7|110<<14|1<<21)
@@ -45,6 +45,15 @@ class PerformancePatchTests(unittest.TestCase):
             if [m[1] for m in unit]==[69,70,71,72,73,74] and unit[1][2]==unit[-1][2]:
                 result.append((unit[0][2],unit[1][2],unit[2][2],unit[3][2]|unit[4][2]<<7))
         return result
+    def test_constant_parameters_and_monitor_owner_do_not_change_assignments(self):
+        before=[self.desired(g) for g in range(8)]
+        for key in range(48,72):self.model(1,key,0)
+        self.model(1,88,7)
+        self.assertEqual([self.desired(g) for g in range(8)],before)
+        self.model(1,80,3)
+        self.assertEqual(self.desired(),3)
+        self.touch('Start',0,1,1);self.touch('Start',1,4,5)
+        self.assertEqual(self.frames()[-1][2],48,'fact namespace does not change intent keys')
     def test_budget_ready_and_group_first_source_toggle_is_immediate(self):
         _,code,_,globals_,heap=struct.unpack_from('<5H',self.program)
         self.assertLessEqual(code+heap,7200);self.assertLess(globals_*4,800)
@@ -75,7 +84,7 @@ class PerformancePatchTests(unittest.TestCase):
         self.touch('Start',0,1,1);self.touch('Start',1,4,5);first=self.frames()[-1]
         self.touch('End',1,4,5);self.touch('Start',1,4,5);latest=self.frames()[-1]
         self.touch('End',1,4,5);self.touch('End',0,1,1)
-        self.model(1,48,3);self.model(6,8,1|33554432)
+        self.model(1,80,3);self.model(6,8,1|33554432)
         self.model(2,48|first[1]<<7,3)
         self.repaint(1200)
         self.assertEqual(self.desired(),1)
@@ -179,7 +188,7 @@ class PerformancePatchTests(unittest.TestCase):
         self.touch('End',1,10,9);self.touch('Start',1,7,9);latest=self.frames()[-1]
         self.assertEqual(latest[2:],(48,1))
         self.assertEqual(self.desired(),8193)
-        self.model(1,48,4097)
+        self.model(1,80,4097)
         self.model(2,48|first[1]<<7,4097)
         self.assertEqual(self.desired(),8193)
         self.model(2,116|high[1]<<7,1)

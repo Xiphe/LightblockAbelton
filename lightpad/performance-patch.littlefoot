@@ -150,9 +150,9 @@ void handleMessage(int a, int b, int header)
         if (announced) { sendCC(15, 108, 37); sendCC(15, 106, countBits(down)); sendCC(15, 107, 0); }
         return;
     }
-    if (kind == 1 && a >= 48 && a < 56 && b < 33554432)
+    if (kind == 1 && a >= 80 && a < 88 && b < 33554432)
     {
-        int g = a - 48;
+        int g = a - 80;
         setHeapInt(64 + g * 4, b);
         for (int bank = 0; bank < 2; ++bank)
             if (getHeapByte(144 + g * 2 + bank) == 0)

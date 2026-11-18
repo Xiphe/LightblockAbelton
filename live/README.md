@@ -25,6 +25,12 @@ Only one group monitors live input at a time. Source selection or a horizontal s
 
 New recordings use the first available direct track of the required Audio/MIDI type from left to right with an empty slot in the current phrase. Names and existing input routing do not give a later track priority. Effects and mixer settings stay intact; preparation adapts the chosen track's recording input and monitoring. Every subgroup's children stay outside this pool. Earlier clips keep their own source name and color. When `ALLOW_AUDIO_TRACK_CREATION = True`, maintenance may add tracks before `[Remote]`; insertion can interrupt audio under heavy load. No instruments or source effect racks are cloned.
 
+## Fixed live channels
+
+Use one `Constants` or `[Constants]` Group Track. Its first four direct children become the four mixer-only tiles in Live order, including a subgroup such as Drums as one target. Descendants of that subgroup are not additional tiles. Missing or ambiguous roots disable Constants while the eight loop groups continue working.
+
+Constants retain their existing audio/MIDI routing, effects and playback. The controller provides mute, volume, pan and four configured parameters without recording, patching, occupancy scans or track preparation. `PARAMETER_BINDINGS` indices 8 through 11 select their white controls; loop groups remain indices 0 through 7.
+
 ## Local configuration
 
 Pass a private Python configuration file to `bridge/install.py stage --configuration FILE`. The installer copies it into the staged Live package, validates its mode and records hashes. Local Set paths, bindings and diagnostics stay outside the public repository.

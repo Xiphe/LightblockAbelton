@@ -91,6 +91,7 @@ class PackageTests(unittest.TestCase):
             patch_program=lightpad / "performance-patch.littlefoot",
             status_program=lightpad / "status.littlefoot")
         self.assertEqual(manifest["controller_mode"], "audio-performance")
+        self.assertEqual(manifest["performance_contract"], 2)
         self.assertEqual(set(manifest["programs"]), {"main", "metronome", "patch", "status"})
         info = plistlib.loads((target / "Contents/Info.plist").read_bytes())
         self.assertEqual(info["LightpadBridgeControllerMode"], manifest["controller_mode"])
